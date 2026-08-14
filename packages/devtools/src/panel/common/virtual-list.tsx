@@ -27,6 +27,17 @@ export interface VirtualListProps<T> {
   renderRow: (item: T, index: number) => ComponentChildren;
   /** Scroll so this index is visible. Ignored when undefined. */
   scrollToIndex?: number;
+  /**
+   * Bump to re-issue `scrollToIndex` even though the index has not changed.
+   *
+   * `scrollToIndex` on its own is a *value*, not a command: the list deliberately refuses to
+   * re-scroll for an index it has already served, so appending a row cannot yank the viewport
+   * back to a request the user has since scrolled away from. That is right for every writer
+   * that moves the index, and wrong for a cross-pane locate (P7) — clicking the same waterfall
+   * bar twice is a real, repeated request that leaves the index untouched. The nonce is how a
+   * caller says "again"; leaving it undefined keeps the value-only behaviour.
+   */
+  scrollNonce?: number;
   /** True while the list should tail new items (P6). */
   follow?: boolean;
 }
@@ -41,7 +52,7 @@ const DEFAULT_OVERSCAN = 4;
 const PIN_SLACK_PX = 2;
 
 export function VirtualList<T>(props: VirtualListProps<T>): JSX.Element {
-  const { items, rowHeight, height, renderRow, scrollToIndex, follow = false } = props;
+  const { items, rowHeight, height, renderRow, scrollToIndex, scrollNonce, follow = false } = props;
   const overscan = props.overscan ?? DEFAULT_OVERSCAN;
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -104,7 +115,10 @@ export function VirtualList<T>(props: VirtualListProps<T>): JSX.Element {
 
     next = clamp(next, 0, metrics.maxScrollTop);
     if (next !== current) scrollTo(next);
-  }, [scrollToIndex]);
+    // `scrollNonce` sits beside the index precisely so a repeated request re-fires. Nothing
+    // else may join this list: `count`, `height` and the rest are read off `metricsRef`
+    // exactly so an append cannot re-trigger a request the user has scrolled away from.
+  }, [scrollToIndex, scrollNonce]);
 
   /*
    * `scrollTop` is state but `count` is a prop, so a shrink — a filter change, a cleared

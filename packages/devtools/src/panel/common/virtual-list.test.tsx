@@ -139,6 +139,35 @@ describe('VirtualList', () => {
     expect(parts(container).viewport.scrollTop).toBe(before);
   });
 
+  it('re-scrolls to the same index when the scroll nonce changes', () => {
+    const props = {
+      items: rows(1000),
+      rowHeight: ROW_HEIGHT,
+      height: 200,
+      overscan: 2,
+      renderRow,
+    };
+    const { container, rerender } = render(
+      <VirtualList {...props} scrollToIndex={500} scrollNonce={1} />,
+    );
+    const target = parts(container).viewport.scrollTop;
+    expect(target).toBe(501 * ROW_HEIGHT - 200);
+
+    const { viewport } = parts(container);
+    viewport.scrollTop = 0;
+    fireEvent.scroll(viewport);
+
+    // A re-render carrying the *same* request must not drag the user back: that is the guard
+    // that stops an append from re-firing a stale `scrollToIndex`.
+    rerender(<VirtualList {...props} scrollToIndex={500} scrollNonce={1} />);
+    expect(parts(container).viewport.scrollTop).toBe(0);
+
+    // A new nonce is a new request, even though the index is unchanged — the cross-pane locate
+    // case, where the user clicks the same waterfall bar again after scrolling away.
+    rerender(<VirtualList {...props} scrollToIndex={500} scrollNonce={2} />);
+    expect(parts(container).viewport.scrollTop).toBe(target);
+  });
+
   it('tails appended items while pinned to the bottom (P6)', () => {
     const props = { rowHeight: ROW_HEIGHT, height: 100, overscan: 2, renderRow, follow: true };
     const { container, rerender } = render(<VirtualList {...props} items={rows(30)} />);

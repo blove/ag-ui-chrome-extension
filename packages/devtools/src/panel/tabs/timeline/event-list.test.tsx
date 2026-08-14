@@ -269,3 +269,54 @@ describe('EventList keyboard navigation', () => {
     expect(tabStops()).toEqual(['5']);
   });
 });
+
+/**
+ * The cross-pane locate (P7). The waterfall can ask for the *same* seq twice — clicking one bar,
+ * scrolling the list away, then clicking that bar again — and `selectedSeq` cannot express the
+ * second request, because it never changed. `locateNonce` is the channel that can.
+ */
+describe('EventList cross-pane locate', () => {
+  const BIG_COUNT = 400;
+
+  function bigState(): PanelState {
+    const records: CaptureRecord[] = Array.from({ length: BIG_COUNT }, (_, i) => ({
+      kind: 'event',
+      seq: i + 1,
+      tMs: i,
+      connId: 'c1',
+      raw: { type: 'CUSTOM' },
+      event: { type: 'CUSTOM', name: `n${i + 1}` },
+      issues: [],
+    }));
+    return { ...initialPanelState(), records, selectedSeq: 300 };
+  }
+
+  function viewport(): HTMLElement {
+    const el = document.querySelector<HTMLElement>('.agui-vlist');
+    if (el === null) throw new Error('list did not render');
+    return el;
+  }
+
+  it('re-scrolls to an unchanged selection when the locate nonce advances', () => {
+    const store = createPanelStore(bigState());
+    const { rerender } = render(<EventList store={store} locateNonce={1} />);
+
+    const target = viewport().scrollTop;
+    expect(target).toBeGreaterThan(0);
+    expect(screen.getByRole('option', { name: /^seq 300 / })).toBeTruthy();
+
+    // The user scrolls back to the top and row 300 leaves the DOM entirely.
+    viewport().scrollTop = 0;
+    fireEvent.scroll(viewport());
+    expect(screen.queryByRole('option', { name: /^seq 300 / })).toBeNull();
+
+    // Re-rendering with the same request leaves them where they are...
+    rerender(<EventList store={store} locateNonce={1} />);
+    expect(viewport().scrollTop).toBe(0);
+
+    // ...and a new nonce, with `selectedSeq` untouched, brings row 300 back.
+    rerender(<EventList store={store} locateNonce={2} />);
+    expect(viewport().scrollTop).toBe(target);
+    expect(screen.getByRole('option', { name: /^seq 300 / })).toBeTruthy();
+  });
+});
