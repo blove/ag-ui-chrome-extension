@@ -8706,7 +8706,7 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(run.metrics.durationMs).toBe(100);
   });
 
-  it('does not raise run-never-terminated for a run that already finished, and closes once', () => {
+  it('leaves a run that already finished untouched when its connection closes', () => {
     const builder = createRunBuilder();
 
     builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
@@ -8718,6 +8718,31 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(run.issues.filter((issue) => issue.code === 'run-never-terminated')).toEqual([]);
     expect(run.outcome).toBe('finished');
     expect(run.endedAtMs).toBe(10);
+    // NOTE: the second close proves nothing here — `finalizeRules` emits nothing for a
+    // FINISHED run however many times it runs. The `closedAtMs` guard is pinned by the
+    // next test, which closes an UNTERMINATED run twice.
+  });
+
+  it('emits the run-end issues exactly once when an unterminated run is closed twice', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_START', messageId: 'm1', role: 'assistant' }));
+    builder.closeConnection('c1', 100);
+    builder.closeConnection('c1', 200);
+
+    const run = builder.getRun('r1')!;
+
+    // `conn.closedAtMs` is the only thing standing between this and a double emission:
+    // `finalizeRules` is a pure function of a validation state that closing does not reset,
+    // so a second pass over an unterminated run re-raises every run-end issue — which is
+    // exactly what breaks Task 16's "exactly three issues" assertion.
+    expect(run.issues.filter((issue) => issue.code === 'run-never-terminated')).toHaveLength(1);
+    expect(run.issues.filter((issue) => issue.code === 'unclosed-message')).toHaveLength(1);
+    // the FIRST close wins: the run ended when its connection did, not at a later redundant close
+    expect(run.endedAtMs).toBe(100);
+    expect(run.metrics.durationMs).toBe(100);
+    expect(run.outcome).toBe('aborted');
   });
 
   it('closes only the runs belonging to the connection that closed', () => {
@@ -9081,6 +9106,10 @@ flush (`takeChunkFlushEvents` / `foldEvent` / `flushChunkStateAtClose` — see A
 ```ts
     closeConnection(connId: string, tMs: number): void {
       const conn = conns.get(connId);
+      // Idempotent by `closedAtMs`, not by luck: `finalizeRules` is a pure function of a
+      // validation state that closing does not reset, so a second pass over an UNTERMINATED
+      // run re-raises `run-never-terminated` and every `unclosed-*`. A finished run hides
+      // the bug — `finalizeRules` emits nothing for it however often it runs.
       if (conn === undefined || conn.closedAtMs !== undefined) return;
       conn.closedAtMs = tMs;
       // A run that never terminated got no flush from `addRecord`, so it happens here —
@@ -9107,7 +9136,7 @@ flush (`takeChunkFlushEvents` / `foldEvent` / `flushChunkStateAtClose` — see A
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run src/core/normalizer/run-builder.test.ts`
-Expected: 28 passing.
+Expected: 29 passing.
 
 - [ ] **Step 5: Commit**
 
@@ -11498,6 +11527,8 @@ them. Each was verified empirically before being adopted.
 | A23 | Task 8's `isPatchOp` requires an own `value` property on `add`/`replace`/`test` | RFC 6902 §4.1/§4.3/§4.6 make the member mandatory, and requirements §7 lists a bad `op` as an error condition, but the predicate checked only `op`, `path`, and `from`. Confirmed: `applyPatch({a:1}, [{op:'add', path:'/b'}])` returned `{ok:true}` with `value.b === undefined` — a document that no longer round-trips through JSON, since `JSON.stringify` drops the key. The State tab would have shown `{"a":1}` while the in-memory model held a `b`, and a `test` with no `value` reported `test-failed`, blaming the server's state for a malformed operation. The failure is `invalid-op`, matching every other malformed op. The check is `Object.prototype.hasOwnProperty.call`, **not** `op.value !== undefined`: `{"value": null}` is legal RFC 6902 and the commonest way a server clears a field, while `{"value": undefined}` cannot arrive from JSON at all. Verified no previously-passing test asserted the old behavior. |
 
 | A24 | Task 13c gains an **end-of-stream chunk flush**: the builder synthesizes the outstanding `TEXT_MESSAGE_END` / `REASONING_MESSAGE_END` / `TOOL_CALL_END` for whatever `conn.chunkState` still holds open, at `RUN_FINISHED` / `RUN_ERROR` and at `closeConnection` | **A gap in the plan's own design, not a deviation from it** — the plan never said who closes the *last* chunked entity, and neither Task 10 nor Task 13c did. `expandChunk` emits a trailing END only when a NEW id opens, and it is per-event with no run-end hook; nothing else flushed the state. Confirmed on a cleanly-finished chunked run: `issues: ['unclosed-message@4/warning', 'unclosed-tool-call@4/warning']`, `m1.closed === false`, `tc.closed === false`, `tc.args === undefined`. This is the **default path** — chunked streaming is what CopilotKit emits — so every healthy chunked run carried two spurious warnings and the panel showed no structured tool arguments, since `args` is parsed only in the builder's `TOOL_CALL_END` case (`argsText` was a perfectly valid `{}`). Ordering is load-bearing: the flush runs **before** the terminal event is validated and applied, because `applyTransition` sets `validation.terminated` and every event after that — synthesized ones included — trips `event-after-terminal`. The synthesized ENDs go through the same `foldEvent` as real events (`runRules` → `applyTransition` → `noteRecord` → `attachIssues`), so closing, `endedAtMs`, tool-args parsing and `tool-args-not-json` on genuinely malformed args all behave identically to the explicit triad. Consequence: with `expandChunks` true, `eventCountByType` counts the synthesized ENDs, exactly as gap 4 already documents for the rest of expansion; the close-time flush carries `raw: undefined` and the run's last real seq, so it adds no bytes and no `recordSeqs` entry. |
+
+| A25 | Task 13c's double-close test uses an **unterminated** run, and the already-finished one is renamed to say what it actually covers | R1 makes `conn.closedAtMs` the guard that keeps `finalizeRules` from running twice, but the test that claimed to cover it closed an **already-finished** run — for which `finalizeRules` emits nothing however many times it is called. Confirmed by mutation: deleting `|| conn.closedAtMs !== undefined` left all 25 tests green, so the one line R1 identifies as load-bearing ("would have broken Task 16's exactly three issues assertion") was unpinned. The replacement closes an unterminated run twice and asserts exactly one `run-never-terminated` and exactly one `unclosed-message`, plus that the FIRST close's `tMs` wins for `endedAtMs` — a second close must not re-date the run. |
 
 ### Keepalive attribution — decided here, previously unspecified
 

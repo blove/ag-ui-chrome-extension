@@ -556,7 +556,7 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(run.metrics.durationMs).toBe(100);
   });
 
-  it('does not raise run-never-terminated for a run that already finished, and closes once', () => {
+  it('leaves a run that already finished untouched when its connection closes', () => {
     const builder = createRunBuilder();
 
     builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
@@ -568,6 +568,31 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(run.issues.filter((issue) => issue.code === 'run-never-terminated')).toEqual([]);
     expect(run.outcome).toBe('finished');
     expect(run.endedAtMs).toBe(10);
+    // NOTE: the second close proves nothing here — `finalizeRules` emits nothing for a
+    // FINISHED run however many times it runs. The `closedAtMs` guard is pinned by the
+    // next test, which closes an UNTERMINATED run twice.
+  });
+
+  it('emits the run-end issues exactly once when an unterminated run is closed twice', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_START', messageId: 'm1', role: 'assistant' }));
+    builder.closeConnection('c1', 100);
+    builder.closeConnection('c1', 200);
+
+    const run = builder.getRun('r1')!;
+
+    // `conn.closedAtMs` is the only thing standing between this and a double emission:
+    // `finalizeRules` is a pure function of a validation state that closing does not reset,
+    // so a second pass over an unterminated run re-raises every run-end issue — which is
+    // exactly what breaks Task 16's "exactly three issues" assertion.
+    expect(run.issues.filter((issue) => issue.code === 'run-never-terminated')).toHaveLength(1);
+    expect(run.issues.filter((issue) => issue.code === 'unclosed-message')).toHaveLength(1);
+    // the FIRST close wins: the run ended when its connection did, not at a later redundant close
+    expect(run.endedAtMs).toBe(100);
+    expect(run.metrics.durationMs).toBe(100);
+    expect(run.outcome).toBe('aborted');
   });
 
   it('closes only the runs belonging to the connection that closed', () => {

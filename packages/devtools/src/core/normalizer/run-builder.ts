@@ -626,6 +626,10 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
 
     closeConnection(connId: string, tMs: number): void {
       const conn = conns.get(connId);
+      // Idempotent by `closedAtMs`, not by luck: `finalizeRules` is a pure function of a
+      // validation state that closing does not reset, so a second pass over an UNTERMINATED
+      // run re-raises `run-never-terminated` and every `unclosed-*`. A finished run hides
+      // the bug — `finalizeRules` emits nothing for it however often it runs.
       if (conn === undefined || conn.closedAtMs !== undefined) return;
       conn.closedAtMs = tMs;
       // A run that never terminated got no flush from `addRecord`, so it happens here —
