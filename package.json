@@ -11,13 +11,16 @@
   "scripts": {
     "dev": "pnpm -r dev",
     "build": "pnpm -r build",
-    "package": "pnpm -r package",
+    "package": "pnpm --filter ag-ui-devtools package",
     "test": "pnpm -r run test:ci",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
-    "gen:events": "pnpm -r gen:events"
+    "gen:events": "pnpm -r gen:events",
+    "verify:build": "pnpm --filter ag-ui-devtools verify:build"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }
