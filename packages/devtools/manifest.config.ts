@@ -25,6 +25,10 @@ export default defineManifest({
   manifest_version: 3,
   name: 'AG-UI DevTools',
   version: '0.1.0',
+  // Static world: 'MAIN' content scripts require Chrome 111+. On older Chrome this key is
+  // silently ignored and BOTH scripts below load into ISOLATED instead — a silent failure
+  // of the world-isolation design, not a loud one. Pin the floor explicitly.
+  minimum_chrome_version: '111',
   devtools_page: 'src/panel/devtools.html',
   background: {
     service_worker: 'src/sw/index.ts',
@@ -40,9 +44,13 @@ export default defineManifest({
       world: 'MAIN',
       all_frames: true,
     },
+    // The two content scripts MUST NOT share a basename. CRXJS 2.7.1 keys emitted
+    // content scripts by basename(file) in build mode, so two files both named
+    // `index.ts` collide and the build fails with "Content script fileName is
+    // undefined". Keep these basenames distinct.
     {
       matches: LOCALHOST_MATCHES,
-      js: ['src/relay/index.ts'],
+      js: ['src/relay/relay.ts'],
       run_at: 'document_start',
       world: 'ISOLATED',
       all_frames: true,

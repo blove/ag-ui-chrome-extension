@@ -7,7 +7,6 @@ export default tseslint.config(
     ignores: [
       'dist/**',
       'node_modules/**',
-      'src/core/events/event-table.generated.ts',
     ],
   },
   js.configs.recommended,
@@ -21,7 +20,7 @@ export default tseslint.config(
   {
     // Design §3 / D10: core/ is Chrome-free so it runs under Node in Vitest and can be
     // lifted into a CLI later. This rule is the enforcement, not the documentation.
-    files: ['src/core/**/*.ts'],
+    files: ['src/core/**/*.{ts,tsx}'],
     rules: {
       'no-restricted-globals': [
         'error',
@@ -46,7 +45,50 @@ export default tseslint.config(
           name: 'localStorage',
           message: 'core/ must run under Node and must not persist anything. See requirements §11.',
         },
+        {
+          name: 'self',
+          message: 'core/ must run under Node. Keep host globals out of core/.',
+        },
+        {
+          name: 'navigator',
+          message: 'core/ must run under Node. Keep host globals out of core/.',
+        },
+        {
+          name: 'fetch',
+          message: 'core/ must be I/O-free; pass already-read bytes in. See requirements §11 (no egress).',
+        },
+        {
+          name: 'sessionStorage',
+          message: 'core/ must not persist anything. See requirements §11.',
+        },
+        {
+          name: 'location',
+          message: 'core/ must run under Node. Keep host globals out of core/.',
+        },
+      ],
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/sw/**', '**/relay/**', '**/inject/**', '**/panel/**'],
+              message: 'core/ must not import from Chrome-facing surfaces. Pass plain data into core/ instead.',
+            },
+          ],
+        },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "MemberExpression[object.name='globalThis']",
+          message: 'globalThis.* bypasses the core/ boundary. Reference nothing host-specific from core/.',
+        },
       ],
     },
+  },
+  {
+    // Machine-generated; exempt from the core/ boundary rules but still linted otherwise.
+    files: ['src/core/events/event-table.generated.ts'],
+    rules: { 'no-restricted-globals': 'off', 'no-restricted-syntax': 'off' },
   },
 );
