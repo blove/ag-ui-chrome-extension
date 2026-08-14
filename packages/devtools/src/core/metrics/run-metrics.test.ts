@@ -198,7 +198,11 @@ describe('computeMetrics', () => {
     const metrics = computeMetrics(makeRun(), records, 2000);
 
     expect(metrics.statePatchCount).toBe(2);
-    expect(metrics.statePatchBytes).toBe(JSON.stringify(d1).length + JSON.stringify(d2).length);
+    // Byte counts are UTF-8, spelled out rather than recomputed with the implementation's own
+    // expression. Both deltas are pure ASCII, so each JSON character is exactly one byte:
+    //   d1 -> `[{"op":"replace","path":"/count","value":2}]`                        = 44
+    //   d2 -> `[{"op":"add","path":"/items/-","value":"x"},{"op":"remove",...}]`     = 74
+    expect(metrics.statePatchBytes).toBe(44 + 74);
   });
 
   it('counts events by type and sums raw bytes, skipping unparseable and raw-less records', () => {
@@ -242,9 +246,12 @@ describe('computeMetrics', () => {
     const metrics = computeMetrics(makeRun(), records, 2000);
 
     expect(metrics.eventCountByType).toEqual({ TEXT_MESSAGE_CONTENT: 2, RUN_FINISHED: 1 });
-    expect(metrics.totalStreamBytes).toBe(
-      JSON.stringify(raw1).length + JSON.stringify('garbage').length + JSON.stringify({ type: 'RUN_FINISHED' }).length,
-    );
+    // UTF-8 bytes of each `raw`, ASCII throughout so one JSON character is one byte:
+    //   raw1                        = 97
+    //   `"garbage"` (quotes count)  =  9
+    //   `{"type":"RUN_FINISHED"}`   = 23
+    // The seq-3 record has `raw: undefined` and contributes 0 — the don't-double-count guard.
+    expect(metrics.totalStreamBytes).toBe(97 + 9 + 23);
   });
 
   it('excludes keepalives from eventCountByType but still counts their bytes in totalStreamBytes', () => {
@@ -260,8 +267,37 @@ describe('computeMetrics', () => {
     const metrics = computeMetrics(makeRun(), records, 2000);
 
     expect(metrics.eventCountByType).toEqual({ TEXT_MESSAGE_START: 1, TEXT_MESSAGE_CONTENT: 1 });
-    expect(metrics.totalStreamBytes).toBe(
-      records.reduce((sum, r) => sum + JSON.stringify(r.raw).length, 0),
-    );
+    // UTF-8 bytes: 65 (START) + 7 (`":\n\n"`) + 60 (CONTENT) + 11 (`":ping\n\n"`). All ASCII.
+    expect(metrics.totalStreamBytes).toBe(65 + 7 + 60 + 11);
+  });
+
+  it('counts UTF-8 bytes, not UTF-16 code units, for non-ASCII payloads', () => {
+    // `日本語🎉` is 5 UTF-16 code units but 13 UTF-8 bytes: each CJK codepoint is 1 unit /
+    // 3 bytes, and the emoji is a surrogate pair — 2 units / 4 bytes. Counting `.length`
+    // would under-report a Japanese conversation by ~2.5x, which defeats the whole point of
+    // these numbers (requirements §5: diagnosing payload size and proxy buffering).
+    const delta = [{ op: 'replace', path: '/greeting', value: '日本語🎉' }];
+    const raw = { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: '日本語🎉' };
+    const records: CaptureRecord[] = [
+      {
+        kind: 'event',
+        seq: 1,
+        tMs: 10,
+        connId: 'c1',
+        raw,
+        event: { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: '日本語🎉' },
+        issues: [],
+      },
+      rec(2, 20, { type: 'STATE_DELTA', delta }),
+    ];
+
+    const metrics = computeMetrics(makeRun(), records, 2000);
+
+    // `JSON.stringify(raw)` is 64 code units but 72 bytes; the STATE_DELTA record's raw is
+    // the whole event, 84 code units but 92 bytes; the delta alone is 53 units but 61 bytes.
+    expect(JSON.stringify(raw).length).toBe(64);
+    expect(metrics.totalStreamBytes).toBe(72 + 92);
+    expect(JSON.stringify(delta).length).toBe(53);
+    expect(metrics.statePatchBytes).toBe(61);
   });
 });

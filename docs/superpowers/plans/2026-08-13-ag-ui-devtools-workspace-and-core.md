@@ -7153,7 +7153,11 @@ describe('computeMetrics', () => {
     const metrics = computeMetrics(makeRun(), records, 2000);
 
     expect(metrics.statePatchCount).toBe(2);
-    expect(metrics.statePatchBytes).toBe(JSON.stringify(d1).length + JSON.stringify(d2).length);
+    // Byte counts are UTF-8, spelled out rather than recomputed with the implementation's own
+    // expression. Both deltas are pure ASCII, so each JSON character is exactly one byte:
+    //   d1 -> `[{"op":"replace","path":"/count","value":2}]`                        = 44
+    //   d2 -> `[{"op":"add","path":"/items/-","value":"x"},{"op":"remove",...}]`     = 74
+    expect(metrics.statePatchBytes).toBe(44 + 74);
   });
 
   it('counts events by type and sums raw bytes, skipping unparseable and raw-less records', () => {
@@ -7197,9 +7201,12 @@ describe('computeMetrics', () => {
     const metrics = computeMetrics(makeRun(), records, 2000);
 
     expect(metrics.eventCountByType).toEqual({ TEXT_MESSAGE_CONTENT: 2, RUN_FINISHED: 1 });
-    expect(metrics.totalStreamBytes).toBe(
-      JSON.stringify(raw1).length + JSON.stringify('garbage').length + JSON.stringify({ type: 'RUN_FINISHED' }).length,
-    );
+    // UTF-8 bytes of each `raw`, ASCII throughout so one JSON character is one byte:
+    //   raw1                        = 97
+    //   `"garbage"` (quotes count)  =  9
+    //   `{"type":"RUN_FINISHED"}`   = 23
+    // The seq-3 record has `raw: undefined` and contributes 0 — the don't-double-count guard.
+    expect(metrics.totalStreamBytes).toBe(97 + 9 + 23);
   });
 
   it('excludes keepalives from eventCountByType but still counts their bytes in totalStreamBytes', () => {
@@ -7215,9 +7222,38 @@ describe('computeMetrics', () => {
     const metrics = computeMetrics(makeRun(), records, 2000);
 
     expect(metrics.eventCountByType).toEqual({ TEXT_MESSAGE_START: 1, TEXT_MESSAGE_CONTENT: 1 });
-    expect(metrics.totalStreamBytes).toBe(
-      records.reduce((sum, r) => sum + JSON.stringify(r.raw).length, 0),
-    );
+    // UTF-8 bytes: 65 (START) + 7 (`":\n\n"`) + 60 (CONTENT) + 11 (`":ping\n\n"`). All ASCII.
+    expect(metrics.totalStreamBytes).toBe(65 + 7 + 60 + 11);
+  });
+
+  it('counts UTF-8 bytes, not UTF-16 code units, for non-ASCII payloads', () => {
+    // `日本語🎉` is 5 UTF-16 code units but 13 UTF-8 bytes: each CJK codepoint is 1 unit /
+    // 3 bytes, and the emoji is a surrogate pair — 2 units / 4 bytes. Counting `.length`
+    // would under-report a Japanese conversation by ~2.5x, which defeats the whole point of
+    // these numbers (requirements §5: diagnosing payload size and proxy buffering).
+    const delta = [{ op: 'replace', path: '/greeting', value: '日本語🎉' }];
+    const raw = { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: '日本語🎉' };
+    const records: CaptureRecord[] = [
+      {
+        kind: 'event',
+        seq: 1,
+        tMs: 10,
+        connId: 'c1',
+        raw,
+        event: { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: '日本語🎉' },
+        issues: [],
+      },
+      rec(2, 20, { type: 'STATE_DELTA', delta }),
+    ];
+
+    const metrics = computeMetrics(makeRun(), records, 2000);
+
+    // `JSON.stringify(raw)` is 64 code units but 72 bytes; the STATE_DELTA record's raw is
+    // the whole event, 84 code units but 92 bytes; the delta alone is 53 units but 61 bytes.
+    expect(JSON.stringify(raw).length).toBe(64);
+    expect(metrics.totalStreamBytes).toBe(72 + 92);
+    expect(JSON.stringify(delta).length).toBe(53);
+    expect(metrics.statePatchBytes).toBe(61);
   });
 });
 ```
@@ -7250,13 +7286,20 @@ function nearestRankPercentile(sorted: number[], p: number): number | undefined 
 }
 
 /**
- * JSON byte length, treating non-serializable values as zero bytes. `record.raw` is
- * `undefined` when the bytes were already counted against a sibling record produced by
- * chunk expansion, so this doubles as the "don't double-count" guard for that contract.
+ * UTF-8 byte length of the JSON encoding, counting a value `JSON.stringify` drops
+ * (`undefined`, a function, a symbol) as zero bytes. `record.raw` is `undefined` when the
+ * bytes were already counted against a sibling record produced by chunk expansion, so this
+ * doubles as the "don't double-count" guard for that contract. A value `JSON.stringify`
+ * *throws* on — a circular `raw`, a BigInt — propagates; it is not silently zero.
+ *
+ * `TextEncoder` rather than `json.length`: `String.length` counts UTF-16 code units, so a
+ * CJK codepoint would report 1 for 3 bytes on the wire and an emoji 2 for 4. These numbers
+ * exist to diagnose payload size and proxy buffering, and a Japanese conversation
+ * under-reporting its transfer by ~2.5x would make them worse than no number at all.
  */
 function byteLength(value: unknown): number {
   const json = JSON.stringify(value);
-  return json === undefined ? 0 : json.length;
+  return json === undefined ? 0 : new TextEncoder().encode(json).length;
 }
 
 function pushTime(map: Map<string, number[]>, key: string, tMs: number): void {
@@ -7377,7 +7420,7 @@ export function computeMetrics(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run src/core/metrics/run-metrics.test.ts`
-Expected: 12 passing.
+Expected: 13 passing.
 
 - [ ] **Step 5: Commit**
 
@@ -11157,6 +11200,7 @@ them. Each was verified empirically before being adopted.
 | A19 | `CaptureRecord` is a discriminated union on `kind`, not a flag plus optionals | As first landed, a keepalive could carry a decoded `event`, an event record could carry a `comment`, and `r.comment` read without any narrowing — all compiled. The union makes the invariants structural, which is what stops Task 12 counting a keepalive as an event; requirements §5.4 requires keepalives be recorded but **excluded from the event count**. Verified: all three incoherent literals are now compile errors. |
 | A20 | `makeIssue(code, message, seq, extra?)` is the only sanctioned `Issue` constructor | A14's table was advisory — `{code:'empty-text-delta', severity:'info'}` still compiled, which is the exact hole A14 was created to close. Correlating `severity` to `code` at the type level rejects the misgrade but breaks the generic factory every emitter needs (a known correlated-union limitation). The factory upholds the guarantee instead. |
 | A21 | `ReconstructedMessage.role: MessageRole` → `kind: MessageKind` (`'text' \| 'reasoning'`) | The protocol carries its own `role` on `TEXT_MESSAGE_START` and `TOOL_CALL_RESULT` with different semantics, so the old name invited `role: event.role` in Task 13a — where the fold constructs the message directly from event data. Renamed while there are zero consumers; after 13a it would cost edits across 13a–13c and 16. |
+| A22 | Task 12's `byteLength` encodes with `TextEncoder` instead of returning `json.length` | `String.length` counts UTF-16 code units, not bytes: a CJK codepoint is 1 unit / 3 UTF-8 bytes and an emoji is 2 units / 4 bytes, so a Japanese conversation reporting "1,200 bytes" actually put ~3,000 on the wire. `totalStreamBytes`/`statePatchBytes` exist to diagnose payload size and proxy buffering, which an under-count of ~2.5x defeats. `TextEncoder` is a standard global in Node 22 and in browsers and is not on the `core/` lint fence — verified `pnpm lint` stays clean. Task 12 gains a non-ASCII regression test asserting the count exceeds `JSON.stringify(...).length`, and its three ASCII byte assertions are restated as literal totals so they no longer restate the implementation's own expression. The docstring was narrowed at the same time: it claimed to treat "non-serializable values as zero bytes", but a circular `raw` **throws** out of `JSON.stringify` rather than counting zero. |
 
 ### Keepalive attribution — decided here, previously unspecified
 

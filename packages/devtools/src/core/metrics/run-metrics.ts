@@ -17,13 +17,20 @@ function nearestRankPercentile(sorted: number[], p: number): number | undefined 
 }
 
 /**
- * JSON byte length, treating non-serializable values as zero bytes. `record.raw` is
- * `undefined` when the bytes were already counted against a sibling record produced by
- * chunk expansion, so this doubles as the "don't double-count" guard for that contract.
+ * UTF-8 byte length of the JSON encoding, counting a value `JSON.stringify` drops
+ * (`undefined`, a function, a symbol) as zero bytes. `record.raw` is `undefined` when the
+ * bytes were already counted against a sibling record produced by chunk expansion, so this
+ * doubles as the "don't double-count" guard for that contract. A value `JSON.stringify`
+ * *throws* on — a circular `raw`, a BigInt — propagates; it is not silently zero.
+ *
+ * `TextEncoder` rather than `json.length`: `String.length` counts UTF-16 code units, so a
+ * CJK codepoint would report 1 for 3 bytes on the wire and an emoji 2 for 4. These numbers
+ * exist to diagnose payload size and proxy buffering, and a Japanese conversation
+ * under-reporting its transfer by ~2.5x would make them worse than no number at all.
  */
 function byteLength(value: unknown): number {
   const json = JSON.stringify(value);
-  return json === undefined ? 0 : json.length;
+  return json === undefined ? 0 : new TextEncoder().encode(json).length;
 }
 
 function pushTime(map: Map<string, number[]>, key: string, tMs: number): void {
