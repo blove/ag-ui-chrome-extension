@@ -2848,7 +2848,16 @@ const ID_KEYS = ['messageId', 'toolCallId', 'runId', 'threadId'] as const;
 /** A bare name or label that reads better unquoted. */
 const NAME_KEYS = ['toolCallName', 'stepName', 'activityType', 'role'] as const;
 /** The payload itself. Quoted when it is text, compact JSON otherwise. */
-const VALUE_KEYS = ['delta', 'content', 'message', 'reason', 'result', 'value', 'snapshot', 'args'] as const;
+const VALUE_KEYS = [
+  'delta',
+  'content',
+  'message',
+  'reason',
+  'result',
+  'value',
+  'snapshot',
+  'args',
+] as const;
 
 /**
  * One-line summary of an event for a list row, e.g. `m_1 · "Hello"` — never longer than 80
@@ -2900,7 +2909,9 @@ function renderValue(value: unknown): string {
   // own repair, so this is the one pre-slice that cannot strand a surrogate. Verified by the
   // offset sweep in the tests, which covers this branch too.
   if (typeof value === 'string') return `"${collapse(value).slice(0, MAX_SUMMARY_CHARS)}"`;
-  if (value === null || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
   try {
     // `STATE_DELTA.delta` is an array of patch ops, not text, so the value branch has to
     // cope with structure as well as strings.
