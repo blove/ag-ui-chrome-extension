@@ -16,6 +16,25 @@ function keepaliveRecord(comment: string): CaptureRecord {
   return { kind: 'keepalive', seq: 1, tMs: 0, connId: 'c_1', raw: null, issues: [], comment };
 }
 
+/**
+ * True if any UTF-16 code unit is an unpaired surrogate — the thing that renders as a
+ * replacement box. Checks the whole string, not just the end: a part sliced mid-pair puts one
+ * in the middle of the row, where the trailing-only check would miss it.
+ */
+function hasLoneSurrogate(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      i += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 describe('formatDuration', () => {
   it('renders an em dash for undefined', () => {
     expect(formatDuration(undefined)).toBe('—');
@@ -170,6 +189,34 @@ describe('summarizeEvent', () => {
     expect(summary.endsWith('…')).toBe(true);
     const lastKept = summary.charCodeAt(summary.length - 2);
     expect(lastKept >= 0xd800 && lastKept <= 0xdbff).toBe(false);
+  });
+
+  /*
+   * `truncate` repairs a split surrogate pair, but it only runs when the text is *over* the
+   * cap. Each branch that pre-slices its own part to exactly 80 units lands on
+   * `text.length <= max` and returns early, so the repair never sees it. Sweeping the emoji
+   * across the cap is what distinguishes "the one branch we thought about" from "every branch".
+   */
+  it('never leaves a lone surrogate at any emoji offset, in any branch', () => {
+    const payload = (n: number): string => `${'a'.repeat(n)}😀😀`;
+    const shapes: Record<string, (text: string) => CaptureRecord> = {
+      string: (text) => eventRecord({ type: 'TEXT_MESSAGE_CONTENT', delta: text }),
+      id: (text) => eventRecord({ type: 'TEXT_MESSAGE_START', messageId: text }),
+      name: (text) => eventRecord({ type: 'TOOL_CALL_START', toolCallName: text }),
+      jsonArray: (text) => eventRecord({ type: 'STATE_DELTA', delta: [{ op: 'add', path: '/a', value: text }] }),
+      jsonObject: (text) => eventRecord({ type: 'STATE_SNAPSHOT', snapshot: { t: text } }),
+      keepalive: (text) => keepaliveRecord(text),
+    };
+
+    const broken: string[] = [];
+    for (const [shape, make] of Object.entries(shapes)) {
+      for (let n = 0; n <= 120; n += 1) {
+        const summary = summarizeEvent(make(payload(n)));
+        if (summary.length > 80) broken.push(`${shape} n=${n}: ${summary.length} chars`);
+        if (hasLoneSurrogate(summary)) broken.push(`${shape} n=${n}: lone surrogate`);
+      }
+    }
+    expect(broken).toEqual([]);
   });
 
   it('survives a payload that cannot be serialized', () => {

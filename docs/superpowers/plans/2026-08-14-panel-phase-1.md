@@ -2544,6 +2544,25 @@ function keepaliveRecord(comment: string): CaptureRecord {
   return { kind: 'keepalive', seq: 1, tMs: 0, connId: 'c_1', raw: null, issues: [], comment };
 }
 
+/**
+ * True if any UTF-16 code unit is an unpaired surrogate — the thing that renders as a
+ * replacement box. Checks the whole string, not just the end: a part sliced mid-pair puts one
+ * in the middle of the row, where the trailing-only check would miss it.
+ */
+function hasLoneSurrogate(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      i += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 describe('formatDuration', () => {
   it('renders an em dash for undefined', () => {
     expect(formatDuration(undefined)).toBe('—');
@@ -2700,6 +2719,34 @@ describe('summarizeEvent', () => {
     expect(lastKept >= 0xd800 && lastKept <= 0xdbff).toBe(false);
   });
 
+  /*
+   * `truncate` repairs a split surrogate pair, but it only runs when the text is *over* the
+   * cap. Each branch that pre-slices its own part to exactly 80 units lands on
+   * `text.length <= max` and returns early, so the repair never sees it. Sweeping the emoji
+   * across the cap is what distinguishes "the one branch we thought about" from "every branch".
+   */
+  it('never leaves a lone surrogate at any emoji offset, in any branch', () => {
+    const payload = (n: number): string => `${'a'.repeat(n)}😀😀`;
+    const shapes: Record<string, (text: string) => CaptureRecord> = {
+      string: (text) => eventRecord({ type: 'TEXT_MESSAGE_CONTENT', delta: text }),
+      id: (text) => eventRecord({ type: 'TEXT_MESSAGE_START', messageId: text }),
+      name: (text) => eventRecord({ type: 'TOOL_CALL_START', toolCallName: text }),
+      jsonArray: (text) => eventRecord({ type: 'STATE_DELTA', delta: [{ op: 'add', path: '/a', value: text }] }),
+      jsonObject: (text) => eventRecord({ type: 'STATE_SNAPSHOT', snapshot: { t: text } }),
+      keepalive: (text) => keepaliveRecord(text),
+    };
+
+    const broken: string[] = [];
+    for (const [shape, make] of Object.entries(shapes)) {
+      for (let n = 0; n <= 120; n += 1) {
+        const summary = summarizeEvent(make(payload(n)));
+        if (summary.length > 80) broken.push(`${shape} n=${n}: ${summary.length} chars`);
+        if (hasLoneSurrogate(summary)) broken.push(`${shape} n=${n}: lone surrogate`);
+      }
+    }
+    expect(broken).toEqual([]);
+  });
+
   it('survives a payload that cannot be serialized', () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;
@@ -2792,9 +2839,9 @@ export function summarizeEvent(record: CaptureRecord): string {
 
   const parts: string[] = [];
   const id = pickString(event, ID_KEYS);
-  if (id !== undefined) parts.push(collapse(id).slice(0, MAX_SUMMARY_CHARS));
+  if (id !== undefined) parts.push(sliceUnits(collapse(id), MAX_SUMMARY_CHARS));
   const name = pickString(event, NAME_KEYS);
-  if (name !== undefined) parts.push(collapse(name).slice(0, MAX_SUMMARY_CHARS));
+  if (name !== undefined) parts.push(sliceUnits(collapse(name), MAX_SUMMARY_CHARS));
   const value = pickValue(event, VALUE_KEYS);
   if (value !== undefined) {
     const rendered = renderValue(value);
@@ -2821,6 +2868,9 @@ function pickValue(event: AguiEvent, keys: readonly string[]): unknown {
 }
 
 function renderValue(value: unknown): string {
+  // The quotes push a full-length string part to 82 units, past the cap and into `truncate`'s
+  // own repair, so this is the one pre-slice that cannot strand a surrogate. Verified by the
+  // offset sweep in the tests, which covers this branch too.
   if (typeof value === 'string') return `"${collapse(value).slice(0, MAX_SUMMARY_CHARS)}"`;
   if (value === null || typeof value === 'number' || typeof value === 'boolean') return String(value);
   try {
@@ -2828,7 +2878,7 @@ function renderValue(value: unknown): string {
     // cope with structure as well as strings.
     const json = JSON.stringify(value);
     if (json === undefined) return '';
-    return collapse(json).slice(0, MAX_SUMMARY_CHARS);
+    return sliceUnits(collapse(json), MAX_SUMMARY_CHARS);
   } catch {
     // Circular structures reach here; a summary is never worth throwing over.
     return '[unserializable]';
@@ -2838,6 +2888,20 @@ function renderValue(value: unknown): string {
 /** Newlines and runs of whitespace would break the single-line row. */
 function collapse(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * `slice(0, max)` that refuses to cut a surrogate pair in half.
+ *
+ * Every branch that caps its own part before the parts are joined needs this: a part that
+ * lands on exactly `max` units makes the joined text exactly `max` long, `truncate` returns
+ * early on `text.length <= max`, and its repair never runs — so a half emoji reaches the row
+ * and renders as a replacement box.
+ */
+function sliceUnits(text: string, max: number): string {
+  const cut = text.slice(0, max);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
 function truncate(text: string, max: number): string {
@@ -2853,7 +2917,7 @@ function truncate(text: string, max: number): string {
 - [ ] **Step 19: Run test to verify it passes**
 
 Run: `pnpm vitest run src/panel/common/format.test.ts`
-Expected: PASS, 26 tests.
+Expected: PASS, 27 tests.
 
 - [ ] **Step 20: Commit**
 
@@ -8233,10 +8297,20 @@ task text above. Per-section `## Contract gaps` notes are preserved as authored.
   request — but it means a user who scrolls away and clicks the *same* row again gets no scroll.
   **Tasks 7 and 8 need a nonce or an imperative handle** if re-scroll-to-same-index is wanted, which
   for a click-to-locate interaction it probably is.
-- `summarizeEvent` can end in a lone UTF-16 surrogate when a structured payload's collapsed JSON
-  lands at exactly the 80-char cap with an emoji at that offset — it renders as a replacement box.
-  The string branch is safe because its quotes push it past the cap into `truncate`'s surrogate
-  repair. Narrow enough to leave, recorded so it is not rediscovered as a mystery.
+- ~~`summarizeEvent` can end in a lone UTF-16 surrogate when a structured payload's collapsed JSON
+  lands at exactly the 80-char cap.~~ **FIXED, and the original note was under-scoped.** It read as
+  a JSON-branch-only quirk; it was not. `summarizeEvent` pre-sliced at *three* sites — the `id` part,
+  the `name` part, and the JSON value — and each one cuts blind at 80 UTF-16 units. When a part
+  lands on exactly 80, the joined text is exactly 80, `truncate` returns early on
+  `text.length <= max`, and its surrogate repair never runs. A sweep of emoji offsets 0–120 across
+  six payload shapes found 8 failures in those three branches (`id` and `name` at n=77,79; the two
+  JSON shapes at their own offsets) — the `id`/`name` cases being exactly what an
+  "it's just the JSON branch" note would have let someone rediscover as a mystery.
+  All three sites now go through a `sliceUnits` helper that refuses to cut a pair in half.
+  The **string** branch is genuinely safe and deliberately left alone: its quotes push a
+  full-length part to 82 units, past the cap and into `truncate`'s own repair. The offset sweep
+  in `format.test.ts` covers it anyway, and asserts on the whole string rather than just its
+  end, since a part sliced mid-pair strands a surrogate in the *middle* of the row.
 
 ## Carried forward from the Task 1–4 review
 

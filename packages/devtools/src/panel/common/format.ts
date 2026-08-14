@@ -83,9 +83,9 @@ export function summarizeEvent(record: CaptureRecord): string {
 
   const parts: string[] = [];
   const id = pickString(event, ID_KEYS);
-  if (id !== undefined) parts.push(collapse(id).slice(0, MAX_SUMMARY_CHARS));
+  if (id !== undefined) parts.push(sliceUnits(collapse(id), MAX_SUMMARY_CHARS));
   const name = pickString(event, NAME_KEYS);
-  if (name !== undefined) parts.push(collapse(name).slice(0, MAX_SUMMARY_CHARS));
+  if (name !== undefined) parts.push(sliceUnits(collapse(name), MAX_SUMMARY_CHARS));
   const value = pickValue(event, VALUE_KEYS);
   if (value !== undefined) {
     const rendered = renderValue(value);
@@ -112,6 +112,9 @@ function pickValue(event: AguiEvent, keys: readonly string[]): unknown {
 }
 
 function renderValue(value: unknown): string {
+  // The quotes push a full-length string part to 82 units, past the cap and into `truncate`'s
+  // own repair, so this is the one pre-slice that cannot strand a surrogate. Verified by the
+  // offset sweep in the tests, which covers this branch too.
   if (typeof value === 'string') return `"${collapse(value).slice(0, MAX_SUMMARY_CHARS)}"`;
   if (value === null || typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
@@ -121,7 +124,7 @@ function renderValue(value: unknown): string {
     // cope with structure as well as strings.
     const json = JSON.stringify(value);
     if (json === undefined) return '';
-    return collapse(json).slice(0, MAX_SUMMARY_CHARS);
+    return sliceUnits(collapse(json), MAX_SUMMARY_CHARS);
   } catch {
     // Circular structures reach here; a summary is never worth throwing over.
     return '[unserializable]';
@@ -131,6 +134,20 @@ function renderValue(value: unknown): string {
 /** Newlines and runs of whitespace would break the single-line row. */
 function collapse(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * `slice(0, max)` that refuses to cut a surrogate pair in half.
+ *
+ * Every branch that caps its own part before the parts are joined needs this: a part that
+ * lands on exactly `max` units makes the joined text exactly `max` long, `truncate` returns
+ * early on `text.length <= max`, and its repair never runs — so a half emoji reaches the row
+ * and renders as a replacement box.
+ */
+function sliceUnits(text: string, max: number): string {
+  const cut = text.slice(0, max);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
 function truncate(text: string, max: number): string {
