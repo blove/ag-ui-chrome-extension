@@ -49,6 +49,11 @@ Every module with behaviour has a sibling `*.test.ts(x)` written **before** it.
 
 - Commands run from `packages/devtools/` unless a step says otherwise.
 - Pure-logic tests carry a `// @vitest-environment node` docblock; everything else runs in jsdom.
+- **Never write the string `@vitest-environment` in prose.** Vitest scans a test file's first
+  comment for the directive and does not care that it appears inside an explanatory sentence. A
+  header comment saying "this file does *not* use `@vitest-environment node`" silently runs the
+  file in node — found the hard way in Task 2, where it cost five `document is not defined`
+  failures in a jsdom test.
 - Tests query by role and accessible name. Class names are not a contract.
 - `noUncheckedIndexedAccess` is on and test files are typechecked — `.at(-1)`, never `[length - 1]`.
 - `src/core/**` is not modified by this plan and stays behind its lint fence.
@@ -69,7 +74,7 @@ ends with verification commands rather than a TDD loop.
 - Test: `packages/devtools/src/panel/test-setup.test.tsx`
 
 Versions confirmed with `npm view` on 2026-08-14: `@testing-library/preact` **3.2.4**
-(peer `preact: >=10`, satisfied by the installed `preact 10.29.8`), `jsdom` **30.0.1**.
+(peer `preact: >=10`, satisfied by the installed `preact 10.29.8`), `jsdom` **29.1.1** — NOT 30.x. jsdom 30 requires Node `^22.22.2 || ^24.15.0 || >=26.0.0`, and with the repo's `engine-strict=true` that is a hard `ERR_PNPM_UNSUPPORTED_ENGINE` install failure on Node 22.14. jsdom 29.1.1 accepts `^22.13.0` and works in both local and CI.
 
 Vitest API confirmed against the **installed** `vitest@4.1.10`, not assumed: `node_modules/vitest/
 dist/chunks/reporters.d.DtoKVV2s.d.ts:2859` declares `projects?: TestProjectConfiguration[]` on
@@ -81,7 +86,7 @@ There is no `workspace` key in 4.1.10. Both project shapes below were executed e
 Run:
 
 ```
-pnpm --filter ag-ui-devtools add -D @testing-library/preact@^3.2.4 jsdom@^30.0.1
+pnpm --filter ag-ui-devtools add -D @testing-library/preact@^3.2.4 jsdom@^29.1.1
 ```
 
 Resulting `packages/devtools/package.json`:
@@ -118,7 +123,7 @@ Resulting `packages/devtools/package.json`:
     "@types/node": "^22.20.1",
     "eslint": "^9.39.5",
     "globals": "^17.11.0",
-    "jsdom": "^30.0.1",
+    "jsdom": "^29.1.1",
     "tsx": "^4.19.2",
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.67.0",
@@ -314,7 +319,7 @@ Expected: both clean, no output beyond the command echo.
 `npx vitest run --config <scratch>/vitest.repo-core.config.ts --project core` (a config outside the
 tree, so nothing in the repo was modified), printing exactly `Test Files 18 passed (18)` /
 `Tests 355 passed (355)`. The panel project, `test-setup.ts`, and `test-setup.test.tsx` were run in
-a scratch package with the real `jsdom@30.0.1` + `@testing-library/preact@3.2.4` installed:
+a scratch package with the real `jsdom@29.1.1` + `@testing-library/preact@3.2.4` installed:
 `Test Files 1 passed (1)` / `Tests 4 passed (4)`. `tsc --noEmit` under a copy of
 `tsconfig.base.json` (`noUncheckedIndexedAccess` on, `types: ["chrome","node"]`) and `eslint` under
 an equivalent flat config both came back clean.
@@ -345,6 +350,7 @@ git commit -m "test: split vitest into core (node) and panel (jsdom) projects"
 `packages/devtools/src/panel/model/store.test.ts`:
 
 ```ts
+// @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
 import type { CaptureRecord, Run } from '../../core/model/types';
 import { initialPanelState, type PanelState } from './panel-types';
@@ -6678,9 +6684,10 @@ Expected: FAIL with `Error: Failed to resolve import "./capture-status" from "sr
 
 - [ ] **Step 13: Write the implementation**
 
-`packages/devtools/src/panel/model/use-panel-state.ts` — the subscription hook every store-reading
-component needs. It is not in the locked contract; see `## Contract gaps`. If another section has
-already created this file, keep one copy.
+`packages/devtools/src/panel/model/use-panel-state.ts` — **already created in Task 2** (appendix
+R1). Four sections independently invented this hook because the contract forgot it; it is
+consolidated into Task 2 and imported here. Do NOT recreate it — this block is reproduced only so
+the file's contents are visible in context.
 
 ```ts
 import { useEffect, useState } from 'preact/hooks';
@@ -8151,13 +8158,31 @@ task text above. Per-section `## Contract gaps` notes are preserved as authored.
 | R3 | `initialPanelState().capture` was unspecified | `{ kind: 'unsupported' }` — phase 1 ships no capture layer. Pinned by a test. |
 | R4 | **`CaptureRecord.issues` is always empty on the import path.** The run builder attaches issues to the *run*, and `loadJsonl` returns the records it fed in | `issuesBySeq` is the **only** authoritative source for row annotation and `issuesOnly` filtering. A component rendering from `record.issues` would silently show nothing. Stated in Task 3 and honoured in Task 7. |
 | R5 | "Serialized record" was ambiguous for the text filter | The filter matches the **event payload** (or `keepalive <comment>`), not `JSON.stringify(record)` — otherwise typing `5` matches every record with a 5 in its timestamp. |
-| R6 | `decodeErrors` had no home in `PanelState`; no action committed a successful load | `PanelState` gains `decodeErrors: string[]`, and `store.ts` gains `applyLoaded(state, loaded, filename, importedAtMs)`. A partially-decoded file must never look clean. |
+| R6 | `decodeErrors` had no home in `PanelState`; no action committed a successful load | **CORRECTED during execution.** This row originally called for `PanelState.decodeErrors: string[]` and for `applyLoaded` to live in `store.ts` (Task 2). Both are wrong. `applyLoaded` imports `LoadedCapture` from `load-jsonl`, which Task 4 creates — writing it in Task 2 fails `typecheck` outright, or forces a duplicate type declaration. And the plan body already solves the visibility requirement without a new field: `DropZone` shows the failing lines at import time, and `applyLoaded` writes a one-line summary into `loadError` so the incompleteness survives leaving the tab. A `decodeErrors` field would be dead on arrival, since every specified consumer reads `loadError`. **Resolution: `applyLoaded` stays in `src/panel/import/apply-loaded.ts` (Task 9); no `decodeErrors` field is added.** The requirement — a partially-decoded file must never look clean — is met either way. |
 | R7 | Pure-logic tests under `src/panel/**` would run in jsdom | `// @vitest-environment node` docblock per file. Verified honoured by Vitest 4. |
 | R8 | `VirtualListProps.overscan` had no default; `follow` ownership was unspecified | Default `4`. `VirtualList` owns pinned-ness internally — `follow` is a capability switch, not a live pinned flag — so the store needs no field. |
 | R9 | **Design §3 says hovering a waterfall bar highlights the corresponding events. Delivered as click, not hover** | Cross-component highlighting needs a `hoveredSeqs` field in `PanelState`, and writing hover into the store on every mousemove re-renders the panel. Hover applies local emphasis to the bar; **clicking** calls `selectSeq`, which the list already reacts to. This is a deliberate partial delivery of the design — recorded, not hidden. |
 | R10 | `EventList` needs a viewport height `VirtualList` does not derive | Measures its container with `ResizeObserver`, falling back to 480px. jsdom has neither, hence the fallback. |
 | R11 | Reading fixtures in jsdom throws `ENOENT` with the `readFileSync(new URL(...))` pattern `integration.test.ts` uses | Panel tests use Vite's `?raw` import. Any future jsdom test touching fixtures needs the same. |
 | R12 | Compound rows produced accessible names with no separators (`1RUN_STARTEDr_bad`), breaking `getByRole({ name })` | Rows and bars carry an explicit `aria-label`. Applies to `EventList` rows, waterfall bars, and `RunSelector` rows. |
+
+## Carried forward from the Task 1–4 review
+
+Both confirmed empirically against real fixtures. Neither is a defect; both will be visible in
+tasks that have not been built yet, so they are recorded where those tasks will find them.
+
+- **Filter changes deliberately do NOT clear `selectedSeq`.** `selectScope` guards the selection
+  against falling outside the new scope, but `setTextFilter` and `toggleIssuesOnly` do not — so
+  `selectedRecord()` can return a record that `visibleRecords()` no longer contains. That is the
+  right trade (losing your selection mid-keystroke is worse than a stale detail pane), but **Task 7's
+  detail pane must tolerate a selected-but-filtered-out record** rather than assuming the selection
+  is always visible in the list.
+- **The issue badge and the event list can legitimately disagree, by exactly the keepalive count.**
+  A `keepalive-gap` issue carries a `runId`, so under a run scope it counts toward
+  `issueCounts().total`, while `visibleRecords()` can never show its row — keepalives never enter
+  `Run.recordSeqs`. Measured: with a >15s gap and `issuesOnly` on, the badge reads 2 and the list
+  shows 1. **Task 6 must not present the badge as a count of visible rows.** This is plan open item
+  4 surfacing early; it becomes common once capture lands.
 
 ## Deferred deliberately, with reasons
 
