@@ -80,8 +80,13 @@ export default tseslint.config(
       'no-restricted-syntax': [
         'error',
         {
-          selector: "MemberExpression[object.name='globalThis']",
-          message: 'globalThis.* bypasses the core/ boundary. Reference nothing host-specific from core/.',
+          // Ban the identifier outright rather than `MemberExpression[object.name=...]`.
+          // The member-expression form catches `globalThis.chrome` and `globalThis['chrome']`
+          // but NOT `(globalThis as SomeType).chrome`, because the cast wraps the identifier
+          // in a TSAsExpression and the selector no longer matches. core/ has no legitimate
+          // use for globalThis, so banning every reference is both simpler and airtight.
+          selector: "Identifier[name='globalThis']",
+          message: 'globalThis bypasses the core/ boundary. Reference nothing host-specific from core/.',
         },
       ],
     },

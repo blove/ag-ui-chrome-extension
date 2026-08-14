@@ -10281,6 +10281,13 @@ them. Each was verified empirically before being adopted.
 | A9 | Task 2's core boundary also bans `self`, `navigator`, `fetch`, `sessionStorage`, `location`; adds `no-restricted-imports` against `sw`/`relay`/`inject`/`panel`; adds `no-restricted-syntax` against `globalThis.*`; and widens `files` to `*.{ts,tsx}` | `no-restricted-globals` only matches bare identifiers. Verified holes: `globalThis.chrome.runtime.id`, `(self as any).chrome`, a type-only `chrome.runtime.Port`, bare `fetch`, and — most likely in practice — a plain `import` from a Chrome-facing sibling directory. Closing these before `core/` code lands is far cheaper than after. |
 | A10 | The generated event table gets a targeted rule override instead of a global `ignores` entry | A global ignore disabled *every* rule on the file. The override exempts it only from the boundary rules. |
 | A11 | Vitest `include` is `src/**/*.test.{ts,tsx}` | A `.tsx` component test would otherwise be silently skipped rather than failing. |
+| A12 | The `globalThis` ban is `Identifier[name='globalThis']`, not `MemberExpression[object.name='globalThis']` | The member-expression form catches `globalThis.chrome` and `globalThis['chrome']` but **not** `(globalThis as SomeType).chrome` — the cast wraps the identifier in a `TSAsExpression` and the selector stops matching. Verified all four forms; only the identifier-level ban catches every one. `core/` has no legitimate use for `globalThis`. |
+
+> **Authoritative source note.** Amendments A5–A12 changed Task 2's config files after that task
+> was committed. The inline code blocks in Task 2 above were **not** all retro-edited to match.
+> Where the plan text and the committed files under `packages/devtools/` disagree, **the committed
+> files are authoritative** and this amendment table explains why. Anyone replaying this plan from
+> scratch should apply the amendments as they go.
 
 Considered and deliberately **not** adopted: a `packageManager` integrity hash (pnpm/action-setup
 reads the version without it), and an upper bound on the `engines.node` range.
