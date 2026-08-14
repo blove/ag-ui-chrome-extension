@@ -297,3 +297,285 @@ describe('applyPatch — immutability', () => {
     expect(doc).toEqual({ a: 1 });
   });
 });
+
+describe('applyPatch — test', () => {
+  it('passes when the value is deeply equal', () => {
+    const doc = { a: { b: [1, { c: 2 }] } };
+    const result = applyPatch(doc, [
+      { op: 'test', path: '/a', value: { b: [1, { c: 2 }] } },
+    ]);
+    expect(result).toEqual({ ok: true, value: doc });
+  });
+
+  it('passes for scalars and null', () => {
+    const result = applyPatch({ a: null, b: false, c: 0 }, [
+      { op: 'test', path: '/a', value: null },
+      { op: 'test', path: '/b', value: false },
+      { op: 'test', path: '/c', value: 0 },
+    ]);
+    expect(result).toEqual({ ok: true, value: { a: null, b: false, c: 0 } });
+  });
+
+  it('tests the whole document at the empty path', () => {
+    const result = applyPatch({ a: 1 }, [{ op: 'test', path: '', value: { a: 1 } }]);
+    expect(result).toEqual({ ok: true, value: { a: 1 } });
+  });
+
+  it('fails with test-failed on a scalar mismatch', () => {
+    const result = applyPatch({ a: 1 }, [{ op: 'test', path: '/a', value: 2 }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'test', path: '/a', value: 2 },
+      reason: 'test-failed',
+    });
+  });
+
+  it('fails with test-failed on a deep mismatch', () => {
+    const result = applyPatch({ a: { b: [1, 2] } }, [
+      { op: 'test', path: '/a', value: { b: [1, 2, 3] } },
+    ]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'test', path: '/a', value: { b: [1, 2, 3] } },
+      reason: 'test-failed',
+    });
+  });
+
+  it('distinguishes an array from an object with numeric keys', () => {
+    const result = applyPatch({ a: [1] }, [{ op: 'test', path: '/a', value: { 0: 1 } }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'test', path: '/a', value: { 0: 1 } },
+      reason: 'test-failed',
+    });
+  });
+
+  it('fails with path-not-found when the tested key is absent', () => {
+    const result = applyPatch({ a: 1 }, [{ op: 'test', path: '/b', value: 1 }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'test', path: '/b', value: 1 },
+      reason: 'path-not-found',
+    });
+  });
+});
+
+describe('applyPatch — move', () => {
+  it('moves an object key', () => {
+    const result = applyPatch({ a: 1, b: { } }, [
+      { op: 'move', path: '/b/a', from: '/a' },
+    ]);
+    expect(result).toEqual({ ok: true, value: { b: { a: 1 } } });
+  });
+
+  it('reorders an array element', () => {
+    const result = applyPatch({ list: ['a', 'b', 'c'] }, [
+      { op: 'move', path: '/list/0', from: '/list/2' },
+    ]);
+    expect(result).toEqual({ ok: true, value: { list: ['c', 'a', 'b'] } });
+  });
+
+  it('does not mutate the source document', () => {
+    const doc = { a: { n: 1 }, b: {} };
+    const result = applyPatch(doc, [{ op: 'move', path: '/b/a', from: '/a' }]);
+    expect(result).toEqual({ ok: true, value: { b: { a: { n: 1 } } } });
+    expect(doc).toEqual({ a: { n: 1 }, b: {} });
+  });
+
+  it('fails with path-not-found when the source is absent', () => {
+    const result = applyPatch({ a: 1 }, [{ op: 'move', path: '/b', from: '/zzz' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'move', path: '/b', from: '/zzz' },
+      reason: 'path-not-found',
+    });
+  });
+
+  it('fails with invalid-path when moving the whole document', () => {
+    const result = applyPatch({ a: 1 }, [{ op: 'move', path: '/b', from: '' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'move', path: '/b', from: '' },
+      reason: 'invalid-path',
+    });
+  });
+
+  it('fails with invalid-path when moving a value into its own descendant', () => {
+    const result = applyPatch({ a: { b: {} } }, [
+      { op: 'move', path: '/a/b/c', from: '/a' },
+    ]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'move', path: '/a/b/c', from: '/a' },
+      reason: 'invalid-path',
+    });
+  });
+
+  it('fails with invalid-path when the source pointer is malformed', () => {
+    const result = applyPatch({ a: 1 }, [{ op: 'move', path: '/b', from: 'a' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'move', path: '/b', from: 'a' },
+      reason: 'invalid-path',
+    });
+  });
+});
+
+describe('applyPatch — copy', () => {
+  it('copies an object key, leaving the source in place', () => {
+    const result = applyPatch({ a: 1, b: {} }, [
+      { op: 'copy', path: '/b/a', from: '/a' },
+    ]);
+    expect(result).toEqual({ ok: true, value: { a: 1, b: { a: 1 } } });
+  });
+
+  it('copies into an array', () => {
+    const result = applyPatch({ list: ['a'], src: 'z' }, [
+      { op: 'copy', path: '/list/-', from: '/src' },
+    ]);
+    expect(result).toEqual({ ok: true, value: { list: ['a', 'z'], src: 'z' } });
+  });
+
+  it('copies over the whole document', () => {
+    const result = applyPatch({ a: { n: 1 } }, [{ op: 'copy', path: '', from: '/a' }]);
+    expect(result).toEqual({ ok: true, value: { n: 1 } });
+  });
+
+  it('does not mutate the source document', () => {
+    const doc = { a: { n: 1 }, b: {} };
+    const result = applyPatch(doc, [
+      { op: 'copy', path: '/b/a', from: '/a' },
+      { op: 'replace', path: '/b/a/n', value: 2 },
+    ]);
+    expect(result).toEqual({ ok: true, value: { a: { n: 1 }, b: { a: { n: 2 } } } });
+    expect(doc).toEqual({ a: { n: 1 }, b: {} });
+  });
+
+  it('fails with index-out-of-bounds when the source index is absent', () => {
+    const result = applyPatch({ list: ['a'], b: {} }, [
+      { op: 'copy', path: '/b/x', from: '/list/4' },
+    ]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'copy', path: '/b/x', from: '/list/4' },
+      reason: 'index-out-of-bounds',
+    });
+  });
+
+  it('fails with parent-not-found when the source parent is absent', () => {
+    const result = applyPatch({ a: 1 }, [{ op: 'copy', path: '/b', from: '/zzz/deep' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'copy', path: '/b', from: '/zzz/deep' },
+      reason: 'parent-not-found',
+    });
+  });
+});
+
+describe('applyPatch — invalid-op', () => {
+  it('fails with invalid-op for an unrecognized op string', () => {
+    const ops = [{ op: 'frobnicate', path: '/a', value: 1 }];
+    const result = applyPatch({ a: 1 }, ops);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'frobnicate', path: '/a', value: 1 },
+      reason: 'invalid-op',
+    });
+  });
+
+  it('fails with invalid-op when op is missing entirely', () => {
+    const ops = [{ path: '/a', value: 1 }];
+    const result = applyPatch({ a: 1 }, ops);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { path: '/a', value: 1 },
+      reason: 'invalid-op',
+    });
+  });
+
+  it('fails with invalid-op for an op that is not an object', () => {
+    const ops = ['add'];
+    const result = applyPatch({ a: 1 }, ops);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: 'add',
+      reason: 'invalid-op',
+    });
+  });
+
+  it('reports invalid-op before evaluating the path', () => {
+    const ops = [{ op: 'FROB', path: 'not-a-pointer' }];
+    const result = applyPatch({ a: 1 }, ops);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.reason).toBe('invalid-op');
+  });
+});
+
+describe('applyPatch — failure positioning', () => {
+  it('reports opIndex 2 when the third operation fails and returns no partial value', () => {
+    const doc = { a: 1, list: ['x'] };
+    const ops: PatchOp[] = [
+      { op: 'add', path: '/b', value: 2 },
+      { op: 'replace', path: '/a', value: 10 },
+      { op: 'remove', path: '/missing' },
+      { op: 'add', path: '/c', value: 3 },
+    ];
+
+    const result = applyPatch(doc, ops);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.opIndex).toBe(2);
+    expect(result.op).toEqual({ op: 'remove', path: '/missing' });
+    expect(result.reason).toBe('path-not-found');
+    expect(Object.prototype.hasOwnProperty.call(result, 'value')).toBe(false);
+    expect(doc).toEqual({ a: 1, list: ['x'] });
+  });
+
+  it('carries the exact failing op object through in `op`', () => {
+    const ops: PatchOp[] = [
+      { op: 'test', path: '/a', value: 1 },
+      { op: 'test', path: '/a', value: 2 },
+    ];
+    const result = applyPatch({ a: 1 }, ops);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.opIndex).toBe(1);
+    expect(result.op).toBe(ops[1]);
+  });
+
+  it('stops at the first failure even when a later operation would also fail', () => {
+    const ops: PatchOp[] = [
+      { op: 'remove', path: '/one' },
+      { op: 'remove', path: '/two' },
+    ];
+    const result = applyPatch({}, ops);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.opIndex).toBe(0);
+  });
+
+  it('reports opIndex 0 for a single failing operation', () => {
+    const result = applyPatch({}, [{ op: 'test', path: '', value: { a: 1 } }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'test', path: '', value: { a: 1 } },
+      reason: 'test-failed',
+    });
+  });
+});

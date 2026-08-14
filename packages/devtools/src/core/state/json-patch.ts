@@ -65,6 +65,37 @@ function parseIndex(token: string): number | null {
   return Number(token);
 }
 
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (isRecord(a) && isRecord(b)) {
+    const aKeys = Object.keys(a);
+    if (aKeys.length !== Object.keys(b).length) return false;
+    for (const key of aKeys) {
+      if (!hasOwn(b, key)) return false;
+      if (!deepEqual(a[key], b[key])) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+/** True when `prefix` addresses a strict ancestor of `full`. */
+function isStrictAncestor(prefix: readonly string[], full: readonly string[]): boolean {
+  if (full.length <= prefix.length) return false;
+  for (let i = 0; i < prefix.length; i++) {
+    if (prefix[i] !== full[i]) return false;
+  }
+  return true;
+}
+
 function terminalArray(arr: readonly unknown[], token: string, action: Terminal): OpOutcome {
   if (action.kind === 'add') {
     const next = arr.slice();
@@ -155,6 +186,31 @@ function applyAt(
   return { ok: false, reason: 'parent-not-found' };
 }
 
+/** Read the value at `tokens`, distinguishing a missing leaf from a missing parent. */
+function readAt(doc: unknown, tokens: readonly string[]): OpOutcome {
+  let current = doc;
+  // `entries()` rather than an index loop: it walks the same indices in the same order but
+  // yields `[number, string]` tuples, so the token needs neither `tokenAt` nor a default —
+  // the iteration itself is the proof that every index is in range.
+  for (const [depth, token] of tokens.entries()) {
+    if (Array.isArray(current)) {
+      const idx = parseIndex(token);
+      if (idx === null) return { ok: false, reason: 'invalid-path' };
+      if (idx >= current.length) return { ok: false, reason: 'index-out-of-bounds' };
+      current = current[idx];
+    } else if (isRecord(current)) {
+      if (!hasOwn(current, token)) {
+        const last = depth === tokens.length - 1;
+        return { ok: false, reason: last ? 'path-not-found' : 'parent-not-found' };
+      }
+      current = current[token];
+    } else {
+      return { ok: false, reason: 'parent-not-found' };
+    }
+  }
+  return { ok: true, value: current };
+}
+
 function applyOne(doc: unknown, op: PatchOp): OpOutcome {
   const tokens = parsePointer(op.path);
   if (tokens === null) return { ok: false, reason: 'invalid-path' };
@@ -163,12 +219,44 @@ function applyOne(doc: unknown, op: PatchOp): OpOutcome {
     case 'add':
       if (tokens.length === 0) return { ok: true, value: op.value };
       return applyAt(doc, tokens, 0, { kind: 'add', value: op.value });
+
     case 'replace':
       if (tokens.length === 0) return { ok: true, value: op.value };
       return applyAt(doc, tokens, 0, { kind: 'replace', value: op.value });
+
     case 'remove':
       if (tokens.length === 0) return { ok: false, reason: 'invalid-path' };
       return applyAt(doc, tokens, 0, { kind: 'remove' });
+
+    case 'test': {
+      const found = readAt(doc, tokens);
+      if (!found.ok) return found;
+      if (!deepEqual(found.value, op.value)) return { ok: false, reason: 'test-failed' };
+      return { ok: true, value: doc };
+    }
+
+    case 'copy': {
+      const fromTokens = parsePointer(op.from);
+      if (fromTokens === null) return { ok: false, reason: 'invalid-path' };
+      const found = readAt(doc, fromTokens);
+      if (!found.ok) return found;
+      if (tokens.length === 0) return { ok: true, value: found.value };
+      return applyAt(doc, tokens, 0, { kind: 'add', value: found.value });
+    }
+
+    case 'move': {
+      const fromTokens = parsePointer(op.from);
+      if (fromTokens === null) return { ok: false, reason: 'invalid-path' };
+      if (fromTokens.length === 0) return { ok: false, reason: 'invalid-path' };
+      if (isStrictAncestor(fromTokens, tokens)) return { ok: false, reason: 'invalid-path' };
+      const found = readAt(doc, fromTokens);
+      if (!found.ok) return found;
+      const removed = applyAt(doc, fromTokens, 0, { kind: 'remove' });
+      if (!removed.ok) return removed;
+      if (tokens.length === 0) return { ok: true, value: found.value };
+      return applyAt(removed.value, tokens, 0, { kind: 'add', value: found.value });
+    }
+
     default:
       return { ok: false, reason: 'invalid-op' };
   }
@@ -182,7 +270,8 @@ function applyOne(doc: unknown, op: PatchOp): OpOutcome {
  * operation fails as `invalid-op` with the raw value reported back in `op`.
  *
  * Operations are applied in order against the running document. The first failure aborts
- * the patch and reports its position via `opIndex`; no partial value is returned.
+ * the patch and reports its position via `opIndex`; no partial value is returned, so the
+ * caller can render the failure in place without a half-applied document.
  */
 export function applyPatch(doc: unknown, ops: readonly unknown[]): PatchResult {
   let current = doc;
