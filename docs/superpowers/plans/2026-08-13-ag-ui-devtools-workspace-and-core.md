@@ -35,7 +35,7 @@ Paths under `packages/devtools/` unless marked *(root)*.
 | `src/core/jsonl/codec.ts` | `.agui.jsonl` encode + tolerant streaming decode | 14 |
 | `src/core/jsonl/redact.ts` | Redaction groups, `«redacted: N chars»` | 15 |
 | `src/test/fixtures/*.agui.jsonl`, `src/test/integration.test.ts` | Golden streams; the three Done-when proofs | 16 |
-| `src/inject/index.ts`, `src/relay/index.ts`, `src/sw/index.ts`, `src/panel/devtools.ts`, `src/panel/panel.tsx` | Typed stubs so the extension loads; capture lands next milestone | 17 |
+| `src/inject/index.ts`, `src/relay/relay.ts`, `src/sw/index.ts`, `src/panel/devtools.ts`, `src/panel/panel.tsx` | Typed stubs so the extension loads; capture lands next milestone | 17 |
 | `.github/workflows/ci.yml` *(root)*, `README.md` *(root)*, `scripts/package.ts` | CI, docs, versioned zip artifact | 18 |
 
 Every `src/core/**` module has a sibling `*.test.ts` written **before** the implementation.
@@ -97,13 +97,23 @@ consumer of `core/` (a CLI, a VS Code panel) can be added later without restruct
     "dev": "pnpm -r dev",
     "build": "pnpm -r build",
     "package": "pnpm -r package",
-    "test": "pnpm -r test",
+    "test": "pnpm -r run test:ci",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "gen:events": "pnpm -r gen:events"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
   }
 }
 ```
+
+**Note on the `test` script.** pnpm special-cases `test` as a lifecycle script: `pnpm -r test`
+exits **0 with no output** when no package defines a `test` script, whereas every other name
+fails with `ERR_PNPM_RECURSIVE_RUN_NO_SCRIPT`. Since Task 18 wires CI to `run: pnpm test`, the
+lifecycle form would let CI report success having executed zero tests. The root therefore
+delegates to the non-lifecycle name `test:ci`, which Task 2 defines alongside a plain `test`
+for local use.
 
 - [ ] **Step 3: Create `tsconfig.base.json`**
 
@@ -115,7 +125,7 @@ panel package inherits them.
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "moduleDetection": "force",
@@ -165,12 +175,20 @@ SOFTWARE.
 
 `pnpm-lock.yaml` is deliberately absent from this list — the lockfile is committed.
 
+`*.crx` and `*.pem` matter more than they look: Chrome's "Pack extension" writes a `.pem`
+private signing key next to the source directory, and committing it would let anyone forge a
+CRX that Chrome accepts under this extension's ID.
+
 ```
 node_modules/
 dist/
 *.zip
+*.crx
+*.pem
 *.log
 .DS_Store
+.idea/
+*.swp
 .vite/
 coverage/
 .env
@@ -257,6 +275,7 @@ The `package` script is a placeholder here and is replaced in Task 18 by
     "build": "vite build",
     "package": "vite build && cd dist && zip -qr ../ag-ui-devtools-0.1.0.zip .",
     "test": "vitest run",
+    "test:ci": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
     "gen:events": "tsx scripts/gen-event-table.ts"
@@ -358,7 +377,7 @@ export default defineManifest({
     },
     {
       matches: LOCALHOST_MATCHES,
-      js: ['src/relay/index.ts'],
+      js: ['src/relay/relay.ts'],
       run_at: 'document_start',
       world: 'ISOLATED',
       all_frames: true,
@@ -451,6 +470,22 @@ export default tseslint.config(
           name: 'chrome',
           message:
             'core/ must stay Chrome-free. Move Chrome API usage to sw/, relay/, inject/, or panel/ and pass plain data into core/.',
+        },
+        // Amendment A5: tsconfig `lib` includes DOM (the panel needs it) and TypeScript
+        // cannot express a per-directory `lib`, so `document`/`window`/`localStorage`
+        // typecheck inside core/ even though core/ runs under Node in Vitest. ESLint is the
+        // only place this boundary can actually be enforced.
+        {
+          name: 'document',
+          message: 'core/ must run under Node. Keep DOM access in panel/, inject/, or relay/.',
+        },
+        {
+          name: 'window',
+          message: 'core/ must run under Node. Keep DOM access in panel/, inject/, or relay/.',
+        },
+        {
+          name: 'localStorage',
+          message: 'core/ must run under Node and must not persist anything. See requirements §11.',
         },
       ],
     },
@@ -595,7 +630,7 @@ git commit -m "chore: scaffold ag-ui-devtools package with CRXJS, Vitest, and co
    The spec's JSON literally reads `"service_worker": "sw.js"`, `"js": ["inject.js"]`,
    `"js": ["relay.js"]`, `"devtools_page": "devtools.html"`. CRXJS requires source paths at
    config time and emits the built names into `dist/manifest.json`, so `manifest.config.ts`
-   uses `src/sw/index.ts`, `src/inject/index.ts`, `src/relay/index.ts`, and
+   uses `src/sw/index.ts`, `src/inject/index.ts`, `src/relay/relay.ts`, and
    `src/panel/devtools.html`. Everything security-relevant (permissions, optional host
    permissions, match patterns, `world`, `run_at`, `all_frames`, absence of `debugger` and
    `webRequest`) is verbatim. The stub task must create files at exactly those four source
@@ -611,12 +646,12 @@ git commit -m "chore: scaffold ag-ui-devtools package with CRXJS, Vitest, and co
    `typescript-eslint@8.67.0`'s peer range is `eslint ^8.57.0 || ^9.0.0 || ^10.0.0` and
    `typescript >=4.8.4 <6.1.0`, both satisfied.
 
-3. **`gen:events` runner is unspecified by the contract.** This section wires it as
-   `node --experimental-strip-types scripts/gen-event-table.ts`, verified working on Node
-   22.14.0 (it prints an `ExperimentalWarning` on stderr, which is noise, not failure). If
-   Task 3's generator needs multi-file TS imports or non-erasable syntax, that task must
-   either keep the script single-file or add `tsx` as a devDependency and change this one
-   script line.
+3. ~~**`gen:events` runner is unspecified by the contract.**~~ **SUPERSEDED — see resolution R3
+   and the "RESOLVED AT ASSEMBLY" note earlier in this task.** This note originally proposed
+   `node --experimental-strip-types scripts/gen-event-table.ts`. The plan standardizes on
+   **`tsx`** for every `.ts` script entry point, and the authoritative `package.json` block in
+   this task's Step 1 already reads `"gen:events": "tsx scripts/gen-event-table.ts"`. Task 4
+   must use `tsx`. Do not reintroduce the experimental flag.
 
 4. **`pnpm test` and `pnpm build` fail at the end of Task 2**, by construction: no test
    files exist yet, and the manifest names four entry-point source files that the stub task
@@ -662,6 +697,15 @@ than the single exported constant `ORPHANED_RUN_ID`.
 /** Synthetic run id used for events that arrive with no open run. */
 export const ORPHANED_RUN_ID = '__orphaned__';
 
+/**
+ * A decoded protocol event. `type` stays a loose `string` on purpose: requirements §7
+ * says an unknown event type is a warning to be displayed, never an error, so the model
+ * must be able to hold a type this build has never heard of.
+ *
+ * Declare concrete event shapes as `type` aliases, not `interface`s — TypeScript derives
+ * an implicit index signature for aliases but not for interfaces, so an interface will
+ * not be assignable here.
+ */
 export type AguiEvent = { type: string; [key: string]: unknown };
 
 export type IssueSeverity = 'error' | 'warning' | 'info';
@@ -690,35 +734,141 @@ export type IssueCode =
   | 'keepalive-gap'
   | 'run-started-without-input';
 
+/**
+ * The severity requirements §7 assigns to each code. Issues are emitted from the chunk
+ * expander and from five separate rule modules, so this table is the single source of
+ * truth — every emitter reads it rather than restating a severity inline, which is what
+ * keeps them from drifting apart.
+ */
+export const ISSUE_SEVERITY: Record<IssueCode, IssueSeverity> = {
+  'event-before-run-started': 'error',
+  'event-after-terminal': 'error',
+  'run-never-terminated': 'error',
+  'empty-text-delta': 'error',
+  'unopened-message-id': 'error',
+  'unopened-tool-call-id': 'error',
+  'tool-result-before-end': 'error',
+  'tool-args-not-json': 'error',
+  'state-patch-failed': 'error',
+  'chunk-missing-message-id': 'error',
+  'chunk-missing-tool-call-id': 'error',
+  'chunk-missing-tool-call-name': 'error',
+  'shape-invalid': 'error',
+  'unbalanced-steps': 'warning',
+  'unclosed-message': 'warning',
+  'unclosed-tool-call': 'warning',
+  'deprecated-event': 'warning',
+  'unknown-event-type': 'warning',
+  'concurrent-text-messages': 'warning',
+  'delta-before-snapshot': 'warning',
+  'keepalive-gap': 'info',
+  'run-started-without-input': 'info',
+};
+
 export interface Issue {
   code: IssueCode;
   severity: IssueSeverity;
+  /** Human-readable annotation shown against the offending event in the panel. */
   message: string;
+  /**
+   * Sequence number this issue is anchored to.
+   *
+   * Usually the `seq` of the record being folded when the issue was raised. Four codes
+   * have no owning record — `run-never-terminated`, `unclosed-message`,
+   * `unclosed-tool-call`, and a leftover-open `unbalanced-steps`, all raised at
+   * connection close — and for those it is the seq of the LAST record attributed to the
+   * run, or `0` when the run recorded none. Derive that with `run.recordSeqs.at(-1) ?? 0`;
+   * indexing with `[length - 1]` is `number | undefined` under `noUncheckedIndexedAccess`
+   * and will not compile.
+   *
+   * `keepalive-gap` is NOT in that group: a keepalive is itself a `CaptureRecord`, so the
+   * issue anchors to the seq of the keepalive that closed the gap.
+   */
   seq: number;
+  /**
+   * Wall-clock offset for issues not anchored to a folded event: the close timestamp for
+   * the four connection-close codes, and the arrival time of the late keepalive for
+   * `keepalive-gap`.
+   */
+  tMs?: number;
   runId?: string;
   path?: string;
   opIndex?: number;
 }
 
-export interface CaptureRecord {
-  seq: number;
-  tMs: number;
-  connId: string;
-  raw: unknown;
-  event: AguiEvent | null;
+/**
+ * Build an `Issue` with the severity requirements §7 assigns to its code.
+ *
+ * This is the only sanctioned way to construct an `Issue`. `severity` stays a widened
+ * `IssueSeverity` on the interface — correlating it to `code` at the type level breaks the
+ * generic factory every emitter needs — so the guarantee that a code always carries its
+ * specified severity is upheld here rather than by the compiler.
+ */
+export function makeIssue(
+  code: IssueCode,
+  message: string,
+  seq: number,
+  extra: Partial<Pick<Issue, 'runId' | 'path' | 'opIndex' | 'tMs'>> = {},
+): Issue {
+  return { code, severity: ISSUE_SEVERITY[code], message, seq, ...extra };
+}
+
+interface CaptureRecordBase {
+  readonly seq: number;
+  readonly tMs: number;
+  readonly connId: string;
+  /**
+   * The frame exactly as received, never mutated. `undefined` means the bytes were
+   * already counted against a sibling record produced by chunk expansion, so metrics
+   * must not double-count them.
+   */
+  readonly raw: unknown;
   issues: Issue[];
 }
 
-export type MessageRole = 'assistant' | 'reasoning';
+/**
+ * One decoded frame off the wire.
+ *
+ * A discriminated union rather than a flag plus optional fields, so the invariants hold
+ * structurally: a keepalive can never carry an event, and an event record can never carry
+ * a comment. That is what stops metrics from counting a keepalive as an event —
+ * requirements §5.4 requires keepalives be recorded but excluded from the event count.
+ */
+export type CaptureRecord =
+  | (CaptureRecordBase & {
+      readonly kind: 'event';
+      /**
+       * The decoded event, or `null` when the payload could not be parsed — such a record
+       * is still surfaced and flagged rather than dropped.
+       */
+      readonly event: AguiEvent | null;
+    })
+  | (CaptureRecordBase & {
+      readonly kind: 'keepalive';
+      /** The SSE comment body. Empty string for a bare `:` heartbeat. */
+      readonly comment: string;
+    });
+
+/**
+ * How a reconstructed message was produced. Deliberately NOT named `role`: the protocol
+ * carries its own `role` field on `TEXT_MESSAGE_START` and `TOOL_CALL_RESULT` with
+ * different semantics, and conflating the two invites `kind: event.role`.
+ */
+export type MessageKind = 'text' | 'reasoning';
 
 export interface ReconstructedMessage {
   messageId: string;
-  role: MessageRole;
+  kind: MessageKind;
   content: string;
   startedAtMs: number;
   endedAtMs?: number;
   closed: boolean;
-  chunkSeqs: number[];
+  /**
+   * Seqs of the records that contributed content to this message. Named for content,
+   * not chunks: it collects every `*_MESSAGE_CONTENT` record, whether it arrived as a
+   * discrete CONTENT event or was synthesized by expanding a `*_CHUNK`.
+   */
+  contentSeqs: number[];
 }
 
 export interface ToolCallRecord {
@@ -736,6 +886,11 @@ export interface ToolCallRecord {
 }
 
 export interface ActivityRecord {
+  /**
+   * Composite key, built as `` `${messageId}#${activityType}` ``. AG-UI identifies an
+   * activity by both fields while this record carries a single string, so every producer
+   * and every lookup must compose it the same way.
+   */
   activityId: string;
   value: unknown;
   updatedAtMs: number;
@@ -764,18 +919,41 @@ export type PatchFailure =
   | 'test-failed'
   | 'index-out-of-bounds';
 
+/**
+ * `op` is deliberately `unknown` on the failure branch. A patch arrives off the wire, so
+ * the operation that failed may be a bare string, an object with no `op` key, or an `add`
+ * missing its `value` — none of which are representable as a `PatchOp`. Typing it as
+ * `PatchOp` would force every consumer to cast and would let a renderer read
+ * `result.op.path` and print `undefined`.
+ */
 export type PatchResult =
   | { ok: true; value: unknown }
-  | { ok: false; opIndex: number; op: PatchOp; reason: PatchFailure };
+  | { ok: false; opIndex: number; op: unknown; reason: PatchFailure };
 
-export interface StateFrame {
-  seq: number;
-  tMs: number;
-  kind: 'snapshot' | 'delta';
-  value: unknown;
-  patch?: PatchOp[];
-  failure?: { opIndex: number; reason: PatchFailure };
-}
+/**
+ * A real discriminated union rather than one `kind` field beside two independent
+ * optionals. A delta frame always carries the patch that produced it — that is what makes
+ * the State tab scrubbable — and a snapshot frame can never carry a patch failure.
+ *
+ * `value` is the document as it stands AFTER this frame. When `failure` is set the patch
+ * did not apply, so `value` is unchanged from the previous frame: state does not advance
+ * past a failed delta, but the frame is still retained so the scrubber can mark it.
+ */
+export type StateFrame =
+  | {
+      kind: 'snapshot';
+      seq: number;
+      tMs: number;
+      value: unknown;
+    }
+  | {
+      kind: 'delta';
+      seq: number;
+      tMs: number;
+      value: unknown;
+      patch: PatchOp[];
+      failure?: { opIndex: number; reason: PatchFailure };
+    };
 
 export interface RunMetrics {
   durationMs?: number;
@@ -815,6 +993,10 @@ export interface Run {
 }
 ```
 
+> This block is the file as committed, including amendments A14–A21 applied after the task
+> first landed. `packages/devtools/src/core/model/types.ts` remains the authoritative copy.
+
+
 - [ ] **Step 2: Run typecheck to verify it compiles**
 
 Run: `pnpm typecheck`
@@ -822,7 +1004,11 @@ Expected: PASS, no errors.
 
 - [ ] **Step 3: Verify the constant is actually emitted at runtime**
 
-Run: `pnpm vitest run --reporter=basic src/core/model 2>&1 | tail -5`
+Run: `pnpm vitest run src/core/model 2>&1 | tail -5`
+
+(Vitest 4 removed the `basic` reporter — its valid names are `default`, `agent`, `minimal`,
+`blob`, `verbose`, `dot`, `json`, `tap`, `tap-flat`, `junit`, `tree`, `hanging-process`,
+`github-actions`. Passing `--reporter=basic` fails with a startup error, so it is omitted here.)
 Expected: `No test files found` (there is intentionally no test for this file). This step
 only confirms the path glob is correct and no stray test file was created.
 
@@ -1703,13 +1889,11 @@ Expected: FAIL with `Failed to resolve import "./shape-check" from "src/core/eve
  * event table. Deliberately permissive about extra properties: an unrecognised
  * field is forward compatibility, not a bug.
  */
-import type { Issue } from '../model/types';
+import { makeIssue, type Issue } from '../model/types';
 import { getEventSpec, type FieldKind } from './table';
 
 function invalid(message: string, seq: number, path?: string): Issue {
-  const issue: Issue = { code: 'shape-invalid', severity: 'error', message, seq };
-  if (path !== undefined) issue.path = path;
-  return issue;
+  return makeIssue('shape-invalid', message, seq, path === undefined ? {} : { path });
 }
 
 /** Human-readable runtime type, used in the "got X" half of a message. */
@@ -1756,15 +1940,7 @@ export function checkShape(raw: unknown, seq: number): Issue[] {
 
   const spec = getEventSpec(type);
   if (spec === undefined) {
-    return [
-      {
-        code: 'unknown-event-type',
-        severity: 'warning',
-        message: `unknown event type \`${type}\``,
-        seq,
-        path: 'type',
-      },
-    ];
+    return [makeIssue('unknown-event-type', `unknown event type \`${type}\``, seq, { path: 'type' })];
   }
 
   const issues: Issue[] = [];
@@ -2717,7 +2893,11 @@ export function classifyContentType(
   contentType: string | null | undefined,
 ): 'sse' | 'binary' | 'other' {
   if (!contentType) return 'other';
-  const essence = contentType.split(';')[0].trim().toLowerCase();
+  // `String.prototype.split` always yields at least one element, but it indexes as
+  // `string | undefined` under `noUncheckedIndexedAccess`; the `''` default is unreachable
+  // and, were it ever reached, means exactly what an empty essence means — `'other'`.
+  const [beforeParams = ''] = contentType.split(';');
+  const essence = beforeParams.trim().toLowerCase();
   if (essence === SSE_MIME) return 'sse';
   if (essence === PROTO_MIME) return 'binary';
   return 'other';
@@ -2768,35 +2948,55 @@ function pathOf(url: string): string {
   try {
     return new URL(url).pathname;
   } catch {
-    return url.split('#')[0].split('?')[0];
+    // Not an absolute URL: treat the string as a path and drop the hash, then the query.
+    const [beforeHash = ''] = url.split('#');
+    const [beforePath = ''] = beforeHash.split('?');
+    return beforePath;
   }
 }
 
+/**
+ * Every capture group below is destructured with an `''` default. `RegExpExecArray` indexes
+ * as `string | undefined` under `noUncheckedIndexedAccess`, but each group is unconditional
+ * in its pattern — a successful `exec` always filled it — so the default is unreachable. It
+ * is also the only safe default to write: `''` is precisely what `(.*)` captures for a
+ * root-mounted route, and the `([^/]+)` groups cannot match fewer than one character. That
+ * keeps `RouteHint`'s `basePath` / `agentId` / `threadId` as plain `string`, so consumers
+ * never have to narrow a value the route grammar already guarantees.
+ */
 export function routeHint(url: string, method: string): RouteHint | undefined {
   const path = pathOf(url);
   const verb = method.toUpperCase();
 
   if (verb === 'GET') {
     const info = INFO_RE.exec(path);
-    if (info) return { kind: 'copilotkit-info', basePath: info[1] };
+    if (info) {
+      const [, basePath = ''] = info;
+      return { kind: 'copilotkit-info', basePath };
+    }
     const meta = INSPECTOR_METADATA_RE.exec(path);
-    if (meta) return { kind: 'copilotkit-inspector-metadata', basePath: meta[1] };
+    if (meta) {
+      const [, basePath = ''] = meta;
+      return { kind: 'copilotkit-inspector-metadata', basePath };
+    }
     return undefined;
   }
 
   if (verb === 'POST') {
     const run = RUN_RE.exec(path);
-    if (run) return { kind: 'copilotkit-run', basePath: run[1], agentId: run[2] };
+    if (run) {
+      const [, basePath = '', agentId = ''] = run;
+      return { kind: 'copilotkit-run', basePath, agentId };
+    }
     const connect = CONNECT_RE.exec(path);
-    if (connect) return { kind: 'copilotkit-connect', basePath: connect[1], agentId: connect[2] };
+    if (connect) {
+      const [, basePath = '', agentId = ''] = connect;
+      return { kind: 'copilotkit-connect', basePath, agentId };
+    }
     const stop = STOP_RE.exec(path);
     if (stop) {
-      return {
-        kind: 'copilotkit-stop',
-        basePath: stop[1],
-        agentId: stop[2],
-        threadId: stop[3],
-      };
+      const [, basePath = '', agentId = '', threadId = ''] = stop;
+      return { kind: 'copilotkit-stop', basePath, agentId, threadId };
     }
     return undefined;
   }
@@ -3194,6 +3394,12 @@ Expected: FAIL with `SyntaxError: [vite] The requested module '/src/core/state/j
 
 - [ ] **Step 8: Write the implementation**
 
+`applyPatch` takes `readonly unknown[]`, not `PatchOp[]`: a patch arrives off the wire, and
+`PatchResult`'s failure branch types `op` as `unknown` so an unrepresentable operation can be
+reported verbatim. The runtime narrowing that earns the `PatchOp` type therefore lands here,
+in the first cycle that has an `applyPatch` at all, even though the ops it recognizes beyond
+`add`/`remove`/`replace` are not implemented until Cycle 3 (they fall through to `invalid-op`).
+
 Replace `src/core/state/json-patch.ts` with:
 
 ```ts
@@ -3224,12 +3430,38 @@ type Terminal =
   | { kind: 'replace'; value: unknown }
   | { kind: 'remove' };
 
+const KNOWN_OPS: ReadonlySet<string> = new Set([
+  'add',
+  'remove',
+  'replace',
+  'move',
+  'copy',
+  'test',
+]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function hasOwn(obj: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+/**
+ * Narrow one untrusted wire operation to a `PatchOp`.
+ *
+ * A patch arrives as `unknown[]`, so an entry may be a bare string, an object with no `op`
+ * key, or a `move` with no `from`. Each is rejected here and reported as `invalid-op` with
+ * the raw value carried through untouched. `value` is deliberately not checked: it is
+ * typed `unknown`, so an `add` that omits it simply adds `undefined`.
+ */
+function isPatchOp(op: unknown): op is PatchOp {
+  if (!isRecord(op)) return false;
+  const name = op.op;
+  if (typeof name !== 'string' || !KNOWN_OPS.has(name)) return false;
+  if (typeof op.path !== 'string') return false;
+  if (name === 'move' || name === 'copy') return typeof op.from === 'string';
+  return true;
 }
 
 /** Strict RFC 6901 array index: digits only, no sign, no leading zeros. */
@@ -3275,6 +3507,24 @@ function terminalObject(
 }
 
 /**
+ * The reference token at `depth`, with the in-range invariant stated instead of assumed.
+ *
+ * `tokens[depth]` is `string | undefined` under `noUncheckedIndexedAccess`. Every entry into
+ * `applyAt` is guarded by a `tokens.length === 0` check and every recursion happens only when
+ * `depth !== tokens.length - 1`, so `depth` is always in range — the throw is unreachable. It
+ * is written as a throw rather than a `?? ''` default because an empty token is a legal
+ * pointer segment (`/a//b` addresses the key `''`): defaulting would turn a broken invariant
+ * into a silent read of the wrong key, while this fails loudly at the exact call that broke it.
+ */
+function tokenAt(tokens: readonly string[], depth: number): string {
+  const token = tokens[depth];
+  if (token === undefined) {
+    throw new Error(`json-patch: token ${depth} out of range (${tokens.length} tokens)`);
+  }
+  return token;
+}
+
+/**
  * Apply `action` at `tokens[depth..]` inside `container`, shallow-copying every container
  * along the mutated path and sharing every untouched subtree with the input.
  */
@@ -3284,7 +3534,7 @@ function applyAt(
   depth: number,
   action: Terminal,
 ): OpOutcome {
-  const token = tokens[depth];
+  const token = tokenAt(tokens, depth);
   const isLast = depth === tokens.length - 1;
 
   if (Array.isArray(container)) {
@@ -3332,13 +3582,18 @@ function applyOne(doc: unknown, op: PatchOp): OpOutcome {
 /**
  * Apply an RFC 6902 patch to `doc` without mutating it.
  *
+ * `ops` is `readonly unknown[]` because a patch arrives off the wire: every entry is
+ * narrowed by `isPatchOp` before it is dispatched, and an entry that is not a well-formed
+ * operation fails as `invalid-op` with the raw value reported back in `op`.
+ *
  * Operations are applied in order against the running document. The first failure aborts
  * the patch and reports its position via `opIndex`; no partial value is returned.
  */
-export function applyPatch(doc: unknown, ops: PatchOp[]): PatchResult {
+export function applyPatch(doc: unknown, ops: readonly unknown[]): PatchResult {
   let current = doc;
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
+    if (!isPatchOp(op)) return { ok: false, opIndex: i, op, reason: 'invalid-op' };
     const outcome = applyOne(current, op);
     if (!outcome.ok) return { ok: false, opIndex: i, op, reason: outcome.reason };
     current = outcome.value;
@@ -3552,7 +3807,7 @@ describe('applyPatch — copy', () => {
 
 describe('applyPatch — invalid-op', () => {
   it('fails with invalid-op for an unrecognized op string', () => {
-    const ops = [{ op: 'frobnicate', path: '/a', value: 1 }] as unknown as PatchOp[];
+    const ops = [{ op: 'frobnicate', path: '/a', value: 1 }];
     const result = applyPatch({ a: 1 }, ops);
     expect(result).toEqual({
       ok: false,
@@ -3563,7 +3818,7 @@ describe('applyPatch — invalid-op', () => {
   });
 
   it('fails with invalid-op when op is missing entirely', () => {
-    const ops = [{ path: '/a', value: 1 }] as unknown as PatchOp[];
+    const ops = [{ path: '/a', value: 1 }];
     const result = applyPatch({ a: 1 }, ops);
     expect(result).toEqual({
       ok: false,
@@ -3574,7 +3829,7 @@ describe('applyPatch — invalid-op', () => {
   });
 
   it('fails with invalid-op for an op that is not an object', () => {
-    const ops = ['add'] as unknown as PatchOp[];
+    const ops = ['add'];
     const result = applyPatch({ a: 1 }, ops);
     expect(result).toEqual({
       ok: false,
@@ -3585,7 +3840,7 @@ describe('applyPatch — invalid-op', () => {
   });
 
   it('reports invalid-op before evaluating the path', () => {
-    const ops = [{ op: 'FROB', path: 'not-a-pointer' }] as unknown as PatchOp[];
+    const ops = [{ op: 'FROB', path: 'not-a-pointer' }];
     const result = applyPatch({ a: 1 }, ops);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected failure');
@@ -3706,6 +3961,23 @@ function hasOwn(obj: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
+/**
+ * Narrow one untrusted wire operation to a `PatchOp`.
+ *
+ * A patch arrives as `unknown[]`, so an entry may be a bare string, an object with no `op`
+ * key, or a `move` with no `from`. Each is rejected here and reported as `invalid-op` with
+ * the raw value carried through untouched. `value` is deliberately not checked: it is
+ * typed `unknown`, so an `add` that omits it simply adds `undefined`.
+ */
+function isPatchOp(op: unknown): op is PatchOp {
+  if (!isRecord(op)) return false;
+  const name = op.op;
+  if (typeof name !== 'string' || !KNOWN_OPS.has(name)) return false;
+  if (typeof op.path !== 'string') return false;
+  if (name === 'move' || name === 'copy') return typeof op.from === 'string';
+  return true;
+}
+
 /** Strict RFC 6901 array index: digits only, no sign, no leading zeros. */
 function parseIndex(token: string): number | null {
   if (!/^(?:0|[1-9][0-9]*)$/.test(token)) return null;
@@ -3780,6 +4052,24 @@ function terminalObject(
 }
 
 /**
+ * The reference token at `depth`, with the in-range invariant stated instead of assumed.
+ *
+ * `tokens[depth]` is `string | undefined` under `noUncheckedIndexedAccess`. Every entry into
+ * `applyAt` is guarded by a `tokens.length === 0` check and every recursion happens only when
+ * `depth !== tokens.length - 1`, so `depth` is always in range — the throw is unreachable. It
+ * is written as a throw rather than a `?? ''` default because an empty token is a legal
+ * pointer segment (`/a//b` addresses the key `''`): defaulting would turn a broken invariant
+ * into a silent read of the wrong key, while this fails loudly at the exact call that broke it.
+ */
+function tokenAt(tokens: readonly string[], depth: number): string {
+  const token = tokens[depth];
+  if (token === undefined) {
+    throw new Error(`json-patch: token ${depth} out of range (${tokens.length} tokens)`);
+  }
+  return token;
+}
+
+/**
  * Apply `action` at `tokens[depth..]` inside `container`, shallow-copying every container
  * along the mutated path and sharing every untouched subtree with the input.
  */
@@ -3789,7 +4079,7 @@ function applyAt(
   depth: number,
   action: Terminal,
 ): OpOutcome {
-  const token = tokens[depth];
+  const token = tokenAt(tokens, depth);
   const isLast = depth === tokens.length - 1;
 
   if (Array.isArray(container)) {
@@ -3818,8 +4108,10 @@ function applyAt(
 /** Read the value at `tokens`, distinguishing a missing leaf from a missing parent. */
 function readAt(doc: unknown, tokens: readonly string[]): OpOutcome {
   let current = doc;
-  for (let depth = 0; depth < tokens.length; depth++) {
-    const token = tokens[depth];
+  // `entries()` rather than an index loop: it walks the same indices in the same order but
+  // yields `[number, string]` tuples, so the token needs neither `tokenAt` nor a default —
+  // the iteration itself is the proof that every index is in range.
+  for (const [depth, token] of tokens.entries()) {
     if (Array.isArray(current)) {
       const idx = parseIndex(token);
       if (idx === null) return { ok: false, reason: 'invalid-path' };
@@ -3892,18 +4184,19 @@ function applyOne(doc: unknown, op: PatchOp): OpOutcome {
 /**
  * Apply an RFC 6902 patch to `doc` without mutating it.
  *
+ * `ops` is `readonly unknown[]` because a patch arrives off the wire: every entry is
+ * narrowed by `isPatchOp` before it is dispatched, and an entry that is not a well-formed
+ * operation fails as `invalid-op` with the raw value reported back in `op`.
+ *
  * Operations are applied in order against the running document. The first failure aborts
  * the patch and reports its position via `opIndex`; no partial value is returned, so the
  * caller can render the failure in place without a half-applied document.
  */
-export function applyPatch(doc: unknown, ops: PatchOp[]): PatchResult {
+export function applyPatch(doc: unknown, ops: readonly unknown[]): PatchResult {
   let current = doc;
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
-    const name: unknown = isRecord(op) ? op.op : undefined;
-    if (typeof name !== 'string' || !KNOWN_OPS.has(name)) {
-      return { ok: false, opIndex: i, op, reason: 'invalid-op' };
-    }
+    if (!isPatchOp(op)) return { ok: false, opIndex: i, op, reason: 'invalid-op' };
     const outcome = applyOne(current, op);
     if (!outcome.ok) return { ok: false, opIndex: i, op, reason: outcome.reason };
     current = outcome.value;
@@ -4010,6 +4303,7 @@ describe('createStateTimeline — applyDelta success', () => {
       value: { count: 1 },
       patch: ops,
     });
+    if (frame.kind !== 'delta') throw new Error('expected a delta frame');
     expect(frame.failure).toBeUndefined();
     expect(timeline.current()).toEqual({ count: 1 });
   });
@@ -4054,8 +4348,9 @@ describe('createStateTimeline — applyDelta failure', () => {
 
     const frame = timeline.applyDelta(2, 150, ops);
 
-    expect(frame.failure).toEqual({ opIndex: 1, reason: 'path-not-found' });
     expect(frame.kind).toBe('delta');
+    if (frame.kind !== 'delta') throw new Error('expected a delta frame');
+    expect(frame.failure).toEqual({ opIndex: 1, reason: 'path-not-found' });
     expect(frame.patch).toBe(ops);
   });
 
@@ -4078,8 +4373,10 @@ describe('createStateTimeline — applyDelta failure', () => {
     const frame = timeline.applyDelta(2, 150, [{ op: 'remove', path: '/missing' }]);
 
     expect(timeline.frames()).toHaveLength(2);
-    expect(timeline.frames()[1]).toBe(frame);
-    expect(timeline.frames()[1]?.failure).toEqual({ opIndex: 0, reason: 'path-not-found' });
+    const stored = timeline.frames()[1];
+    expect(stored).toBe(frame);
+    if (stored?.kind !== 'delta') throw new Error('expected a delta frame');
+    expect(stored.failure).toEqual({ opIndex: 0, reason: 'path-not-found' });
   });
 
   it('lets a subsequent delta apply against the held value', () => {
@@ -4088,6 +4385,7 @@ describe('createStateTimeline — applyDelta failure', () => {
     timeline.applyDelta(2, 150, [{ op: 'remove', path: '/missing' }]);
     const frame = timeline.applyDelta(3, 160, [{ op: 'replace', path: '/count', value: 7 }]);
 
+    if (frame.kind !== 'delta') throw new Error('expected a delta frame');
     expect(frame.failure).toBeUndefined();
     expect(frame.value).toEqual({ count: 7 });
     expect(timeline.current()).toEqual({ count: 7 });
@@ -4101,6 +4399,7 @@ describe('createStateTimeline — applyDelta failure', () => {
       { op: 'add', path: '/b', value: 2 },
       { op: 'test', path: '/count', value: 99 },
     ]);
+    if (frame.kind !== 'delta') throw new Error('expected a delta frame');
     expect(frame.failure).toEqual({ opIndex: 2, reason: 'test-failed' });
     expect(frame.value).toEqual({ count: 0 });
   });
@@ -4114,6 +4413,7 @@ describe('createStateTimeline — delta before any snapshot', () => {
     const frame = timeline.applyDelta(1, 100, ops);
 
     expect(frame.kind).toBe('delta');
+    if (frame.kind !== 'delta') throw new Error('expected a delta frame');
     expect(frame.seq).toBe(1);
     expect(frame.patch).toBe(ops);
     expect(timeline.frames()).toHaveLength(1);
@@ -4123,6 +4423,7 @@ describe('createStateTimeline — delta before any snapshot', () => {
   it('records the patch failure against the undefined document', () => {
     const timeline = createStateTimeline();
     const frame = timeline.applyDelta(1, 100, [{ op: 'add', path: '/a', value: 1 }]);
+    if (frame.kind !== 'delta') throw new Error('expected a delta frame');
     expect(frame.failure).toEqual({ opIndex: 0, reason: 'parent-not-found' });
     expect(frame.value).toBeUndefined();
   });
@@ -4136,6 +4437,7 @@ describe('createStateTimeline — delta before any snapshot', () => {
   it('applies a whole-document delta even with no prior snapshot', () => {
     const timeline = createStateTimeline();
     const frame = timeline.applyDelta(1, 100, [{ op: 'add', path: '', value: { a: 1 } }]);
+    if (frame.kind !== 'delta') throw new Error('expected a delta frame');
     expect(frame.failure).toBeUndefined();
     expect(frame.value).toEqual({ a: 1 });
     expect(timeline.current()).toEqual({ a: 1 });
@@ -4159,12 +4461,9 @@ describe('createStateTimeline — frame ordering', () => {
     ]);
   });
 
-  it('does not set patch on snapshot frames', () => {
-    const timeline = createStateTimeline();
-    const frame = timeline.applySnapshot(1, 100, { n: 0 });
-    expect(frame.patch).toBeUndefined();
-    expect(frame.failure).toBeUndefined();
-  });
+  // A snapshot frame cannot carry `patch` or `failure`: `StateFrame`'s snapshot arm has
+  // neither property, so the invariant is enforced by the compiler rather than by a
+  // runtime assertion. Asserting `frame.patch === undefined` here would be a TS2339.
 
   it('keeps separate timelines independent', () => {
     const a = createStateTimeline();
@@ -4202,10 +4501,13 @@ export interface StateTimeline {
  * Accumulates the STATE_SNAPSHOT / STATE_DELTA history for one run.
  *
  * Every call appends exactly one frame, including a delta whose patch failed: the panel's
- * scrubber needs the failed step to exist so it can be marked in place. A failed delta
- * does not advance the state — its frame carries the previous value plus the positioned
- * `failure`. A delta arriving before any snapshot is applied against `undefined` and is
- * not an error here; `delta-before-snapshot` is raised by the validator, not the timeline.
+ * scrubber needs the failed step to exist so it can be marked in place. Frames are built as
+ * members of the `StateFrame` union, so a snapshot frame structurally cannot carry a patch
+ * and every delta frame carries the patch that produced it. `value` is the document as it
+ * stands AFTER the frame; a failed delta does not advance the state, so its frame repeats
+ * the previous frame's value alongside the positioned `failure`. A delta arriving before
+ * any snapshot is applied against `undefined` and is not an error here;
+ * `delta-before-snapshot` is raised by the validator, not the timeline.
  */
 export function createStateTimeline(): StateTimeline {
   const log: StateFrame[] = [];
@@ -4257,7 +4559,7 @@ export function createStateTimeline(): StateTimeline {
 
 Run: `pnpm vitest run src/core/state/timeline.test.ts`
 
-Expected: PASS, 25 tests.
+Expected: PASS, 23 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -4290,12 +4592,19 @@ Run: `git add src/core/state/timeline.ts src/core/state/timeline.test.ts && git 
    assigned `PatchFailure` literal. Decided here: `invalid-path`. Likewise `move` with
    `from: ''`.
 
-5. **`applyPatch` op validation.** `PatchOp` is a closed union, so an unrecognized `op`
+5. **`applyPatch` op validation.** ~~`PatchOp` is a closed union, so an unrecognized `op`
    string is unrepresentable in the type but arrives at runtime from the wire. The
    implementation guards with a runtime `KNOWN_OPS` check before dispatch, and the failing
    result's `op` field carries the raw object through as-is (the contract types it as
    `PatchOp`; at that point it is a cast). Tests exercise it via
-   `as unknown as PatchOp[]`.
+   `as unknown as PatchOp[]`.~~ **SUPERSEDED BY A15.** `PatchResult`'s failure branch types
+   `op` as `unknown`, so nothing casts any more: `applyPatch` takes `readonly unknown[]`,
+   `isPatchOp` narrows each entry behind the `KNOWN_OPS` check, and an entry that fails to
+   narrow is reported verbatim in `op`. The tests pass plain array literals. Still decided
+   here, and not by the contract: `isPatchOp` also requires a string `path`, and a string
+   `from` on `move`/`copy`, since neither is representable as a `PatchOp` otherwise and
+   `parsePointer` would throw on a missing one. `value` is not checked — it is typed
+   `unknown`, so an `add` that omits it adds `undefined`.
 
 6. **`frames()` copy semantics.** The contract types `frames(): StateFrame[]` without
    saying whether the array is live. Decided here: it returns a fresh array each call
@@ -4314,6 +4623,11 @@ Expands `TEXT_MESSAGE_CHUNK` / `TOOL_CALL_CHUNK` / `REASONING_MESSAGE_CHUNK` int
 start/content/end triads the way the AG-UI JS client does. `expandChunk` mutates the
 `ChunkExpanderState` it is handed (that is the whole point of the state object — it is
 carried across calls by the run builder). Non-chunk events pass straight through.
+
+The three `chunk-missing-*` issues are constructed with `makeIssue`, which stamps the
+severity from `ISSUE_SEVERITY` — the expander never restates a severity inline. All three
+codes are graded `error` there, so the built objects are exactly what the tests below
+assert.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4730,7 +5044,8 @@ Expected: FAIL with `Failed to resolve import "./chunk-expander" from "src/core/
 
 ```ts
 // src/core/normalizer/chunk-expander.ts
-import type { AguiEvent, Issue, IssueCode } from '../model/types';
+import type { AguiEvent, Issue } from '../model/types';
+import { makeIssue } from '../model/types';
 import { chunkKindOf } from '../events/table';
 
 export interface ChunkExpanderState {
@@ -4750,10 +5065,6 @@ export function createChunkExpanderState(): ChunkExpanderState {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
-}
-
-function errorIssue(code: IssueCode, message: string, seq: number): Issue {
-  return { code, severity: 'error', message, seq };
 }
 
 function expandMessageChunk(
@@ -4784,7 +5095,7 @@ function expandMessageChunk(
     return {
       events: [],
       issues: [
-        errorIssue(
+        makeIssue(
           'chunk-missing-message-id',
           `${event.type} has no messageId and no message is currently open`,
           seq,
@@ -4824,7 +5135,7 @@ function expandToolChunk(
       return {
         events: [],
         issues: [
-          errorIssue(
+          makeIssue(
             'chunk-missing-tool-call-name',
             `TOOL_CALL_CHUNK opens tool call "${toolCallId}" without a toolCallName`,
             seq,
@@ -4848,7 +5159,7 @@ function expandToolChunk(
     return {
       events: [],
       issues: [
-        errorIssue(
+        makeIssue(
           'chunk-missing-tool-call-id',
           'TOOL_CALL_CHUNK has no toolCallId and no tool call is currently open',
           seq,
@@ -4912,8 +5223,24 @@ Every rule is a pure `ValidatorRule`. **Rules never mutate `state`** — the run
 (Task 13) owns all state transitions and calls `runRules` *before* applying the event's
 transition, so `state` always describes the world as it was immediately before the event.
 `shape-invalid` / `unknown-event-type` come from Task 5's `checkShape`, `chunk-missing-*`
-from Task 10's `expandChunk`, and `keepalive-gap` from Task 13's run builder — none of
+from Task 10's `expandChunk`, and `keepalive-gap` from Task 13c's run builder — none of
 them are re-implemented here.
+
+**`keepalive-gap` is owned by Task 13c, not by this section.** A `ValidatorRule` takes
+`(event: AguiEvent, record, state)`, and a keepalive `CaptureRecord` has **no `event`** at
+all — it is the `kind: 'keepalive'` arm of the union and carries a `comment` instead — so
+it can never be handed to a rule in the first place. The check is also inter-record and
+connection-scoped: it compares the arrival time of one keepalive against the previous
+frame on the same connection, which is exactly the state the builder's fold holds and a
+pure rule does not. Per Appendix A's keepalive-attribution decision, `Issue.seq` is the seq
+of the keepalive that *closed* the gap and `Issue.tMs` is that keepalive's arrival time, so
+it is **not** one of the connection-close codes `finalizeRules` derives a seq for below.
+Nothing here emits it, and `RULES` does not contain a keepalive rule.
+
+Every issue in this section is built with `makeIssue(code, message, seq, extra?)`, which
+stamps `severity` from `ISSUE_SEVERITY`; no rule restates a severity inline. The test
+expectations still assert the fully built object, severity included, because that is what
+the run builder will append to `run.issues`.
 
 `RunValidationState` and `ValidatorRule` live in `validator/types.ts` and are re-exported
 from `validator/index.ts` (see "Contract gaps"), so the rule modules never import from
@@ -4975,7 +5302,7 @@ function makeState(overrides: Partial<RunValidationState> = {}): RunValidationSt
 }
 
 function makeRecord(event: AguiEvent, seq = 1): CaptureRecord {
-  return { seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
+  return { kind: 'event', seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
 }
 
 describe('eventBeforeRunStartedRule', () => {
@@ -5148,33 +5475,31 @@ export type ValidatorRule = (
 
 ```ts
 // src/core/validator/rules/lifecycle.ts
-import { ORPHANED_RUN_ID } from '../../model/types';
+import { ORPHANED_RUN_ID, makeIssue } from '../../model/types';
 import type { ValidatorRule } from '../types';
 
 export const eventBeforeRunStartedRule: ValidatorRule = (event, record, state) => {
   if (event.type === 'RUN_STARTED') return [];
   if (state.run.outcome !== 'orphaned' && state.run.runId !== ORPHANED_RUN_ID) return [];
   return [
-    {
-      code: 'event-before-run-started',
-      severity: 'error',
-      message: `${event.type} arrived before any RUN_STARTED`,
-      seq: record.seq,
-      runId: state.run.runId,
-    },
+    makeIssue(
+      'event-before-run-started',
+      `${event.type} arrived before any RUN_STARTED`,
+      record.seq,
+      { runId: state.run.runId },
+    ),
   ];
 };
 
 export const eventAfterTerminalRule: ValidatorRule = (event, record, state) => {
   if (!state.terminated) return [];
   return [
-    {
-      code: 'event-after-terminal',
-      severity: 'error',
-      message: `${event.type} arrived after the run reached a terminal event`,
-      seq: record.seq,
-      runId: state.run.runId,
-    },
+    makeIssue(
+      'event-after-terminal',
+      `${event.type} arrived after the run reached a terminal event`,
+      record.seq,
+      { runId: state.run.runId },
+    ),
   ];
 };
 
@@ -5184,13 +5509,12 @@ export const unbalancedStepsRule: ValidatorRule = (event, record, state) => {
   if (stepName === undefined) return [];
   if (state.openSteps.includes(stepName)) return [];
   return [
-    {
-      code: 'unbalanced-steps',
-      severity: 'warning',
-      message: `STEP_FINISHED "${stepName}" has no matching open STEP_STARTED`,
-      seq: record.seq,
-      runId: state.run.runId,
-    },
+    makeIssue(
+      'unbalanced-steps',
+      `STEP_FINISHED "${stepName}" has no matching open STEP_STARTED`,
+      record.seq,
+      { runId: state.run.runId },
+    ),
   ];
 };
 
@@ -5198,14 +5522,12 @@ export const runStartedWithoutInputRule: ValidatorRule = (event, record, state) 
   if (event.type !== 'RUN_STARTED') return [];
   if (state.run.input !== undefined) return [];
   return [
-    {
-      code: 'run-started-without-input',
-      severity: 'info',
-      message:
-        'RUN_STARTED has no captured request input; reproducing this run will be harder',
-      seq: record.seq,
-      runId: state.run.runId,
-    },
+    makeIssue(
+      'run-started-without-input',
+      'RUN_STARTED has no captured request input; reproducing this run will be harder',
+      record.seq,
+      { runId: state.run.runId },
+    ),
   ];
 };
 ```
@@ -5273,7 +5595,7 @@ function makeState(overrides: Partial<RunValidationState> = {}): RunValidationSt
 }
 
 function makeRecord(event: AguiEvent, seq = 1): CaptureRecord {
-  return { seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
+  return { kind: 'event', seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
 }
 
 describe('emptyTextDeltaRule', () => {
@@ -5426,6 +5748,7 @@ Expected: FAIL with `Failed to resolve import "./text" from "src/core/validator/
 
 ```ts
 // src/core/validator/rules/text.ts
+import { makeIssue } from '../../model/types';
 import type { ValidatorRule } from '../types';
 
 const CONTENT_TYPES = new Set(['TEXT_MESSAGE_CONTENT', 'REASONING_MESSAGE_CONTENT']);
@@ -5434,13 +5757,9 @@ export const emptyTextDeltaRule: ValidatorRule = (event, record, state) => {
   if (!CONTENT_TYPES.has(event.type)) return [];
   if (event.delta !== '') return [];
   return [
-    {
-      code: 'empty-text-delta',
-      severity: 'error',
-      message: `${event.type} has an empty delta`,
-      seq: record.seq,
+    makeIssue('empty-text-delta', `${event.type} has an empty delta`, record.seq, {
       runId: state.run.runId,
-    },
+    }),
   ];
 };
 
@@ -5461,13 +5780,12 @@ export const unopenedMessageIdRule: ValidatorRule = (event, record, state) => {
   if (open.has(messageId)) return [];
 
   return [
-    {
-      code: 'unopened-message-id',
-      severity: 'error',
-      message: `${event.type} references messageId "${messageId}" which is not open`,
-      seq: record.seq,
-      runId: state.run.runId,
-    },
+    makeIssue(
+      'unopened-message-id',
+      `${event.type} references messageId "${messageId}" which is not open`,
+      record.seq,
+      { runId: state.run.runId },
+    ),
   ];
 };
 
@@ -5475,13 +5793,12 @@ export const concurrentTextMessagesRule: ValidatorRule = (event, record, state) 
   if (event.type !== 'TEXT_MESSAGE_START') return [];
   if (state.openTextMessages.size === 0) return [];
   return [
-    {
-      code: 'concurrent-text-messages',
-      severity: 'warning',
-      message: `TEXT_MESSAGE_START while ${state.openTextMessages.size} text message(s) are still open`,
-      seq: record.seq,
-      runId: state.run.runId,
-    },
+    makeIssue(
+      'concurrent-text-messages',
+      `TEXT_MESSAGE_START while ${state.openTextMessages.size} text message(s) are still open`,
+      record.seq,
+      { runId: state.run.runId },
+    ),
   ];
 };
 ```
@@ -5549,7 +5866,7 @@ function makeState(overrides: Partial<RunValidationState> = {}): RunValidationSt
 }
 
 function makeRecord(event: AguiEvent, seq = 1): CaptureRecord {
-  return { seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
+  return { kind: 'event', seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
 }
 
 function makeToolCall(argsText: string): ToolCallRecord {
@@ -5708,6 +6025,7 @@ Expected: FAIL with `Failed to resolve import "./tool" from "src/core/validator/
 
 ```ts
 // src/core/validator/rules/tool.ts
+import { makeIssue } from '../../model/types';
 import type { ValidatorRule } from '../types';
 
 export const unopenedToolCallIdRule: ValidatorRule = (event, record, state) => {
@@ -5716,13 +6034,12 @@ export const unopenedToolCallIdRule: ValidatorRule = (event, record, state) => {
   if (toolCallId === undefined) return [];
   if (state.openToolCalls.has(toolCallId)) return [];
   return [
-    {
-      code: 'unopened-tool-call-id',
-      severity: 'error',
-      message: `${event.type} references toolCallId "${toolCallId}" which is not open`,
-      seq: record.seq,
-      runId: state.run.runId,
-    },
+    makeIssue(
+      'unopened-tool-call-id',
+      `${event.type} references toolCallId "${toolCallId}" which is not open`,
+      record.seq,
+      { runId: state.run.runId },
+    ),
   ];
 };
 
@@ -5732,13 +6049,12 @@ export const toolResultBeforeEndRule: ValidatorRule = (event, record, state) => 
   if (toolCallId === undefined) return [];
   if (state.endedToolCalls.has(toolCallId)) return [];
   return [
-    {
-      code: 'tool-result-before-end',
-      severity: 'error',
-      message: `TOOL_CALL_RESULT references toolCallId "${toolCallId}" which has not ended`,
-      seq: record.seq,
-      runId: state.run.runId,
-    },
+    makeIssue(
+      'tool-result-before-end',
+      `TOOL_CALL_RESULT references toolCallId "${toolCallId}" which has not ended`,
+      record.seq,
+      { runId: state.run.runId },
+    ),
   ];
 };
 
@@ -5754,13 +6070,12 @@ export const toolArgsNotJsonRule: ValidatorRule = (event, record, state) => {
     return [];
   } catch {
     return [
-      {
-        code: 'tool-args-not-json',
-        severity: 'error',
-        message: `Accumulated arguments for tool call "${toolCallId}" are not valid JSON`,
-        seq: record.seq,
-        runId: state.run.runId,
-      },
+      makeIssue(
+        'tool-args-not-json',
+        `Accumulated arguments for tool call "${toolCallId}" are not valid JSON`,
+        record.seq,
+        { runId: state.run.runId },
+      ),
     ];
   }
 };
@@ -5825,7 +6140,7 @@ function makeState(overrides: Partial<RunValidationState> = {}): RunValidationSt
 }
 
 function makeRecord(event: AguiEvent, seq = 1): CaptureRecord {
-  return { seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
+  return { kind: 'event', seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
 }
 
 function snapshotFrame(value: unknown): StateFrame {
@@ -5855,6 +6170,26 @@ describe('statePatchFailedRule', () => {
         runId: 'run-1',
         path: '/a',
         opIndex: 1,
+      },
+    ]);
+  });
+
+  it('renders an op that is not a well-formed {op, path} pair without printing undefined', () => {
+    const state = makeState({
+      run: makeRun({ stateTimeline: [snapshotFrame({ a: 1 })] }),
+      sawSnapshot: true,
+    });
+    // `PatchResult.op` is `unknown`: this one comes back off the wire as a bare string.
+    const event: AguiEvent = { type: 'STATE_DELTA', delta: ['add'] };
+
+    expect(statePatchFailedRule(event, makeRecord(event, 15), state)).toEqual([
+      {
+        code: 'state-patch-failed',
+        severity: 'error',
+        message: 'STATE_DELTA op 0 (unrecognized op "add") failed: invalid-op',
+        seq: 15,
+        runId: 'run-1',
+        opIndex: 0,
       },
     ]);
   });
@@ -5946,29 +6281,49 @@ Expected: FAIL with `Failed to resolve import "./state" from "src/core/validator
 
 ```ts
 // src/core/validator/rules/state.ts
-import type { PatchOp } from '../../model/types';
+import { makeIssue } from '../../model/types';
 import { applyPatch } from '../../state/json-patch';
 import type { ValidatorRule } from '../types';
+
+/**
+ * Render the operation that failed. `PatchResult.op` is `unknown` on the failure branch —
+ * a patch arrives off the wire, so the failing entry may be a bare string, an object with
+ * no `op` key, or an `add` missing its `value`. Only a well-formed `{op, path}` pair is
+ * rendered as `add /b`; anything else is printed verbatim as JSON, and `path` is left off
+ * the issue. Without the narrowing this printed `"undefined undefined"`.
+ */
+function describeOp(op: unknown): { text: string; path?: string } {
+  if (typeof op === 'object' && op !== null) {
+    const fields = op as Record<string, unknown>;
+    const name = fields.op;
+    const path = fields.path;
+    if (typeof name === 'string' && typeof path === 'string') {
+      return { text: `${name} ${path}`, path };
+    }
+  }
+  return { text: `unrecognized op ${JSON.stringify(op)}` };
+}
 
 export const statePatchFailedRule: ValidatorRule = (event, record, state) => {
   if (event.type !== 'STATE_DELTA') return [];
   if (!Array.isArray(event.delta)) return [];
 
-  const frames = state.run.stateTimeline;
-  const current = frames.length > 0 ? frames[frames.length - 1].value : undefined;
-  const result = applyPatch(current, event.delta as PatchOp[]);
+  // `.at(-1)` rather than `frames[frames.length - 1]`: the latter is
+  // `StateFrame | undefined` under `noUncheckedIndexedAccess` and does not compile.
+  // `value` is on both arms of the union, so no `kind` narrowing is needed here.
+  const current = state.run.stateTimeline.at(-1)?.value;
+  // `applyPatch` takes `readonly unknown[]` (Task 8), so the ops go in uncast.
+  const result = applyPatch(current, event.delta);
   if (result.ok) return [];
 
+  const failing = describeOp(result.op);
   return [
-    {
-      code: 'state-patch-failed',
-      severity: 'error',
-      message: `STATE_DELTA op ${result.opIndex} (${result.op.op} ${result.op.path}) failed: ${result.reason}`,
-      seq: record.seq,
-      runId: state.run.runId,
-      path: result.op.path,
-      opIndex: result.opIndex,
-    },
+    makeIssue(
+      'state-patch-failed',
+      `STATE_DELTA op ${result.opIndex} (${failing.text}) failed: ${result.reason}`,
+      record.seq,
+      { runId: state.run.runId, path: failing.path, opIndex: result.opIndex },
+    ),
   ];
 };
 
@@ -5977,13 +6332,12 @@ export const deltaBeforeSnapshotRule: ValidatorRule = (event, record, state) => 
   if (state.sawSnapshot) return [];
   if (state.run.stateTimeline.length > 0) return [];
   return [
-    {
-      code: 'delta-before-snapshot',
-      severity: 'warning',
-      message: 'STATE_DELTA arrived before any STATE_SNAPSHOT',
-      seq: record.seq,
-      runId: state.run.runId,
-    },
+    makeIssue(
+      'delta-before-snapshot',
+      'STATE_DELTA arrived before any STATE_SNAPSHOT',
+      record.seq,
+      { runId: state.run.runId },
+    ),
   ];
 };
 ```
@@ -5991,7 +6345,7 @@ export const deltaBeforeSnapshotRule: ValidatorRule = (event, record, state) => 
 - [ ] **Step 19: Run test to verify it passes**
 
 Run: `pnpm vitest run src/core/validator/rules/state.test.ts`
-Expected: PASS, 7 tests.
+Expected: PASS, 8 tests.
 
 - [ ] **Step 20: Commit**
 
@@ -6047,7 +6401,7 @@ function makeState(overrides: Partial<RunValidationState> = {}): RunValidationSt
 }
 
 function makeRecord(event: AguiEvent, seq = 1): CaptureRecord {
-  return { seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
+  return { kind: 'event', seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
 }
 
 describe('deprecatedEventRule', () => {
@@ -6100,23 +6454,25 @@ Expected: FAIL with `Failed to resolve import "./stream" from "src/core/validato
 
 ```ts
 // src/core/validator/rules/stream.ts
+import { makeIssue } from '../../model/types';
 import { DEPRECATED_EVENT_TYPES } from '../../events/table';
 import type { ValidatorRule } from '../types';
 
 // Stream-level rules. `unknown-event-type` and `shape-invalid` are produced by
 // `events/shape-check`, `chunk-missing-*` by `normalizer/chunk-expander`, and
-// `keepalive-gap` by the run builder from keepalive frame timing — none of them
-// belong here.
+// `keepalive-gap` by Task 13c's run builder from keepalive frame timing — none of them
+// belong here. `keepalive-gap` in particular CANNOT live here: a keepalive record is the
+// `kind: 'keepalive'` arm of `CaptureRecord` and carries no `event`, so there is nothing
+// to pass as a `ValidatorRule`'s first argument.
 export const deprecatedEventRule: ValidatorRule = (event, record, state) => {
   if (!DEPRECATED_EVENT_TYPES.has(event.type)) return [];
   return [
-    {
-      code: 'deprecated-event',
-      severity: 'warning',
-      message: `${event.type} is deprecated in the AG-UI protocol`,
-      seq: record.seq,
-      runId: state.run.runId,
-    },
+    makeIssue(
+      'deprecated-event',
+      `${event.type} is deprecated in the AG-UI protocol`,
+      record.seq,
+      { runId: state.run.runId },
+    ),
   ];
 };
 ```
@@ -6180,7 +6536,7 @@ function makeState(overrides: Partial<RunValidationState> = {}): RunValidationSt
 }
 
 function makeRecord(event: AguiEvent, seq = 1): CaptureRecord {
-  return { seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
+  return { kind: 'event', seq, tMs: seq * 10, connId: 'conn-1', raw: event, event, issues: [] };
 }
 
 describe('RULES', () => {
@@ -6268,9 +6624,9 @@ describe('finalizeRules', () => {
       {
         code: 'run-never-terminated',
         severity: 'error',
-        message:
-          'Connection closed at 900ms without RUN_FINISHED or RUN_ERROR',
+        message: 'Connection closed without RUN_FINISHED or RUN_ERROR',
         seq: 3,
+        tMs: 900,
         runId: 'run-1',
       },
     ]);
@@ -6292,6 +6648,7 @@ describe('finalizeRules', () => {
         severity: 'warning',
         message: 'Text message "m1" was never closed with TEXT_MESSAGE_END',
         seq: 4,
+        tMs: 1200,
         runId: 'run-1',
       },
       {
@@ -6299,6 +6656,7 @@ describe('finalizeRules', () => {
         severity: 'warning',
         message: 'Reasoning message "r1" was never closed with REASONING_MESSAGE_END',
         seq: 4,
+        tMs: 1200,
         runId: 'run-1',
       },
       {
@@ -6306,6 +6664,7 @@ describe('finalizeRules', () => {
         severity: 'warning',
         message: 'Tool call "tc1" was never closed with TOOL_CALL_END',
         seq: 4,
+        tMs: 1200,
         runId: 'run-1',
       },
       {
@@ -6313,6 +6672,7 @@ describe('finalizeRules', () => {
         severity: 'warning',
         message: 'Step "plan" was still open at run end',
         seq: 4,
+        tMs: 1200,
         runId: 'run-1',
       },
     ]);
@@ -6327,6 +6687,7 @@ describe('finalizeRules', () => {
         severity: 'warning',
         message: 'Tool call "tc1" was never closed with TOOL_CALL_END',
         seq: 0,
+        tMs: 10,
         runId: 'run-1',
       },
     ]);
@@ -6359,6 +6720,7 @@ Expected: FAIL with `Failed to resolve import "./index" from "src/core/validator
 ```ts
 // src/core/validator/index.ts
 import type { AguiEvent, CaptureRecord, Issue } from '../model/types';
+import { makeIssue } from '../model/types';
 import type { RunValidationState, ValidatorRule } from './types';
 import {
   eventAfterTerminalRule,
@@ -6412,60 +6774,67 @@ export function runRules(
 /**
  * Rules that can only fire once the connection carrying the run has closed.
  * Called by the run builder from `closeConnection`, not per event.
+ *
+ * These are exactly the four codes with no owning record. Each anchors to the seq of the
+ * LAST record attributed to the run — `recordSeqs.at(-1) ?? 0`, since indexing with
+ * `[length - 1]` is `number | undefined` under `noUncheckedIndexedAccess` and does not
+ * compile — and carries the close timestamp in `Issue.tMs`. `keepalive-gap` is NOT one of
+ * them: a keepalive is itself a record, so Task 13c anchors it to that record's own seq.
  */
 export function finalizeRules(state: RunValidationState, tMs: number): Issue[] {
   const { run } = state;
-  const seq = run.recordSeqs.length > 0 ? run.recordSeqs[run.recordSeqs.length - 1] : 0;
+  const seq = run.recordSeqs.at(-1) ?? 0;
+  const at = { runId: run.runId, tMs };
   const issues: Issue[] = [];
 
   if (!state.terminated) {
-    issues.push({
-      code: 'run-never-terminated',
-      severity: 'error',
-      message: `Connection closed at ${tMs}ms without RUN_FINISHED or RUN_ERROR`,
-      seq,
-      runId: run.runId,
-    });
+    issues.push(
+      makeIssue(
+        'run-never-terminated',
+        'Connection closed without RUN_FINISHED or RUN_ERROR',
+        seq,
+        at,
+      ),
+    );
   }
 
   for (const messageId of state.openTextMessages) {
-    issues.push({
-      code: 'unclosed-message',
-      severity: 'warning',
-      message: `Text message "${messageId}" was never closed with TEXT_MESSAGE_END`,
-      seq,
-      runId: run.runId,
-    });
+    issues.push(
+      makeIssue(
+        'unclosed-message',
+        `Text message "${messageId}" was never closed with TEXT_MESSAGE_END`,
+        seq,
+        at,
+      ),
+    );
   }
 
   for (const messageId of state.openReasoningMessages) {
-    issues.push({
-      code: 'unclosed-message',
-      severity: 'warning',
-      message: `Reasoning message "${messageId}" was never closed with REASONING_MESSAGE_END`,
-      seq,
-      runId: run.runId,
-    });
+    issues.push(
+      makeIssue(
+        'unclosed-message',
+        `Reasoning message "${messageId}" was never closed with REASONING_MESSAGE_END`,
+        seq,
+        at,
+      ),
+    );
   }
 
   for (const toolCallId of state.openToolCalls) {
-    issues.push({
-      code: 'unclosed-tool-call',
-      severity: 'warning',
-      message: `Tool call "${toolCallId}" was never closed with TOOL_CALL_END`,
-      seq,
-      runId: run.runId,
-    });
+    issues.push(
+      makeIssue(
+        'unclosed-tool-call',
+        `Tool call "${toolCallId}" was never closed with TOOL_CALL_END`,
+        seq,
+        at,
+      ),
+    );
   }
 
   for (const stepName of state.openSteps) {
-    issues.push({
-      code: 'unbalanced-steps',
-      severity: 'warning',
-      message: `Step "${stepName}" was still open at run end`,
-      seq,
-      runId: run.runId,
-    });
+    issues.push(
+      makeIssue('unbalanced-steps', `Step "${stepName}" was still open at run end`, seq, at),
+    );
   }
 
   return issues;
@@ -6475,8 +6844,8 @@ export function finalizeRules(state: RunValidationState, tMs: number): Issue[] {
 - [ ] **Step 29: Run test to verify it passes**
 
 Run: `pnpm vitest run src/core/validator`
-Expected: PASS, 52 tests across the six validator test files
-(lifecycle 12, text 11, tool 10, state 7, stream 3, index 9).
+Expected: PASS, 53 tests across the six validator test files
+(lifecycle 12, text 11, tool 10, state 8, stream 3, index 9).
 
 - [ ] **Step 30: Commit**
 
@@ -6495,8 +6864,11 @@ above renames or re-signatures anything already locked.
    `unbalanced-steps` cases are triggered by `closeConnection`, not by an event, so they
    cannot be `ValidatorRule`s (no event, no record). Task 13's `closeConnection` must call
    `finalizeRules(state, tMs)` once per run on the closing connection and append the result
-   to `run.issues`. `tMs` appears in the `run-never-terminated` message; `Issue` has no
-   time field, so that is the only place the close timestamp survives.
+   to `run.issues`. **Partly superseded by A17:** `Issue.tMs` now exists, so the close
+   timestamp is carried structurally on every issue `finalizeRules` returns rather than
+   being smuggled into the `run-never-terminated` message string — the message no longer
+   contains it. `seq` comes from `run.recordSeqs.at(-1) ?? 0`, which is also what A17
+   requires (the `[length - 1]` form does not compile under `noUncheckedIndexedAccess`).
 
 2. **New file `src/core/validator/types.ts`** holding `RunValidationState` and
    `ValidatorRule`, re-exported from `validator/index.ts` (`export type { … } from './types'`).
@@ -6518,6 +6890,10 @@ above renames or re-signatures anything already locked.
    timeline. `applyPatch` is immutable, so this is side-effect free but does duplicate the
    patch application. If Task 13 wants to avoid the double apply it may reuse the rule's
    verdict instead of re-applying — but it must not invert the ordering in gap 3.
+   Per A15, `PatchResult.op` is `unknown` on the failure branch, so the rule narrows it
+   through `describeOp` before rendering: a well-formed `{op, path}` pair prints as
+   `add /b` and sets `Issue.path`; anything else prints as JSON and leaves `path` unset.
+   `Issue.path` is therefore **absent**, never `undefined`-rendered, for a malformed op.
 
 5. **`delta-before-snapshot` fires only once per run**, on a `STATE_DELTA` seen while
    `sawSnapshot === false` **and** `run.stateTimeline.length === 0`. `sawSnapshot` only
@@ -6549,6 +6925,19 @@ above renames or re-signatures anything already locked.
    validator "Task 12"; this section is written as Task 10 and Task 11 per the plan's
    final ordering. Same files, same signatures.
 
+10. **`keepalive-gap` is Task 13c's, not this section's.** Recorded here because Task 11
+    owns the rule set and is the obvious place to look for it. It is not implementable as a
+    `ValidatorRule`: the signature's first argument is an `AguiEvent` and a keepalive
+    `CaptureRecord` (A19's `kind: 'keepalive'` arm) has no `event` field at all, only
+    `comment`. It is also inter-record — the gap is between one keepalive's `tMs` and the
+    previous frame on the same connection — which is state the builder's fold holds and a
+    pure rule does not. Nor does it belong in `finalizeRules`: per Appendix A's keepalive
+    attribution decision it anchors to the closing keepalive's own `seq` with `tMs` set, so
+    it is not one of the four connection-close codes that derive `seq` from
+    `recordSeqs.at(-1) ?? 0`. `RULES` therefore stays at 13 entries and this section emits
+    `keepalive-gap` nowhere. Task 13c must raise it on gaps > 15 s, attributed to the
+    connection's currently open run or to `ORPHANED_RUN_ID` when none is open.
+
 ---
 
 ### Task 12: Run metrics
@@ -6566,16 +6955,21 @@ import { computeMetrics } from './run-metrics';
 import type { AguiEvent, CaptureRecord, ReconstructedMessage, Run } from '../model/types';
 
 function rec(seq: number, tMs: number, event: AguiEvent): CaptureRecord {
-  return { seq, tMs, connId: 'c1', raw: event, event, issues: [] };
+  return { kind: 'event', seq, tMs, connId: 'c1', raw: event, event, issues: [] };
+}
+
+/** A keepalive record. `raw` defaults to the SSE comment bytes actually on the wire. */
+function keepalive(seq: number, tMs: number, comment: string): CaptureRecord {
+  return { kind: 'keepalive', seq, tMs, connId: 'c1', raw: `:${comment}\n\n`, comment, issues: [] };
 }
 
 function message(overrides: Partial<ReconstructedMessage> & { messageId: string }): ReconstructedMessage {
   return {
-    role: 'assistant',
+    kind: 'text',
     content: '',
     startedAtMs: 0,
     closed: false,
-    chunkSeqs: [],
+    contentSeqs: [],
     ...overrides,
   };
 }
@@ -6711,8 +7105,8 @@ describe('computeMetrics', () => {
     const run = makeRun({
       startedAtMs: 0,
       messages: new Map([
-        ['m1', message({ messageId: 'm1', content: 'ab', startedAtMs: 10, endedAtMs: 520, closed: true, chunkSeqs: [2, 3] })],
-        ['m2', message({ messageId: 'm2', content: 'c', startedAtMs: 600, chunkSeqs: [5] })],
+        ['m1', message({ messageId: 'm1', content: 'ab', startedAtMs: 10, endedAtMs: 520, closed: true, contentSeqs: [2, 3] })],
+        ['m2', message({ messageId: 'm2', content: 'c', startedAtMs: 600, contentSeqs: [5] })],
       ]),
     });
     const records = [
@@ -6768,6 +7162,7 @@ describe('computeMetrics', () => {
     };
     const records: CaptureRecord[] = [
       {
+        kind: 'event',
         seq: 1,
         tMs: 10,
         connId: 'c1',
@@ -6775,8 +7170,9 @@ describe('computeMetrics', () => {
         event: { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'hi' },
         issues: [],
       },
-      { seq: 2, tMs: 20, connId: 'c1', raw: 'garbage', event: null, issues: [] },
+      { kind: 'event', seq: 2, tMs: 20, connId: 'c1', raw: 'garbage', event: null, issues: [] },
       {
+        kind: 'event',
         seq: 3,
         tMs: 30,
         connId: 'c1',
@@ -6784,7 +7180,15 @@ describe('computeMetrics', () => {
         event: { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: '!' },
         issues: [],
       },
-      { seq: 4, tMs: 40, connId: 'c1', raw: { type: 'RUN_FINISHED' }, event: { type: 'RUN_FINISHED' }, issues: [] },
+      {
+        kind: 'event',
+        seq: 4,
+        tMs: 40,
+        connId: 'c1',
+        raw: { type: 'RUN_FINISHED' },
+        event: { type: 'RUN_FINISHED' },
+        issues: [],
+      },
     ];
 
     const metrics = computeMetrics(makeRun(), records, 2000);
@@ -6792,6 +7196,24 @@ describe('computeMetrics', () => {
     expect(metrics.eventCountByType).toEqual({ TEXT_MESSAGE_CONTENT: 2, RUN_FINISHED: 1 });
     expect(metrics.totalStreamBytes).toBe(
       JSON.stringify(raw1).length + JSON.stringify('garbage').length + JSON.stringify({ type: 'RUN_FINISHED' }).length,
+    );
+  });
+
+  it('excludes keepalives from eventCountByType but still counts their bytes in totalStreamBytes', () => {
+    // requirements §5.4: keepalives are recorded, never counted as events. Their bytes are
+    // real bytes on the wire, so they still count toward totalStreamBytes.
+    const records: CaptureRecord[] = [
+      rec(1, 10, { type: 'TEXT_MESSAGE_START', messageId: 'm1', role: 'assistant' }),
+      keepalive(2, 20, ''),
+      rec(3, 30, { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'a' }),
+      keepalive(4, 9000, 'ping'),
+    ];
+
+    const metrics = computeMetrics(makeRun(), records, 2000);
+
+    expect(metrics.eventCountByType).toEqual({ TEXT_MESSAGE_START: 1, TEXT_MESSAGE_CONTENT: 1 });
+    expect(metrics.totalStreamBytes).toBe(
+      records.reduce((sum, r) => sum + JSON.stringify(r.raw).length, 0),
     );
   });
 });
@@ -6824,7 +7246,11 @@ function nearestRankPercentile(sorted: number[], p: number): number | undefined 
   return sorted[rank - 1];
 }
 
-/** JSON byte length, treating non-serializable values (undefined) as zero bytes. */
+/**
+ * JSON byte length, treating non-serializable values as zero bytes. `record.raw` is
+ * `undefined` when the bytes were already counted against a sibling record produced by
+ * chunk expansion, so this doubles as the "don't double-count" guard for that contract.
+ */
 function byteLength(value: unknown): number {
   const json = JSON.stringify(value);
   return json === undefined ? 0 : json.length;
@@ -6853,7 +7279,15 @@ export function computeMetrics(
   let ttfrtMs: number | undefined;
 
   for (const record of records) {
+    // A keepalive's bytes are real bytes on the wire — the whole point of tracking them is
+    // diagnosing proxy buffering — so they count here regardless of kind.
     totalStreamBytes += byteLength(record.raw);
+
+    // Narrow on `kind` before touching `event`: the keepalive arm of the `CaptureRecord`
+    // union has no `event` property at all. This is also what keeps a keepalive out of
+    // eventCountByType — requirements §5.4 requires it be recorded but excluded from the
+    // event count.
+    if (record.kind !== 'event') continue;
     const event = record.event;
     if (event === null) continue;
 
@@ -6940,7 +7374,7 @@ export function computeMetrics(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run src/core/metrics/run-metrics.test.ts`
-Expected: 11 passing.
+Expected: 12 passing.
 
 - [ ] **Step 5: Commit**
 
@@ -6963,8 +7397,9 @@ import { createRunBuilder } from './run-builder';
 import { ORPHANED_RUN_ID } from '../model/types';
 import type { AguiEvent, CaptureRecord } from '../model/types';
 
+/** `CaptureRecord` is a discriminated union, so every record has to declare its `kind`. */
 function rec(seq: number, tMs: number, connId: string, event: AguiEvent): CaptureRecord {
-  return { seq, tMs, connId, raw: event, event, issues: [] };
+  return { kind: 'event', seq, tMs, connId, raw: event, event, issues: [] };
 }
 
 describe('createRunBuilder — lifecycle and text messages', () => {
@@ -6994,12 +7429,14 @@ describe('createRunBuilder — lifecycle and text messages', () => {
     expect(run.recordSeqs).toEqual([1, 2, 3, 4, 5, 6]);
 
     const message = run.messages.get('m1')!;
-    expect(message.role).toBe('assistant');
+    // `kind` records which event family opened the message — NOT the protocol's own
+    // `role` field, which the START event also carries with different semantics.
+    expect(message.kind).toBe('text');
     expect(message.content).toBe('Hello');
     expect(message.startedAtMs).toBe(10);
     expect(message.endedAtMs).toBe(40);
     expect(message.closed).toBe(true);
-    expect(message.chunkSeqs).toEqual([3, 4]);
+    expect(message.contentSeqs).toEqual([3, 4]);
 
     expect(run.issues.filter((issue) => issue.severity === 'error')).toEqual([]);
     expect(run.metrics.durationMs).toBe(50);
@@ -7024,7 +7461,7 @@ describe('createRunBuilder — lifecycle and text messages', () => {
 
     const run = builder.getRun('r1')!;
     const message = run.messages.get('rm1')!;
-    expect(message.role).toBe('reasoning');
+    expect(message.kind).toBe('reasoning');
     expect(message.content).toBe('think');
     expect(message.closed).toBe(true);
     expect(run.metrics.ttfrtMs).toBe(15);
@@ -7098,6 +7535,7 @@ describe('createRunBuilder — lifecycle and text messages', () => {
 
     builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
     builder.addRecord({
+      kind: 'event',
       seq: 2,
       tMs: 5,
       connId: 'c1',
@@ -7120,6 +7558,7 @@ describe('createRunBuilder — lifecycle and text messages', () => {
     builder.addRecord(rec(1, 0, 'c1', { type: 'TEXT_MESSAGE_START', messageId: 'm0', role: 'assistant' }));
     builder.addRecord(rec(2, 1, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
     builder.addRecord({
+      kind: 'event',
       seq: 3,
       tMs: 2,
       connId: 'c1',
@@ -7149,6 +7588,7 @@ import {
   type AguiEvent,
   type CaptureRecord,
   type Issue,
+  type MessageKind,
   type ReconstructedMessage,
   type Run,
   type RunMetrics,
@@ -7156,6 +7596,13 @@ import {
 import { createStateTimeline, type StateTimeline } from '../state/timeline';
 import { runRules, type RunValidationState } from '../validator';
 import { computeMetrics } from '../metrics/run-metrics';
+
+/**
+ * The `event` arm of the `CaptureRecord` union — the only arm the fold decodes. Naming it
+ * once keeps every helper below from re-narrowing: `addRecord` splits the union at the top
+ * and everything downstream takes the narrowed type.
+ */
+type EventRecord = Extract<CaptureRecord, { kind: 'event' }>;
 
 export interface RunBuilderOptions {
   expandChunks?: boolean; // default true
@@ -7175,7 +7622,11 @@ interface RunEntry {
   run: Run;
   validation: RunValidationState;
   timeline: StateTimeline;
-  /** One entry per event folded into this run; drives computeMetrics. */
+  /**
+   * The records `computeMetrics` sees: one per event folded into this run, plus the
+   * connection's keepalives once Task 13c folds them — keepalive bytes count towards
+   * `totalStreamBytes` even though they are excluded from `eventCountByType`.
+   */
   records: CaptureRecord[];
   metricsDirty: boolean;
 }
@@ -7308,7 +7759,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
 
   function noteRecord(
     entry: RunEntry,
-    record: CaptureRecord,
+    record: EventRecord,
     event: AguiEvent | null,
     countBytes: boolean,
   ): void {
@@ -7322,19 +7773,24 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     entry.metricsDirty = true;
   }
 
+  /**
+   * `kind` is the event family that opened the message ('text' for the `TEXT_MESSAGE_*`
+   * triad, 'reasoning' for `REASONING_MESSAGE_*`). It is deliberately not read from
+   * `event.role`: the protocol's `role` is a different field with different semantics.
+   */
   function ensureMessage(
     entry: RunEntry,
     messageId: string,
-    role: 'assistant' | 'reasoning',
+    kind: MessageKind,
     tMs: number,
   ): ReconstructedMessage {
     let message = entry.run.messages.get(messageId);
     if (!message) {
       // Content for a never-opened messageId is still reconstructed so the panel shows it;
       // the validator has already flagged the missing START on this same event.
-      message = { messageId, role, content: '', startedAtMs: tMs, closed: false, chunkSeqs: [] };
+      message = { messageId, kind, content: '', startedAtMs: tMs, closed: false, contentSeqs: [] };
       entry.run.messages.set(messageId, message);
-      if (role === 'assistant') entry.validation.openTextMessages.add(messageId);
+      if (kind === 'text') entry.validation.openTextMessages.add(messageId);
       else entry.validation.openReasoningMessages.add(messageId);
     }
     return message;
@@ -7356,22 +7812,22 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
       }
       case 'TEXT_MESSAGE_START': {
         const messageId = str(event.messageId);
-        if (messageId !== undefined) ensureMessage(entry, messageId, 'assistant', record.tMs);
+        if (messageId !== undefined) ensureMessage(entry, messageId, 'text', record.tMs);
         break;
       }
       case 'TEXT_MESSAGE_CONTENT': {
         const messageId = str(event.messageId);
         if (messageId !== undefined) {
-          const message = ensureMessage(entry, messageId, 'assistant', record.tMs);
+          const message = ensureMessage(entry, messageId, 'text', record.tMs);
           message.content += str(event.delta) ?? '';
-          message.chunkSeqs.push(record.seq);
+          message.contentSeqs.push(record.seq);
         }
         break;
       }
       case 'TEXT_MESSAGE_END': {
         const messageId = str(event.messageId);
         if (messageId !== undefined) {
-          const message = ensureMessage(entry, messageId, 'assistant', record.tMs);
+          const message = ensureMessage(entry, messageId, 'text', record.tMs);
           message.closed = true;
           message.endedAtMs = record.tMs;
           validation.openTextMessages.delete(messageId);
@@ -7388,7 +7844,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
         if (messageId !== undefined) {
           const message = ensureMessage(entry, messageId, 'reasoning', record.tMs);
           message.content += str(event.delta) ?? '';
-          message.chunkSeqs.push(record.seq);
+          message.contentSeqs.push(record.seq);
         }
         break;
       }
@@ -7409,6 +7865,12 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
 
   function addRecord(record: CaptureRecord): void {
     const conn = ensureConn(record.connId);
+
+    // A keepalive is not a protocol event: it carries a `comment` and no `event` at all,
+    // so it resolves no run and never enters `recordSeqs`. Task 13c folds it for
+    // `keepalive-gap` and for its bytes; here it is simply not part of the event stream.
+    // Narrowing on `kind` first is also what makes `record.event` legal below.
+    if (record.kind === 'keepalive') return;
 
     if (record.event === null) {
       const open = conn.openRunId === undefined ? undefined : entries.get(conn.openRunId);
@@ -7507,7 +7969,7 @@ Append the following to `src/core/normalizer/run-builder.test.ts`:
 ```ts
 describe('createRunBuilder — tool calls, state and steps', () => {
   function rec(seq: number, tMs: number, connId: string, event: AguiEvent): CaptureRecord {
-    return { seq, tMs, connId, raw: event, event, issues: [] };
+    return { kind: 'event', seq, tMs, connId, raw: event, event, issues: [] };
   }
 
   it('accumulates TOOL_CALL_ARGS across deltas and parses them at TOOL_CALL_END', () => {
@@ -7595,15 +8057,26 @@ describe('createRunBuilder — tool calls, state and steps', () => {
 
     const run = builder.getRun('r1')!;
     expect(run.stateTimeline).toHaveLength(3);
-    expect(run.stateTimeline[0]!.kind).toBe('snapshot');
-    expect(run.stateTimeline[0]!.value).toEqual({ count: 1, items: ['a'] });
-    expect(run.stateTimeline[1]!.kind).toBe('delta');
-    expect(run.stateTimeline[1]!.value).toEqual({ count: 2, items: ['a'] });
-    expect(run.stateTimeline[1]!.failure).toBeUndefined();
-    expect(run.stateTimeline[2]!.failure?.opIndex).toBe(0);
-    expect(run.stateTimeline[2]!.failure?.reason).toBe('path-not-found');
+
+    // `StateFrame` is a discriminated union: `patch` and `failure` exist only on the
+    // `delta` arm, so the test has to narrow on `kind` before reading them.
+    const [snapshot, applied, failed] = run.stateTimeline;
+
+    expect(snapshot?.kind).toBe('snapshot');
+    expect(snapshot?.value).toEqual({ count: 1, items: ['a'] });
+
+    expect(applied?.kind).toBe('delta');
+    if (applied?.kind !== 'delta') throw new Error('expected frame 1 to be a delta');
+    expect(applied.value).toEqual({ count: 2, items: ['a'] });
+    expect(applied.patch).toEqual(good);
+    expect(applied.failure).toBeUndefined();
+
+    expect(failed?.kind).toBe('delta');
+    if (failed?.kind !== 'delta') throw new Error('expected frame 2 to be a delta');
+    expect(failed.failure?.opIndex).toBe(0);
+    expect(failed.failure?.reason).toBe('path-not-found');
     // a failed patch leaves the value at the previous frame
-    expect(run.stateTimeline[2]!.value).toEqual({ count: 2, items: ['a'] });
+    expect(failed.value).toEqual({ count: 2, items: ['a'] });
 
     expect(run.issues.some((issue) => issue.code === 'state-patch-failed')).toBe(true);
     expect(run.metrics.statePatchCount).toBe(2);
@@ -7665,7 +8138,8 @@ The eight Task 13a tests still pass.
 
 - [ ] **Step 3: Write the implementation**
 
-3.1 — Replace the import block at the top of `src/core/normalizer/run-builder.ts` with:
+3.1 — Replace the import block at the top of `src/core/normalizer/run-builder.ts` with
+the following (the `EventRecord` alias just below it stays as Task 13a wrote it):
 
 ```ts
 import {
@@ -7673,6 +8147,7 @@ import {
   type AguiEvent,
   type CaptureRecord,
   type Issue,
+  type MessageKind,
   type PatchOp,
   type ReconstructedMessage,
   type Run,
@@ -7699,6 +8174,13 @@ function activityIdOf(event: AguiEvent): string | undefined {
   return `${messageId ?? ''}#${activityType ?? ''}`;
 }
 
+/**
+ * A patch off the wire is `unknown`. `applyPatch` takes `readonly unknown[]` and validates
+ * each op itself, but `StateFrame`'s delta arm types `patch` as `PatchOp[]` so the frame can
+ * be replayed, so the array is asserted here — once, at the boundary — rather than at every
+ * call site. A malformed op survives the assertion and is reported as `invalid-op` by
+ * `applyPatch`, which is where the failure belongs.
+ */
 function asPatchOps(value: unknown): PatchOp[] {
   return Array.isArray(value) ? (value as PatchOp[]) : [];
 }
@@ -7855,6 +8337,14 @@ Expected: 14 passing.
 - Modify: `src/core/normalizer/run-builder.ts`
 - Test: `src/core/normalizer/run-builder.test.ts`
 
+This cycle also folds the `kind: 'keepalive'` arm of `CaptureRecord` and **owns
+`keepalive-gap`** — Task 11's validator does not implement it, because a `ValidatorRule`
+receives an `AguiEvent` and a keepalive record has no event at all, and because the check is
+inter-record and connection-scoped. Per Appendix A's keepalive-attribution decision, a
+keepalive never enters `run.recordSeqs`, the issue attaches to the connection's current run
+(or to `ORPHANED_RUN_ID` when it has none), and `Issue.seq` / `Issue.tMs` come from the
+keepalive that *closed* the gap.
+
 - [ ] **Step 1: Write the failing test**
 
 Append the following to `src/core/normalizer/run-builder.test.ts`:
@@ -7862,7 +8352,12 @@ Append the following to `src/core/normalizer/run-builder.test.ts`:
 ```ts
 describe('createRunBuilder — chunk expansion and connection close', () => {
   function rec(seq: number, tMs: number, connId: string, event: AguiEvent): CaptureRecord {
-    return { seq, tMs, connId, raw: event, event, issues: [] };
+    return { kind: 'event', seq, tMs, connId, raw: event, event, issues: [] };
+  }
+
+  /** A keepalive frame: the comment arm of the union, carrying no `event` at all. */
+  function keepalive(seq: number, tMs: number, connId: string, comment: string): CaptureRecord {
+    return { kind: 'keepalive', seq, tMs, connId, raw: `:${comment}\n\n`, comment, issues: [] };
   }
 
   it('reconstructs the same message content from chunks as from an explicit triad', () => {
@@ -7884,7 +8379,7 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
 
     expect(fromChunks.content).toBe('Hello world');
     expect(fromChunks.content).toBe(fromTriad.content);
-    expect(fromChunks.role).toBe(fromTriad.role);
+    expect(fromChunks.kind).toBe(fromTriad.kind);
 
     // expansion feeds metrics too: the chunk record at tMs 10 became the first content delta
     expect(chunked.getRun('r1')!.metrics.ttftMs).toBe(10);
@@ -7982,6 +8477,81 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(builder.getRun('rB')!.outcome).toBe('running');
     expect(builder.getRun('rB')!.issues.some((issue) => issue.code === 'run-never-terminated')).toBe(false);
   });
+
+  it('records keepalives without counting them as events', () => {
+    const builder = createRunBuilder();
+    const started = { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' };
+
+    builder.addRecord(rec(1, 0, 'c1', started));
+    builder.addRecord(keepalive(2, 5_000, 'c1', 'ka'));
+    builder.addRecord(keepalive(3, 10_000, 'c1', ''));
+
+    const run = builder.getRun('r1')!;
+
+    // requirements §5.4: keepalives are recorded but excluded from the event count, while
+    // their bytes still count — diagnosing proxy buffering is the whole point of keeping them.
+    expect(run.recordSeqs).toEqual([1]);
+    expect(run.metrics.eventCountByType).toEqual({ RUN_STARTED: 1 });
+    expect(run.metrics.totalStreamBytes).toBe(
+      JSON.stringify(started).length +
+        JSON.stringify(':ka\n\n').length +
+        JSON.stringify(':\n\n').length,
+    );
+    expect(run.issues.filter((issue) => issue.code === 'keepalive-gap')).toEqual([]);
+  });
+
+  it('raises keepalive-gap on the keepalive that closed a gap longer than 15 s', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(keepalive(2, 1_000, 'c1', 'ka'));
+    builder.addRecord(keepalive(3, 12_000, 'c1', 'ka')); // 11 s — under the threshold
+    builder.addRecord(keepalive(4, 40_000, 'c1', 'ka')); // 28 s — over it
+
+    const run = builder.getRun('r1')!;
+    const gaps = run.issues.filter((issue) => issue.code === 'keepalive-gap');
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.severity).toBe('info');
+    expect(gaps[0]!.runId).toBe('r1');
+    // anchored to the keepalive that CLOSED the gap, not the one that opened it
+    expect(gaps[0]!.seq).toBe(4);
+    expect(gaps[0]!.tMs).toBe(40_000);
+    expect(run.recordSeqs).toEqual([1]);
+  });
+
+  it('attaches a keepalive gap to the orphaned run when the connection has no run', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(keepalive(1, 0, 'c1', 'ka'));
+    builder.addRecord(keepalive(2, 30_000, 'c1', 'ka'));
+
+    const orphan = builder.getRun(ORPHANED_RUN_ID)!;
+    const gaps = orphan.issues.filter((issue) => issue.code === 'keepalive-gap');
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.seq).toBe(2);
+    expect(gaps[0]!.runId).toBe(ORPHANED_RUN_ID);
+    // a keepalive is not a protocol event: it contributes no record seqs, so the orphaned
+    // run is still empty as far as `runs()` is concerned
+    expect(orphan.recordSeqs).toEqual([]);
+    expect(builder.runs()).toEqual([]);
+  });
+
+  it('tracks the keepalive gap per connection, not builder-wide', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'cA', { type: 'RUN_STARTED', threadId: 'tA', runId: 'rA' }));
+    builder.addRecord(rec(2, 0, 'cB', { type: 'RUN_STARTED', threadId: 'tB', runId: 'rB' }));
+    builder.addRecord(keepalive(3, 1_000, 'cA', 'ka'));
+    builder.addRecord(keepalive(4, 2_000, 'cB', 'ka'));
+    builder.addRecord(keepalive(5, 30_000, 'cA', 'ka'));
+    builder.addRecord(keepalive(6, 31_000, 'cB', 'ka'));
+
+    // 29 s on cA and 29 s on cB — one gap each, not one interleaved 1 s gap each
+    expect(builder.getRun('rA')!.issues.filter((issue) => issue.code === 'keepalive-gap')).toHaveLength(1);
+    expect(builder.getRun('rB')!.issues.filter((issue) => issue.code === 'keepalive-gap')).toHaveLength(1);
+  });
 });
 ```
 
@@ -7991,20 +8561,29 @@ Run: `pnpm vitest run src/core/normalizer/run-builder.test.ts`
 Expected: FAIL — the new tests throw
 `TypeError: Cannot read properties of undefined (reading 'content')` (chunk expansion never runs),
 `TypeError: Cannot read properties of undefined (reading 'toolCallName')`,
-`TypeError: Cannot read properties of undefined (reading 'seq')`, and
-`expected [] to have a length of 1 but got +0` (no `run-never-terminated`).
+`TypeError: Cannot read properties of undefined (reading 'seq')`,
+`expected [] to have a length of 1 but got +0` (no `run-never-terminated`, and no
+`keepalive-gap` — Task 13a drops keepalive records on the floor), and
+`TypeError: Cannot read properties of undefined (reading 'issues')` (nothing has ever
+created the orphaned run, since a keepalive alone did not).
 The 14 tests from Tasks 13a and 13b still pass.
 
 - [ ] **Step 3: Write the implementation**
 
-3.1 — Replace the import block at the top of `src/core/normalizer/run-builder.ts` with:
+3.1 — Replace the import block at the top of `src/core/normalizer/run-builder.ts` with
+the following (the `EventRecord` alias just below it stays as Task 13a wrote it).
+`makeIssue` is a value import, not a type import: it is the only sanctioned way to build an
+`Issue`, and it stamps `severity` from `ISSUE_SEVERITY` so this section never restates
+`keepalive-gap`'s `'info'` inline.
 
 ```ts
 import {
   ORPHANED_RUN_ID,
+  makeIssue,
   type AguiEvent,
   type CaptureRecord,
   type Issue,
+  type MessageKind,
   type PatchOp,
   type ReconstructedMessage,
   type Run,
@@ -8018,9 +8597,19 @@ import { computeMetrics } from '../metrics/run-metrics';
 import { createChunkExpanderState, expandChunk, type ChunkExpanderState } from './chunk-expander';
 ```
 
-3.2 — Replace the `ConnEntry` interface with:
+3.2 — Replace the `ConnEntry` interface with the following, and add the keepalive threshold
+and the keepalive arm's type alias beside it:
 
 ```ts
+/** The `keepalive` arm of the `CaptureRecord` union — no `event`, a `comment` instead. */
+type KeepaliveRecord = Extract<CaptureRecord, { kind: 'keepalive' }>;
+
+/**
+ * requirements §7: a heartbeat gap longer than this is an Info-level hint that something —
+ * usually a proxy — is buffering the stream. Strictly greater, so an exactly-15s gap is fine.
+ */
+const KEEPALIVE_GAP_MS = 15_000;
+
 interface ConnEntry {
   connId: string;
   method?: string;
@@ -8030,6 +8619,8 @@ interface ConnEntry {
   runIds: string[];
   closedAtMs?: number;
   chunkState: ChunkExpanderState;
+  /** Arrival time of the last keepalive on this connection; gaps are measured against it. */
+  lastKeepaliveMs?: number;
 }
 ```
 
@@ -8054,13 +8645,57 @@ and replace the `ensureConn` function with:
   }
 ```
 
-3.4 — Replace the whole `addRecord` function with:
+3.4 — Replace the whole `addRecord` function with the keepalive fold plus the new
+`addRecord`:
 
 ```ts
+  /**
+   * Fold one keepalive frame.
+   *
+   * A keepalive is connection-scoped but every `Issue` is run-scoped, so the gap attaches to
+   * the connection's current run, or to the orphaned run when the connection has none. It is
+   * not a protocol event: it resolves nothing, and it never enters `run.recordSeqs`.
+   */
+  function foldKeepalive(conn: ConnEntry, record: KeepaliveRecord): void {
+    const open = conn.openRunId === undefined ? undefined : entries.get(conn.openRunId);
+    const entry = open ?? ensureOrphanEntry(conn.connId, record.tMs);
+
+    // The bytes are real bytes on the wire, so the record still goes to `computeMetrics`,
+    // which counts them in `totalStreamBytes` while `kind` keeps them out of
+    // `eventCountByType`. `noteRecord` is deliberately not used: it pushes `recordSeqs`.
+    entry.records.push(record);
+    entry.metricsDirty = true;
+
+    const previousMs = conn.lastKeepaliveMs;
+    conn.lastKeepaliveMs = record.tMs;
+    if (previousMs === undefined) return;
+
+    const gapMs = record.tMs - previousMs;
+    if (gapMs <= KEEPALIVE_GAP_MS) return;
+
+    // Anchored to the keepalive that CLOSED the gap — it is a real record with a real seq,
+    // which is why `keepalive-gap` is not one of the codes `finalizeRules` derives a seq for.
+    attachIssues(entry, [
+      makeIssue(
+        'keepalive-gap',
+        `Keepalive gap of ${gapMs}ms on connection ${conn.connId} exceeds ${KEEPALIVE_GAP_MS}ms`,
+        record.seq,
+        { tMs: record.tMs },
+      ),
+    ]);
+  }
+
   function addRecord(record: CaptureRecord): void {
     const conn = ensureConn(record.connId);
 
-    // 1. An unparseable frame carries no event to fold; it still belongs to the run's
+    // 1. A keepalive carries no event to fold — only timing and bytes. Splitting the union
+    //    here is also what makes every `record.event` access below legal.
+    if (record.kind === 'keepalive') {
+      foldKeepalive(conn, record);
+      return;
+    }
+
+    // 2. An unparseable frame carries no event to fold; it still belongs to the run's
     //    record list and its capture-time issues still surface on the run.
     if (record.event === null) {
       const open = conn.openRunId === undefined ? undefined : entries.get(conn.openRunId);
@@ -8070,7 +8705,7 @@ and replace the `ensureConn` function with:
       return;
     }
 
-    // 2. Chunk expansion, when enabled, turns one *_CHUNK into its triad members.
+    // 3. Chunk expansion, when enabled, turns one *_CHUNK into its triad members.
     let events: AguiEvent[];
     let expansionIssues: Issue[];
     if (expandChunks) {
@@ -8082,7 +8717,7 @@ and replace the `ensureConn` function with:
       expansionIssues = [];
     }
 
-    // 3. Resolve, validate (pure), then mutate — the builder owns every state change.
+    // 4. Resolve, validate (pure), then mutate — the builder owns every state change.
     let first: RunEntry | undefined;
     for (let i = 0; i < events.length; i += 1) {
       const event = events[i]!;
@@ -8095,7 +8730,7 @@ and replace the `ensureConn` function with:
       attachIssues(entry, issues);
     }
 
-    // 4. Record bookkeeping and issue attachment for the record as a whole.
+    // 5. Record bookkeeping and issue attachment for the record as a whole.
     const openEntry = conn.openRunId === undefined ? undefined : entries.get(conn.openRunId);
     const target = first ?? openEntry ?? ensureOrphanEntry(conn.connId, record.tMs);
     if (events.length === 0) noteRecord(target, record, null, true);
@@ -8132,7 +8767,7 @@ and replace the `ensureConn` function with:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run src/core/normalizer/run-builder.test.ts`
-Expected: 21 passing.
+Expected: 25 passing.
 
 - [ ] **Step 5: Commit**
 
@@ -8211,6 +8846,26 @@ Expected: 21 passing.
     `{ op: 'replace', path: '/nope' }` against `{ count: 2, items: ['a'] }` — i.e. a `replace`
     whose parent exists but whose final key does not. If Task 9 classifies that as
     `'parent-not-found'` instead, that single assertion needs updating.
+    **RESOLVED AT ASSEMBLY.** Appendix A's R6 fixes it as `'path-not-found'`, which is what
+    Task 8 implements and what Task 13b asserts. No change needed.
+
+11. **Keepalive attribution.** Nothing in the requirements or the design said how a
+    connection-scoped keepalive attributes to a run-scoped issue; Appendix A settles it and
+    this section implements it. Consequences worth naming: a keepalive resolves no run, so it
+    can only be attributed to a run the connection *already* had — otherwise it lands in the
+    orphaned run, which stays hidden from `runs()` because it still has no `recordSeqs`, even
+    though `allIssues()` still reports the gap. That asymmetry is deliberate: a heartbeat-only
+    connection is worth an Info issue but is not a run. The
+    gap is measured between consecutive **keepalives**, not between a keepalive and the last
+    event, so a stream that is delivering events perfectly well but heartbeats rarely is still
+    flagged. The 15 s threshold is fixed by requirements §7 rather than exposed on
+    `RunBuilderOptions`; the tests reach it with synthetic `tMs` values instead.
+
+12. **Keepalive bytes reach metrics through `entry.records`, not `recordSeqs`.** The two are
+    separate: `recordSeqs` is the run's event index (keepalives are excluded), while
+    `entry.records` is what `computeMetrics` folds. Task 12 narrows on `record.kind` and
+    counts keepalive bytes in `totalStreamBytes` while excluding them from `eventCountByType`,
+    which only works because the builder hands it the keepalive records.
 
 ---
 
@@ -8227,6 +8882,14 @@ alias, and Task 15 adds the behaviour to the same file. The dependency is type-o
 directions (`codec.ts` imports the type from `redact.ts`, `redact.ts` imports the line types from
 `codec.ts`), which erases at compile time.
 
+Amendments A18/A19 make a keepalive a first-class `CaptureRecord` arm, so the line union needs a
+matching `JsonlKeepalive` kind in **both** `JsonlLine` and `KNOWN_KINDS`. Without it a keepalive
+line decodes as an `unrecognized kind` error and the frame is dropped on import — losing exactly
+the data requirements §5.4 says to record, and making Task 13c's `keepalive-gap` issue
+unreproducible from a capture file. `JsonlKeepalive` carries its own `seq` because the appendix's
+keepalive-attribution decision anchors `keepalive-gap` to the seq of the keepalive that *closed*
+the gap, so that seq has to survive the round trip.
+
 - [ ] **Step 1: Write the failing test**
 
 ```ts
@@ -8237,6 +8900,7 @@ import {
   encodeJsonl,
   type JsonlEvent,
   type JsonlHeader,
+  type JsonlKeepalive,
   type JsonlLine,
   type JsonlRequest,
 } from './codec';
@@ -8269,6 +8933,23 @@ const event: JsonlEvent = {
   event: { type: 'RUN_STARTED', threadId: 't_1', runId: 'r_1' },
 };
 
+const keepalive: JsonlKeepalive = {
+  kind: 'keepalive',
+  connId: 'c1',
+  seq: 2,
+  tMs: 15_012,
+  comment: 'ping',
+};
+
+/** A bare `:` SSE heartbeat — a comment frame with no body. */
+const bareKeepalive: JsonlKeepalive = {
+  kind: 'keepalive',
+  connId: 'c1',
+  seq: 3,
+  tMs: 30_020,
+  comment: '',
+};
+
 describe('encodeJsonl', () => {
   it('emits one JSON object per line with a trailing newline', () => {
     const text = encodeJsonl([header, request, event]);
@@ -8277,13 +8958,26 @@ describe('encodeJsonl', () => {
     const physical = text.split('\n');
     expect(physical).toHaveLength(4);
     expect(physical[3]).toBe('');
-    expect(JSON.parse(physical[0])).toEqual(header);
-    expect(JSON.parse(physical[1])).toEqual(request);
-    expect(JSON.parse(physical[2])).toEqual(event);
+    // `!` after the length assertion above: `noUncheckedIndexedAccess` types these as
+    // `string | undefined`, and `JSON.parse` takes a `string`.
+    expect(JSON.parse(physical[0]!)).toEqual(header);
+    expect(JSON.parse(physical[1]!)).toEqual(request);
+    expect(JSON.parse(physical[2]!)).toEqual(event);
   });
 
   it('encodes an empty list as the empty string', () => {
     expect(encodeJsonl([])).toBe('');
+  });
+
+  it('emits keepalive lines, empty comment included', () => {
+    const text = encodeJsonl([keepalive, bareKeepalive]);
+
+    const physical = text.split('\n').filter((l) => l !== '');
+    expect(physical).toHaveLength(2);
+    expect(physical.map((l) => JSON.parse(l))).toEqual([keepalive, bareKeepalive]);
+    // `comment: ''` is falsy but must still be written: a bare `:` heartbeat has to stay
+    // distinguishable from a keepalive whose comment field went missing.
+    expect(text).toContain('"comment":""');
   });
 });
 
@@ -8295,6 +8989,38 @@ describe('decodeJsonl', () => {
 
     expect(decoded.errors).toEqual([]);
     expect(decoded.lines).toEqual(lines);
+  });
+
+  it('round-trips a keepalive inside a mixed stream', () => {
+    const finished: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 4,
+      tMs: 40,
+      event: { type: 'RUN_FINISHED', threadId: 't_1', runId: 'r_1' },
+    };
+    const lines: JsonlLine[] = [header, request, event, keepalive, finished];
+
+    const decoded = decodeJsonl(encodeJsonl(lines));
+
+    // `keepalive` is a known kind: it must not be collected as an `unrecognized kind`
+    // error and dropped, which is what would silently lose the frames §5.4 requires.
+    expect(decoded.errors).toEqual([]);
+    expect(decoded.lines).toEqual(lines);
+  });
+
+  it('round-trips a bare `:` heartbeat, keeping the empty comment and the seq', () => {
+    const decoded = decodeJsonl(encodeJsonl([bareKeepalive]));
+
+    expect(decoded.errors).toEqual([]);
+    expect(decoded.lines).toEqual([bareKeepalive]);
+
+    const [only] = decoded.lines;
+    if (only?.kind !== 'keepalive') throw new Error('expected a keepalive line');
+    expect(only.comment).toBe('');
+    // `keepalive-gap` anchors to the seq of the keepalive that closed the gap, so an
+    // imported capture has to carry it.
+    expect(only.seq).toBe(3);
   });
 
   it('survives a payload containing a newline inside a string', () => {
@@ -8442,6 +9168,13 @@ export interface JsonlRequest {
   input: unknown;
 }
 
+/**
+ * Mirrors the `event` arm of `CaptureRecord`. `event` stays `unknown` rather than
+ * `AguiEvent | null`: `CaptureRecord.event` is assignable to it on the encode side, and on
+ * decode the payload is whatever the file happened to contain — this codec deliberately
+ * does not validate event shape (that is `checkShape`'s job), so a narrower type here would
+ * be a claim it cannot make good on.
+ */
 export interface JsonlEvent {
   kind: 'event';
   connId: string;
@@ -8450,9 +9183,26 @@ export interface JsonlEvent {
   event: unknown;
 }
 
-export type JsonlLine = JsonlHeader | JsonlRequest | JsonlEvent;
+/**
+ * Mirrors the `keepalive` arm of `CaptureRecord` (A18/A19). Keepalives are recorded, not
+ * dropped: requirements §5.4 requires them kept — and excluded from the event count — and
+ * the whole point of retaining them is diagnosing proxy buffering after the fact.
+ *
+ * `seq` is part of the record, not an accident of ordering: `keepalive-gap` anchors to the
+ * seq of the keepalive that closed the gap, so it must survive export and re-import.
+ */
+export interface JsonlKeepalive {
+  kind: 'keepalive';
+  connId: string;
+  seq: number;
+  tMs: number;
+  /** The SSE comment body. Empty string for a bare `:` heartbeat. */
+  comment: string;
+}
 
-const KNOWN_KINDS: ReadonlySet<string> = new Set(['header', 'request', 'event']);
+export type JsonlLine = JsonlHeader | JsonlRequest | JsonlEvent | JsonlKeepalive;
+
+const KNOWN_KINDS: ReadonlySet<string> = new Set(['header', 'request', 'event', 'keepalive']);
 
 /**
  * One JSON object per line, trailing newline included. `JSON.stringify` escapes every
@@ -8472,10 +9222,12 @@ export function decodeJsonl(text: string): { lines: JsonlLine[]; errors: string[
   const lines: JsonlLine[] = [];
   const errors: string[] = [];
 
+  // `entries()` walks the same indices in the same order as an index loop, but yields
+  // `[number, string]` tuples — so `raw` is a `string` without a `!` or a `?? ''` default
+  // that would quietly reclassify an out-of-range read as a blank line.
   const physical = text.split(/\r?\n/);
-  for (let i = 0; i < physical.length; i += 1) {
+  for (const [i, raw] of physical.entries()) {
     const lineNo = i + 1;
-    const raw = physical[i];
     if (raw.trim() === '') continue;
 
     let parsed: unknown;
@@ -8508,7 +9260,7 @@ export function decodeJsonl(text: string): { lines: JsonlLine[]; errors: string[
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run src/core/jsonl/codec.test.ts`
-Expected: PASS, 11 tests.
+Expected: PASS, 14 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -8536,12 +9288,23 @@ Group → field mapping implemented here:
 structure too. Numbers and booleans are payload and are replaced using their decimal/`true|false`
 text length, so `7` becomes `«redacted: 1 chars»` and `false` becomes `«redacted: 5 chars»`.
 
+**`JsonlKeepalive` (Task 14, A18/A19) passes through unchanged.** Requirements §11 defines exactly
+five redaction groups — `text`, `reasoning`, `toolArgs`, `toolResults`, `state` — and none of them
+covers an SSE comment. A keepalive comment is proxy/heartbeat metadata (`: ping`, an nginx or
+Cloudflare buffering probe), emitted by infrastructure rather than by the agent or the user, so it
+carries no model output, no tool payload and no state. Redacting it would also destroy the one
+thing keepalives are retained for: reading the comment body and its timing when diagnosing proxy
+buffering. `JsonlHeader` passes through for the same "no group owns it" reason — and note the
+header's own `redacted` field is still left alone here (Appendix B item 2: populating it belongs to
+the export bundle builder). The test below pins the pass-through so a later group addition has to
+change it deliberately.
+
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 // src/core/jsonl/redact.test.ts
 import { describe, it, expect } from 'vitest';
-import type { JsonlEvent, JsonlHeader, JsonlRequest } from './codec';
+import type { JsonlEvent, JsonlHeader, JsonlKeepalive, JsonlRequest } from './codec';
 import { ALL_REDACTION_GROUPS, redactLine, redactString } from './redact';
 
 function ev(event: Record<string, unknown>, seq = 1): JsonlEvent {
@@ -8869,6 +9632,22 @@ describe('redactLine — passthrough cases', () => {
     expect(redactLine(header, [...ALL_REDACTION_GROUPS])).toEqual(header);
   });
 
+  it('leaves a keepalive untouched under every group', () => {
+    const keepalive: JsonlKeepalive = {
+      kind: 'keepalive',
+      connId: 'c1',
+      seq: 7,
+      tMs: 15_000,
+      comment: 'ping',
+    };
+    const bare: JsonlKeepalive = { ...keepalive, seq: 8, tMs: 30_000, comment: '' };
+
+    // Proxy/heartbeat metadata, not user content: no §11 group owns an SSE comment, and
+    // the comment body is exactly what a proxy-buffering diagnosis reads.
+    expect(redactLine(keepalive, [...ALL_REDACTION_GROUPS])).toEqual(keepalive);
+    expect(redactLine(bare, [...ALL_REDACTION_GROUPS])).toEqual(bare);
+  });
+
   it('leaves lifecycle events untouched under every group', () => {
     const line = ev({ type: 'RUN_STARTED', threadId: 't_1', runId: 'r_1' });
 
@@ -8991,7 +9770,7 @@ function redactInput(input: unknown): unknown {
 /**
  * Returns a redacted copy. Never mutates its argument. Structure — `type`, ids, ordering,
  * timings, JSON Pointer paths, patch ops — always survives; only the value payloads named
- * by `groups` are replaced.
+ * by `groups` are replaced. Lines no group owns are returned as-is, by reference.
  */
 export function redactLine(line: JsonlLine, groups: RedactionGroup[]): JsonlLine {
   if (groups.length === 0) return line;
@@ -9004,6 +9783,11 @@ export function redactLine(line: JsonlLine, groups: RedactionGroup[]): JsonlLine
     if (!set.has('state')) return line;
     return { ...line, input: redactInput(line.input) };
   }
+  // `header` and `keepalive` fall through unchanged. Requirements §11's five groups are
+  // text/reasoning/toolArgs/toolResults/state and none covers either kind: a keepalive
+  // comment is proxy heartbeat metadata rather than agent or user content, and redacting
+  // it would erase the signal keepalives are recorded for (proxy buffering). The header's
+  // `redacted` field is likewise left to the export bundle builder.
   return line;
 }
 ```
@@ -9011,7 +9795,7 @@ export function redactLine(line: JsonlLine, groups: RedactionGroup[]): JsonlLine
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run src/core/jsonl/redact.test.ts`
-Expected: PASS, 14 tests.
+Expected: PASS, 17 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -9035,8 +9819,31 @@ that has never been observed failing is not evidence of anything.
 `malformed.agui.jsonl` carries exactly three defects — no terminal event, one empty
 `TEXT_MESSAGE_CONTENT` delta (seq 5), one `STATE_DELTA` whose op targets a missing parent (seq 9).
 Everything else is deliberately clean: the message is closed, the steps are balanced, the snapshot
-precedes the delta, the request supplies `input`, and no gap exceeds the keepalive threshold — so
-any fourth issue means a real regression.
+precedes the delta, the request supplies `input`, every event type is known and shape-valid, and
+there are **no keepalive lines at all** — so any fourth issue means a real regression.
+
+**Keepalives in the fixtures (decision).** A18/A19 make keepalives representable end to end, and
+Task 14 adds a `JsonlKeepalive` line kind, so the fixtures can now carry them. They are placed
+deliberately:
+
+- `malformed.agui.jsonl` gets **none**. `keepalive-gap` is an Info-severity issue raised on a gap
+  over 15 s, and this fixture's entire job is the "exactly three validator entries" invariant. A
+  keepalive with a long gap would silently make it four; a keepalive with a short gap would add
+  nothing the happy-run fixture does not already prove, while giving a future editor a knob that
+  quietly changes the count. Omitting keepalives keeps `keepalive-gap` structurally unreachable
+  here, so the "exactly three" assertion stays both true and meaningful.
+- `happy-run.agui.jsonl` gets **exactly one**, at seq 11 / tMs 220 — inside the 170 ms the run
+  spends waiting on `get_weather`, which is where a real proxy heartbeat lands. Its 70 ms gap is
+  three orders of magnitude under the 15 s threshold, so it raises nothing, and it rides through
+  every proof in the section: the codec must round-trip the line (Done-when #6), `redactLine` must
+  pass it through untouched (Done-when #7), and the run model must attribute it per the keepalive
+  rules — excluded from `recordSeqs` and from `eventCountByType`, its bytes still counted in
+  `totalStreamBytes`. That is the whole "keepalives survive the round trip without perturbing the
+  issue count" claim, proved on the fixture that already asserts model identity.
+
+Because the keepalive takes seq 11 on connection `c1`, the four events after it are numbered 12–15.
+Seqs are one connection-wide space shared by every frame off the wire, keepalives included; only
+`recordSeqs` (protocol events attributed to a run) skips them.
 
 - [ ] **Step 1: Write the fixture files**
 
@@ -9055,10 +9862,11 @@ any fourth issue means a real regression.
 {"kind":"event","connId":"c1","seq":8,"tMs":125,"event":{"type":"TOOL_CALL_ARGS","toolCallId":"tc_1","delta":"{\"city\":\"Paris\","}}
 {"kind":"event","connId":"c1","seq":9,"tMs":140,"event":{"type":"TOOL_CALL_ARGS","toolCallId":"tc_1","delta":"\"units\":\"metric\"}"}}
 {"kind":"event","connId":"c1","seq":10,"tMs":150,"event":{"type":"TOOL_CALL_END","toolCallId":"tc_1"}}
-{"kind":"event","connId":"c1","seq":11,"tMs":320,"event":{"type":"TOOL_CALL_RESULT","messageId":"m_2","toolCallId":"tc_1","role":"tool","content":"{\"tempC\":24,\"summary\":\"Sunny\"}"}}
-{"kind":"event","connId":"c1","seq":12,"tMs":340,"event":{"type":"STATE_SNAPSHOT","snapshot":{"counter":1,"lastCity":"Paris","notes":["first note"]}}}
-{"kind":"event","connId":"c1","seq":13,"tMs":360,"event":{"type":"STATE_DELTA","delta":[{"op":"replace","path":"/counter","value":2},{"op":"add","path":"/notes/-","value":"second note"}]}}
-{"kind":"event","connId":"c1","seq":14,"tMs":380,"event":{"type":"RUN_FINISHED","threadId":"t_happy","runId":"r_happy"}}
+{"kind":"keepalive","connId":"c1","seq":11,"tMs":220,"comment":"ping"}
+{"kind":"event","connId":"c1","seq":12,"tMs":320,"event":{"type":"TOOL_CALL_RESULT","messageId":"m_2","toolCallId":"tc_1","role":"tool","content":"{\"tempC\":24,\"summary\":\"Sunny\"}"}}
+{"kind":"event","connId":"c1","seq":13,"tMs":340,"event":{"type":"STATE_SNAPSHOT","snapshot":{"counter":1,"lastCity":"Paris","notes":["first note"]}}}
+{"kind":"event","connId":"c1","seq":14,"tMs":360,"event":{"type":"STATE_DELTA","delta":[{"op":"replace","path":"/counter","value":2},{"op":"add","path":"/notes/-","value":"second note"}]}}
+{"kind":"event","connId":"c1","seq":15,"tMs":380,"event":{"type":"RUN_FINISHED","threadId":"t_happy","runId":"r_happy"}}
 ```
 
 `src/test/fixtures/malformed.agui.jsonl`:
@@ -9102,11 +9910,12 @@ import {
   decodeJsonl,
   encodeJsonl,
   type JsonlEvent,
+  type JsonlKeepalive,
   type JsonlLine,
 } from '../core/jsonl/codec';
 import { ALL_REDACTION_GROUPS, redactLine } from '../core/jsonl/redact';
 import { createRunBuilder, type RunBuilder } from '../core/normalizer/run-builder';
-import type { AguiEvent, CaptureRecord, Run } from '../core/model/types';
+import type { AguiEvent, CaptureRecord, Issue, Run, StateFrame } from '../core/model/types';
 
 function loadFixture(name: string): JsonlLine[] {
   const text = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
@@ -9115,13 +9924,33 @@ function loadFixture(name: string): JsonlLine[] {
   return lines;
 }
 
+/** A19: `CaptureRecord` is a union on `kind`, so an event record must say so explicitly. */
 function toRecord(line: JsonlEvent): CaptureRecord {
   return {
+    kind: 'event',
     seq: line.seq,
     tMs: line.tMs,
     connId: line.connId,
     raw: line.event,
     event: line.event as AguiEvent,
+    issues: [],
+  };
+}
+
+/**
+ * A keepalive frame carries a comment, never an event — the union is what makes that
+ * structural. `raw` is reconstituted as the SSE comment bytes the frame occupied on the wire
+ * (Task 12's convention), so `totalStreamBytes` counts a keepalive identically on both sides
+ * of a round trip.
+ */
+function toKeepaliveRecord(line: JsonlKeepalive): CaptureRecord {
+  return {
+    kind: 'keepalive',
+    seq: line.seq,
+    tMs: line.tMs,
+    connId: line.connId,
+    raw: `:${line.comment}\n\n`,
+    comment: line.comment,
     issues: [],
   };
 }
@@ -9137,6 +9966,11 @@ function buildFrom(lines: JsonlLine[]): RunBuilder {
       lastTMsByConn.set(line.connId, line.tMs);
     } else if (line.kind === 'event') {
       builder.addRecord(toRecord(line));
+      lastTMsByConn.set(line.connId, line.tMs);
+    } else if (line.kind === 'keepalive') {
+      // A keepalive is a real frame on the connection: it extends the connection's lifetime
+      // and it is what a `keepalive-gap` anchors to, even though it never enters recordSeqs.
+      builder.addRecord(toKeepaliveRecord(line));
       lastTMsByConn.set(line.connId, line.tMs);
     }
   }
@@ -9162,11 +9996,15 @@ describe('Done-when #5: a malformed stream produces exactly three validator entr
 
     const runs = builder.runs();
     expect(runs).toHaveLength(1);
-    expect(runs[0].runId).toBe('r_bad');
-    expect(runs[0].outcome).toBe('running');
+    expect(runs[0]!.runId).toBe('r_bad');
+    // `buildFrom` closes the connection at the last frame's tMs, and Task 13c's
+    // `closeConnection` turns a run still `'running'` at close into `'aborted'` with
+    // `endedAtMs = tMs`. The missing terminal event shows up as the `run-never-terminated`
+    // issue above, not as a run left in `'running'`.
+    expect(runs[0]!.outcome).toBe('aborted');
     // The two clean sub-structures stay clean: the message closed, the steps balanced.
-    expect(runs[0].messages.get('m_1')?.closed).toBe(true);
-    expect(runs[0].steps).toEqual([
+    expect(runs[0]!.messages.get('m_1')?.closed).toBe(true);
+    expect(runs[0]!.steps).toEqual([
       { stepName: 'analyze', startedAtMs: 20, endedAtMs: 130, closed: true },
     ]);
   });
@@ -9215,16 +10053,22 @@ function runToPlain(run: Run): Record<string, unknown> {
     outcome: run.outcome,
     messages: entries(run.messages).map(([id, message]) => [
       id,
-      { ...message, chunkSeqs: [...message.chunkSeqs] },
+      { ...message, contentSeqs: [...message.contentSeqs] },
     ]),
     toolCalls: entries(run.toolCalls).map(([id, toolCall]) => [id, { ...toolCall }]),
     activities: entries(run.activities).map(([id, activity]) => [id, { ...activity }]),
     steps: run.steps.map((step) => ({ ...step })),
-    stateTimeline: run.stateTimeline.map((frame) => ({
-      ...frame,
-      patch: frame.patch?.map((op) => ({ ...op })),
-      failure: frame.failure ? { ...frame.failure } : undefined,
-    })),
+    // A16: `StateFrame` is a discriminated union — `patch` and `failure` live on the `delta`
+    // arm only, so touching them without narrowing on `kind` is a TS2339.
+    stateTimeline: run.stateTimeline.map((frame) =>
+      frame.kind === 'delta'
+        ? {
+            ...frame,
+            patch: frame.patch.map((op) => ({ ...op })),
+            failure: frame.failure ? { ...frame.failure } : undefined,
+          }
+        : { ...frame },
+    ),
     metrics: {
       ...run.metrics,
       stalls: run.metrics.stalls.map((stall) => ({ ...stall })),
@@ -9239,7 +10083,8 @@ function runToPlain(run: Run): Record<string, unknown> {
 describe('Done-when #6: export a run, re-import it, tabs are identical', () => {
   it('rebuilds an identical run model from an encode/decode round trip', () => {
     const lines = loadFixture('happy-run.agui.jsonl');
-    const original = buildFrom(lines).runs();
+    const originalBuilder = buildFrom(lines);
+    const original = originalBuilder.runs();
 
     const roundTripped = decodeJsonl(encodeJsonl(lines));
     expect(roundTripped.errors).toEqual([]);
@@ -9247,11 +10092,20 @@ describe('Done-when #6: export a run, re-import it, tabs are identical', () => {
     const reimported = buildFrom(roundTripped.lines).runs();
 
     expect(original).toHaveLength(1);
-    expect(original[0].outcome).toBe('finished');
-    expect(original[0].messages.get('m_1')?.content).toBe(
+    expect(original[0]!.outcome).toBe('finished');
+    expect(original[0]!.messages.get('m_1')?.content).toBe(
       'The weather in Paris is sunny and 24 degrees.\nEnjoy!',
     );
-    expect(original[0].toolCalls.get('tc_1')?.args).toEqual({ city: 'Paris', units: 'metric' });
+    expect(original[0]!.toolCalls.get('tc_1')?.args).toEqual({ city: 'Paris', units: 'metric' });
+
+    // The keepalive is a first-class line: it decodes, it survives the round trip above, and
+    // it is attributed per the keepalive rules — never a protocol event, so never in
+    // `recordSeqs`, and its 70 ms gap is far under the 15 s threshold, so it raises nothing.
+    expect(lines.some((line) => line.kind === 'keepalive')).toBe(true);
+    expect(original[0]!.recordSeqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15]);
+    expect(originalBuilder.allIssues().filter((issue) => issue.code === 'keepalive-gap')).toEqual(
+      [],
+    );
 
     expect(reimported.map(runToPlain)).toEqual(original.map(runToPlain));
   });
@@ -9266,7 +10120,9 @@ is dropped before re-decoding. Also comment out the `expect(roundTripped.lines).
 line so the failure lands on the model comparison being verified here.
 
 Run: `pnpm vitest run src/test/integration.test.ts`
-Expected: FAIL with `AssertionError: expected [ { …, outcome: 'running', … } ] to deeply equal [ { …, outcome: 'finished', … } ]`
+Expected: FAIL with `AssertionError: expected [ { …, outcome: 'aborted', … } ] to deeply equal [ { …, outcome: 'finished', … } ]`
+(the truncated re-import has no `RUN_FINISHED`, so `closeConnection` aborts it — same reason as
+Done-when #5 above.)
 
 - [ ] **Step 7: Restore and run test to verify it passes**
 
@@ -9307,9 +10163,11 @@ describe('Done-when #7: a redacted export leaks no text and still builds', () =>
     expect(out).toContain('«redacted: 20 chars»');
     // Structure survives: types, ids, ordering and timings are untouched.
     expect(out).toContain('"type":"TEXT_MESSAGE_CONTENT","messageId":"m_1"');
-    expect(out).toContain('"seq":13,"tMs":360');
+    expect(out).toContain('"seq":14,"tMs":360');
     expect(out).toContain('"op":"replace","path":"/counter"');
     expect(out).toContain('"toolCallName":"get_weather"');
+    // A keepalive holds no user payload, so redaction passes the whole line through verbatim.
+    expect(out).toContain('{"kind":"keepalive","connId":"c1","seq":11,"tMs":220,"comment":"ping"}');
     // The originals are untouched — redactLine copies.
     expect(encodeJsonl(lines)).toContain('The weather in Paris');
   });
@@ -9325,19 +10183,27 @@ describe('Done-when #7: a redacted export leaks no text and still builds', () =>
     const redactedIssues = redactedBuilder.allIssues();
 
     expect(redactedRuns).toHaveLength(originalRuns.length);
-    expect(redactedRuns[0].runId).toBe(originalRuns[0].runId);
-    expect(redactedRuns[0].threadId).toBe(originalRuns[0].threadId);
-    expect(redactedRuns[0].outcome).toBe(originalRuns[0].outcome);
-    expect([...redactedRuns[0].messages.keys()]).toEqual([...originalRuns[0].messages.keys()]);
-    expect([...redactedRuns[0].toolCalls.keys()]).toEqual([...originalRuns[0].toolCalls.keys()]);
-    expect(redactedRuns[0].recordSeqs).toEqual(originalRuns[0].recordSeqs);
-    expect(redactedRuns[0].steps).toEqual(originalRuns[0].steps);
-    expect(redactedRuns[0].stateTimeline.map((frame) => [frame.seq, frame.kind, frame.failure]))
-      .toEqual(originalRuns[0].stateTimeline.map((frame) => [frame.seq, frame.kind, frame.failure]));
+    expect(redactedRuns[0]!.runId).toBe(originalRuns[0]!.runId);
+    expect(redactedRuns[0]!.threadId).toBe(originalRuns[0]!.threadId);
+    expect(redactedRuns[0]!.outcome).toBe(originalRuns[0]!.outcome);
+    expect([...redactedRuns[0]!.messages.keys()]).toEqual([...originalRuns[0]!.messages.keys()]);
+    expect([...redactedRuns[0]!.toolCalls.keys()]).toEqual([...originalRuns[0]!.toolCalls.keys()]);
+    expect(redactedRuns[0]!.recordSeqs).toEqual(originalRuns[0]!.recordSeqs);
+    expect(redactedRuns[0]!.steps).toEqual(originalRuns[0]!.steps);
+    // A16: `failure` is on the `delta` arm only, so the shape has to be read through `kind`.
+    const frameShape = (frames: StateFrame[]): Array<[number, string, unknown]> =>
+      frames.map((frame) => [
+        frame.seq,
+        frame.kind,
+        frame.kind === 'delta' ? frame.failure : undefined,
+      ]);
+    expect(frameShape(redactedRuns[0]!.stateTimeline)).toEqual(
+      frameShape(originalRuns[0]!.stateTimeline),
+    );
 
     // The redacted stream is still valid, with exactly one unavoidable extra finding:
     // redacted tool-call args are by construction no longer parseable JSON.
-    const key = (issues: typeof originalIssues) =>
+    const key = (issues: Issue[]): string[] =>
       issues.map((issue) => `${issue.code}@${issue.seq}`).sort();
     expect(key(redactedIssues).filter((k) => !k.startsWith('tool-args-not-json@'))).toEqual(
       key(originalIssues),
@@ -9370,6 +10236,35 @@ Expected: PASS, 4 tests.
 
 ---
 
+## Contract gaps
+
+1. **`JsonlKeepalive` is owned by Task 14, and this section pins its shape.** `happy-run.agui.jsonl`
+   contains the line
+   `{"kind":"keepalive","connId":"c1","seq":11,"tMs":220,"comment":"ping"}`, so Task 14's
+   `JsonlKeepalive` must be `{ kind: 'keepalive'; connId: string; seq: number; tMs: number;
+   comment: string }` — `JsonlEvent` with `comment` in place of `event` — and `'keepalive'` must be
+   in `KNOWN_KINDS`, or `loadFixture` fails its `expect(errors).toEqual([])` with
+   `unrecognized kind "keepalive"`. Field order in the fixture is the declaration order above,
+   which is what the Done-when #7 `toContain` assertion on the whole line depends on.
+
+2. **`redactLine` must pass a keepalive line through unchanged.** Task 15's implementation falls
+   through to `return line` for any kind that is neither `event` nor `request`, which is already
+   the required behaviour; the Done-when #7 assertion pins it. A keepalive comment is proxy
+   metadata, not user content, so no redaction group covers it.
+
+3. **`toKeepaliveRecord` reconstitutes `raw` as `` `:${comment}\n\n` ``.** The JSONL line does not
+   carry the original bytes, and `CaptureRecord.raw` is `readonly` and never mutated, so the
+   replay has to synthesize something. Matching Task 12's convention keeps `totalStreamBytes`
+   deterministic and identical across the round trip; it is not a byte-exact recovery of the wire
+   frame, and nothing asserts that it is.
+
+4. **`chunked-run.agui.jsonl` is written but never loaded by any test in this section.** Chunk
+   expansion is covered by Task 10's and Task 13c's unit tests, so nothing is unproven, but the
+   fixture is dead weight until an integration test reads it. Pre-existing; not caused by the
+   amendments.
+
+---
+
 ### Task 17: Non-core surface stubs — build a loadable unpacked extension
 
 The capture layer (requirements §5) is deliberately **out of scope** for this pass. Every file below
@@ -9379,7 +10274,7 @@ events yet.
 
 **Files:**
 - Create: `packages/devtools/src/inject/index.ts`
-- Create: `packages/devtools/src/relay/index.ts`
+- Create: `packages/devtools/src/relay/relay.ts`
 - Create: `packages/devtools/src/sw/index.ts`
 - Create: `packages/devtools/src/panel/devtools.ts`
 - Create: `packages/devtools/src/panel/panel.tsx`
@@ -9469,7 +10364,7 @@ installMarker();
 
 - [ ] **Step 3: Create the ISOLATED-world relay stub**
 
-Create `packages/devtools/src/relay/index.ts`:
+Create `packages/devtools/src/relay/relay.ts`:
 
 ```ts
 /**
@@ -9761,7 +10656,7 @@ Expected:
 
 ```bash
 git add packages/devtools/src/inject/index.ts \
-        packages/devtools/src/relay/index.ts \
+        packages/devtools/src/relay/relay.ts \
         packages/devtools/src/sw/index.ts \
         packages/devtools/src/panel/devtools.ts \
         packages/devtools/src/panel/panel.tsx
@@ -10227,6 +11122,101 @@ as authored, except where a note is marked **RESOLVED AT ASSEMBLY**.
 | R6 | `applyPatch` reason for `replace` on a missing final key with an existing parent | `'path-not-found'`. Task 8 and Task 13 agree. |
 | R7 | Task 11's rules run before or after the builder's state transition? | **Before.** Otherwise `event-after-terminal` swallows the terminal event, `unopened-message-id` never fires on `TEXT_MESSAGE_END`, and `concurrent-text-messages` fires on every START. |
 | R8 | `validator/types.ts` is not in the locked contract | Added, holding `RunValidationState` + `ValidatorRule`, re-exported from `index.ts`. Avoids a rules↔index cycle and lets rule tests run before `index.ts` exists. |
+
+## Amendments made during execution
+
+Applied to the plan text above after a code review of the landed work, so later tasks inherit
+them. Each was verified empirically before being adopted.
+
+| # | Amendment | Why |
+|---|---|---|
+| A1 | Root `test` script delegates to `test:ci`, not `test`; Task 2's package defines both | `pnpm -r test` exits **0 with no output** when no package defines `test` — pnpm special-cases lifecycle script names. Task 18's CI runs `pnpm test`, so the lifecycle form could report success having run zero tests across a 16-task TDD plan. Every non-lifecycle name fails loudly with `ERR_PNPM_RECURSIVE_RUN_NO_SCRIPT`. |
+| A2 | `.gitignore` gains `*.crx`, `*.pem`, `.idea/`, `*.swp` | Chrome's "Pack extension" emits a `.pem` **private signing key** beside the source tree. Committing it lets anyone forge a CRX under this extension's ID. `*.zip` was already ignored; the two security-relevant artifacts were not. |
+| A3 | `tsconfig.base.json` `lib` raised to `ES2023` (`target` stays `ES2022`) | Chrome MV3 and Node 22 both support ES2023 built-ins. Task 9 and Task 12 use `findLast` and `toSorted`, which are hard `TS2550` errors under an ES2022 lib. A higher `lib` than `target` is the intended pattern. |
+| A4 | Root `package.json` gains `pnpm.onlyBuiltDependencies: ["esbuild"]` | pnpm 10 blocks dependency postinstall scripts by default; without this every install and CI run prints an "Ignored build scripts: esbuild" warning, training people to scroll past a supply-chain notice. |
+| A5 | Task 2's `no-restricted-globals` on `src/core/**` also bans `document`, `window`, `localStorage` — not just `chrome` | `lib` must include DOM for the Preact panel, and TypeScript cannot scope `lib` per directory, so DOM globals typecheck inside `core/` despite `core/` being required to run under Node in Vitest. ESLint is the only enforcement point. `localStorage` additionally violates requirements §11's no-persistence guarantee. |
+| A6 | The relay content script is `src/relay/relay.ts`, **not** `src/relay/index.ts` | **Build blocker.** CRXJS 2.7.1 keys emitted content scripts by `basename(file)` in build mode, so `src/inject/index.ts` and `src/relay/index.ts` both become `index.ts`, collide, and `pnpm build` dies with `Content script fileName is undefined`. Reproduced in isolation: same basenames fail on Vite 8, distinct basenames succeed, Vite 7 works either way. `pnpm dev` is unaffected, so this would only have surfaced at Task 17. The two content-script basenames must stay distinct. |
+| A7 | `vite.config.ts` names `src/panel/panel.html` as an explicit `rollupOptions.input` | **Build blocker.** CRXJS only collects HTML reachable from manifest keys (`devtools_page`, `action.default_popup`, `options_page`, …). `panel.html` is opened at runtime by `chrome.devtools.panels.create`, so nothing referenced it as an input and it was never emitted into `dist/` — the panel would have 404'd. Task 17's `devtools.ts` resolves it as a sibling of `devtools.html`, which is correct under the resulting layout. |
+| A8 | `vite.config.ts` sourcemaps are mode-conditional (`sourcemap: mode !== 'production'`) | Task 18 zips all of `dist/`, so an unconditional `sourcemap: true` would publish full TypeScript source to the Chrome Web Store and roughly double the archive. |
+| A9 | Task 2's core boundary also bans `self`, `navigator`, `fetch`, `sessionStorage`, `location`; adds `no-restricted-imports` against `sw`/`relay`/`inject`/`panel`; adds `no-restricted-syntax` against `globalThis.*`; and widens `files` to `*.{ts,tsx}` | `no-restricted-globals` only matches bare identifiers. Verified holes: `globalThis.chrome.runtime.id`, `(self as any).chrome`, a type-only `chrome.runtime.Port`, bare `fetch`, and — most likely in practice — a plain `import` from a Chrome-facing sibling directory. Closing these before `core/` code lands is far cheaper than after. |
+| A10 | The generated event table gets a targeted rule override instead of a global `ignores` entry | A global ignore disabled *every* rule on the file. The override exempts it only from the boundary rules. |
+| A11 | Vitest `include` is `src/**/*.test.{ts,tsx}` | A `.tsx` component test would otherwise be silently skipped rather than failing. |
+| A12 | The `globalThis` ban is `Identifier[name='globalThis']`, not `MemberExpression[object.name='globalThis']` | The member-expression form catches `globalThis.chrome` and `globalThis['chrome']` but **not** `(globalThis as SomeType).chrome` — the cast wraps the identifier in a `TSAsExpression` and the selector stops matching. Verified all four forms; only the identifier-level ban catches every one. `core/` has no legitimate use for `globalThis`. |
+
+| A13 | Three further boundary rules: an `ImportExpression` selector for dynamic `import()`, `TSQualifiedName`/`TSTypeQuery` selectors for type-position `chrome`, and `XMLHttpRequest`/`WebSocket`/`EventSource`/`indexedDB`/`caches` added to the globals ban | `no-restricted-imports` registers no `ImportExpression` visitor, so `await import('../../relay/x')` bypassed the import ban entirely. `no-restricted-globals` analyses *value* references, so `p: chrome.runtime.Port` never fired — harmless at runtime but it lets Chrome types into `core/`'s public signatures, breaking the "liftable into a CLI" property. And banning `fetch`/`localStorage` alone left egress and persistence reachable through five other doors. Verified all nine forms fire, with no false positives on an ordinary pure-TS core module. |
+
+| A14 | `types.ts` exports `ISSUE_SEVERITY: Record<IssueCode, IssueSeverity>` | 22 codes are emitted from the chunk expander (Task 10) *and* five rule modules (Task 11), with nothing constraining the pairing — `{code:'empty-text-delta', severity:'info'}` compiled fine despite §7 fixing it as an error. The `Record` type makes the table exhaustive at compile time. Every emitter must read it rather than restating a severity inline. |
+| A15 | `PatchResult`'s failure branch types `op` as `unknown`, not `PatchOp` | A failing patch op comes off the wire and may be a bare string, an object with no `op` key, or an `add` missing its `value` — none representable as `PatchOp`. The old typing forced casts (the plan already contained `as unknown as PatchOp[]`) and let a renderer print `"undefined undefined"`. Task 8's `applyPatch` should accept `readonly unknown[]` accordingly. |
+| A16 | `StateFrame` is a real two-arm discriminated union; `patch` is required on the `delta` arm | It was one `kind` field beside two independent optionals, so a `snapshot` frame carrying a `failure` compiled, and `frame.patch[0]` needed `!`/`?.` even after narrowing on `kind`. Verified after the change: the invalid snapshot+failure literal is now a compile error, and `f.patch[0]?.path` works under narrowing. `value` is documented as the document *after* the frame — unchanged from the previous frame when `failure` is set. |
+| A17 | `Issue.seq` semantics documented; `Issue.tMs?: number` added | Five codes have no owning event. The plan's `finalizeRules` derived `seq` via `run.recordSeqs[run.recordSeqs.length - 1]`, which is `number \| undefined` under `noUncheckedIndexedAccess` and **does not compile**. Task 11 must use `run.recordSeqs.at(-1) ?? 0`. `tMs` exists so the close timestamp no longer has to be smuggled into the message string. |
+| A18 | `CaptureRecord` gains `kind: 'event' \| 'keepalive'` and `comment?`, and its identity fields are `readonly` | `keepalive-gap` was an **unproducible** `IssueCode`: the SSE parser emits keepalive frames, but `CaptureRecord` could not represent one and `JsonlLine` had no keepalive kind, so requirements §7's Info rule was unreachable and design §7's "covers every §7 rule" could not have been true. Task 14 must add a matching `JsonlKeepalive` line kind, and Task 13c must fold keepalive records to raise `keepalive-gap` on gaps > 15 s. `readonly` enforces design §6's promise that `raw` is never mutated. |
+
+| A19 | `CaptureRecord` is a discriminated union on `kind`, not a flag plus optionals | As first landed, a keepalive could carry a decoded `event`, an event record could carry a `comment`, and `r.comment` read without any narrowing — all compiled. The union makes the invariants structural, which is what stops Task 12 counting a keepalive as an event; requirements §5.4 requires keepalives be recorded but **excluded from the event count**. Verified: all three incoherent literals are now compile errors. |
+| A20 | `makeIssue(code, message, seq, extra?)` is the only sanctioned `Issue` constructor | A14's table was advisory — `{code:'empty-text-delta', severity:'info'}` still compiled, which is the exact hole A14 was created to close. Correlating `severity` to `code` at the type level rejects the misgrade but breaks the generic factory every emitter needs (a known correlated-union limitation). The factory upholds the guarantee instead. |
+| A21 | `ReconstructedMessage.role: MessageRole` → `kind: MessageKind` (`'text' \| 'reasoning'`) | The protocol carries its own `role` on `TEXT_MESSAGE_START` and `TOOL_CALL_RESULT` with different semantics, so the old name invited `role: event.role` in Task 13a — where the fold constructs the message directly from event data. Renamed while there are zero consumers; after 13a it would cost edits across 13a–13c and 16. |
+
+### Keepalive attribution — decided here, previously unspecified
+
+A19 makes keepalives representable, but nothing in the requirements, design, or plan said how a
+**connection-scoped** keepalive attributes to a **run-scoped** issue. Settled:
+
+- A keepalive record does **not** enter `run.recordSeqs` — it is not a protocol event.
+- `keepalive-gap` attaches to the connection's currently open run, or to `ORPHANED_RUN_ID` when no
+  run is open on that connection.
+- `Issue.seq` is the seq of the keepalive that *closed* the gap; `Issue.tMs` is that keepalive's
+  arrival time. `keepalive-gap` is therefore **not** one of the connection-close codes that derive
+  seq from `recordSeqs.at(-1)`.
+- Task 12 excludes keepalives from `eventCountByType` (requirements §5.4) but includes their bytes
+  in `totalStreamBytes` — they are real bytes on the wire, and the point of tracking them is
+  diagnosing proxy buffering.
+- Task 14 must add a `JsonlKeepalive` line kind to BOTH the `JsonlLine` union and `KNOWN_KINDS`;
+  as the plan body stands, a keepalive line would decode as an `unrecognized kind` error.
+
+**Downstream tasks affected by A14–A21.** Every task below must reconcile the plan's pre-written
+code against the amended types; where they disagree, `types.ts` wins.
+
+| Task | What changes |
+|---|---|
+| 8 | `applyPatch(doc: unknown, ops: readonly unknown[]) => PatchResult`; drop every `as unknown as PatchOp[]` cast — they are no longer needed |
+| 9 | Build `StateFrame`s as union members, `patch` always set on deltas. The test asserting `frame.patch` is `undefined` on a snapshot is now dead — the type guarantees it. Un-narrowed `.patch`/`.failure` access is a `TS2339` |
+| 10, 11 | Construct issues via `makeIssue(...)` instead of object literals; `state-patch-failed` reads `result.op` as `unknown` and must narrow before rendering it. `finalizeRules` derives seq with `recordSeqs.at(-1) ?? 0` |
+| 12 | The `rec()` test helper must build `CaptureRecord`s with `kind: 'event'`. Exclude keepalives from `eventCountByType`, include their bytes in `totalStreamBytes` |
+| 13a–13c | Same `kind` requirement on every constructed record; `ReconstructedMessage.kind` replaces `role`; fold keepalives per the attribution rules above |
+| 14 | Add `JsonlKeepalive` to the `JsonlLine` union **and** to `KNOWN_KINDS` |
+| 16 | `runToPlain` must narrow on `frame.kind` before touching `patch`/`failure`; fixtures may include keepalive lines |
+
+Snippets that will not compile as written, for array-index reasons unrelated to these amendments,
+and must use `.at(-1)`: `frames[frames.length - 1].value` (Task 11), `original[0].outcome`
+(Task 16), and `run.stateTimeline[1]!.failure` (Task 13b).
+
+> **Authoritative source note.** Amendments A5–A12 changed Task 2's config files after that task
+> was committed. The inline code blocks in Task 2 above were **not** all retro-edited to match.
+> Where the plan text and the committed files under `packages/devtools/` disagree, **the committed
+> files are authoritative** and this amendment table explains why. Anyone replaying this plan from
+> scratch should apply the amendments as they go.
+
+Considered and deliberately **not** adopted: a `packageManager` integrity hash (pnpm/action-setup
+reads the version without it), and an upper bound on the `engines.node` range.
+
+**Further notes for Task 18**, surfaced by the Task 2 review:
+
+- `scripts/package.ts` must `rm -f` the target archive before writing it. The `zip` CLI *updates*
+  an existing archive rather than replacing it, so files deleted from `dist/` between builds
+  would silently persist in the zip.
+- Build the release with `mode=production` so A8's conditional sourcemaps are actually off, or
+  have `scripts/package.ts` exclude `*.map` explicitly. Verify no `.map` file is in the archive.
+- The built `dist/manifest.json` will contain a `web_accessible_resources` key that is **absent**
+  from `manifest.config.ts` — CRXJS injects it for the MAIN-world script. Task 18's "no
+  `debugger`, no `webRequest`, no static remote host permissions" audit must expect that key and
+  not treat it as an unexpected addition.
+
+**Residual caveat for Task 18.** `pnpm -r run test:ci` still exits 0 when *zero* packages match
+the workspace glob (pnpm prints `No projects matched the filters`). A1 closes the
+"package exists but defines no test script" hole, not the "no packages at all" one. That state
+disappears once Task 2 lands `packages/devtools`, but Task 18's CI should assert the test run
+actually reported a scope rather than trusting a bare exit 0. Relatedly, `pnpm -r run test:ci`
+errors only when *no* selected package has the script — packages lacking it alongside one that
+has it are skipped silently. Harmless at one package; worth remembering if a second is added.
 
 ## Spec corrections found while planning
 

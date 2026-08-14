@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.zip
+*.crx
+*.pem
+*.log
+.DS_Store
+.vite/
+coverage/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+.idea/
+*.swp
