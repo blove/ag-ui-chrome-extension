@@ -9,6 +9,15 @@ import { usePanelState } from '../../model/use-panel-state';
 
 export interface EventListProps {
   store: PanelStore;
+  /**
+   * Advanced by the host on every cross-pane locate (P7: waterfall → list).
+   *
+   * `selectedSeq` is the *what*; this is the *again*. Clicking the same waterfall bar a second
+   * time, after scrolling the list away, writes the same `selectedSeq` and so moves nothing —
+   * see the note on `scrollToIndex` below. Passing the nonce straight through to `VirtualList`
+   * turns that repeated click into a fresh scroll request.
+   */
+  locateNonce?: number;
 }
 
 /** Uniform row height, in px. `VirtualList` assumes uniform rows in phase 1. */
@@ -130,7 +139,7 @@ function EventRow({
   );
 }
 
-export function EventList({ store }: EventListProps): JSX.Element {
+export function EventList({ store, locateNonce }: EventListProps): JSX.Element {
   const state = usePanelState(store);
   const containerRef = useRef<HTMLDivElement>(null);
   const height = useMeasuredHeight(containerRef);
@@ -145,8 +154,10 @@ export function EventList({ store }: EventListProps): JSX.Element {
    * index twice, deliberately, so an append cannot re-trigger a stale request. That remains
    * sufficient with keyboard navigation added, because every writer of `selectedSeq` here moves
    * it to a *different* index — a click lands on a row that is by definition already on screen,
-   * and an arrow key by definition moves. A cross-pane locate (waterfall → list, P7) would need
-   * a nonce; it does not exist yet, so none is invented here.
+   * and an arrow key by definition moves. The one writer that does not move it is the cross-pane
+   * locate (waterfall → list, P7): the same bar clicked twice writes the same seq. That is what
+   * `locateNonce` is for, and it is threaded through rather than derived here — only the host
+   * can tell a repeated click apart from a re-render.
    */
   const selectedIndex = records.findIndex((record) => record.seq === state.selectedSeq);
   /*
@@ -219,6 +230,7 @@ export function EventList({ store }: EventListProps): JSX.Element {
           rowHeight={ROW_HEIGHT_PX}
           height={height}
           scrollToIndex={selectedIndex === -1 ? undefined : selectedIndex}
+          scrollNonce={locateNonce}
           renderRow={(record, index) => (
             // P7: keyed by `seq`, never by the array index — filtering reorders visible rows
             // and `Issue.seq` refers to this number.

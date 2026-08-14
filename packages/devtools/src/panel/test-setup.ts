@@ -9,28 +9,58 @@
 import { afterEach } from 'vitest';
 import { cleanup } from '@testing-library/preact';
 
+type RequestListener = (request: unknown) => void;
+
+/**
+ * The fake `chrome.devtools.network.onRequestFinished`.
+ *
+ * `emit` is not part of Chrome's API — it is the test's way in. `App` subscribes to this event
+ * through `observeNetwork`, so without a way to fire the listeners there is no way to exercise
+ * the detect-then-offer path (P5) from a component test at all, and the one branch that flips
+ * the capture banner from "nothing detected" to an offer would go untested.
+ */
+interface FakeRequestEvent {
+  addListener: (listener: RequestListener) => void;
+  removeListener: (listener: RequestListener) => void;
+  emit: (request: unknown) => void;
+}
+
+function createRequestEvent(): FakeRequestEvent {
+  const listeners = new Set<RequestListener>();
+  return {
+    addListener: (listener) => {
+      listeners.add(listener);
+    },
+    removeListener: (listener) => {
+      listeners.delete(listener);
+    },
+    // Iterate a copy: `observeNetwork` removes its own listener from inside the callback.
+    emit: (request) => {
+      for (const listener of [...listeners]) listener(request);
+    },
+  };
+}
+
 interface ChromeStub {
   runtime: { getManifest: () => { version: string } };
   devtools: {
-    network: {
-      onRequestFinished: {
-        addListener: (listener: (request: unknown) => void) => void;
-        removeListener: (listener: (request: unknown) => void) => void;
-      };
+    network: { onRequestFinished: FakeRequestEvent };
+    inspectedWindow: {
+      tabId: number;
+      /**
+       * Accepts the callback `App` passes but never invokes it, so the inspected origin stays
+       * unresolved and `capture` stays `unsupported` — which is the honest default for a test
+       * that has no inspected page. A test that wants an origin sets `capture` on the store.
+       */
+      eval: (expression: string, callback?: (result: unknown) => void) => void;
     };
-    inspectedWindow: { tabId: number; eval: (expression: string) => void };
   };
 }
 
 const chromeStub: ChromeStub = {
   runtime: { getManifest: () => ({ version: '0.1.0' }) },
   devtools: {
-    network: {
-      onRequestFinished: {
-        addListener: () => {},
-        removeListener: () => {},
-      },
-    },
+    network: { onRequestFinished: createRequestEvent() },
     inspectedWindow: { tabId: 1, eval: () => {} },
   },
 };

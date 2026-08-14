@@ -1,31 +1,21 @@
 /**
  * Panel UI root.
  *
- * STUB. The five tabs of requirements §9 (Timeline, Session, Messages, State, Issues) and the
- * normalizer → run model → validator pipeline they render arrive with the capture layer. This
- * milestone renders the empty state only, which is Done-when #2 of the design doc §7: "a
- * `dist/` that loads unpacked in Chrome and opens an (empty) AG-UI DevTools panel without
- * console errors".
+ * Creates the one store the panel owns and mounts `App` on it. Everything below `App` takes the
+ * store as a prop — no context, no module-level singleton reached into from components — which
+ * is what lets each component be rendered in a test with a store built for that test.
  */
 import { render } from 'preact';
 
 // Without this the panel has no stylesheet at all: the class names below would resolve to
-// nothing and the panel would render black-on-dark under the DevTools dark theme.
+// nothing and the panel would render black-on-dark under the DevTools dark theme. That is not
+// hypothetical — it is exactly what the previous milestone shipped, and `scripts/screenshot-panel.mts`
+// is the gate that now catches it.
 import './panel.css';
 
-const PANEL_NAME = 'AG-UI DevTools';
-const EMPTY_STATE = 'No capture yet — the capture layer lands in the next milestone.';
+import { App } from './app';
+import { createPanelStore } from './model/store';
 
-function App() {
-  const version = chrome.runtime.getManifest().version;
-  return (
-    <main class="agui-panel agui-panel--empty">
-      <h1 class="agui-panel__title">{PANEL_NAME}</h1>
-      <p class="agui-panel__version">v{version}</p>
-      <p class="agui-panel__empty-state">{EMPTY_STATE}</p>
-    </main>
-  );
-}
-
+const store = createPanelStore();
 const mountPoint = document.getElementById('root') ?? document.body;
-render(<App />, mountPoint);
+render(<App store={store} />, mountPoint);
