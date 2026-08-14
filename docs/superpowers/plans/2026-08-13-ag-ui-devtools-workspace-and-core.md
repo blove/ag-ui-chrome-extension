@@ -857,7 +857,11 @@ Expected: PASS, no errors.
 
 - [ ] **Step 3: Verify the constant is actually emitted at runtime**
 
-Run: `pnpm vitest run --reporter=basic src/core/model 2>&1 | tail -5`
+Run: `pnpm vitest run src/core/model 2>&1 | tail -5`
+
+(Vitest 4 removed the `basic` reporter — its valid names are `default`, `agent`, `minimal`,
+`blob`, `verbose`, `dot`, `json`, `tap`, `tap-flat`, `junit`, `tree`, `hanging-process`,
+`github-actions`. Passing `--reporter=basic` fails with a startup error, so it is omitted here.)
 Expected: `No test files found` (there is intentionally no test for this file). This step
 only confirms the path glob is correct and no stray test file was created.
 
