@@ -117,3 +117,83 @@ body {
   height: var(--agui-vlist-row-height);
   overflow: hidden;
 }
+
+/* ── Shell ──────────────────────────────────────────────────────────────────────────────────────
+ *
+ * Tokens for the three shell bands. Light is the base and dark is the override, matching the
+ * existing block above: every colour is stated in both schemes, never inherited.
+ *
+ * Danger and warning exist only for the issue badge and the per-run issue counts (P2 reserves the
+ * danger colour for issues — nothing else in the chrome may use it).
+ */
+
+:root {
+  --agui-surface: #f8f9fa;
+  --agui-surface-raised: #ffffff;
+  --agui-hover: rgba(0, 0, 0, 0.06);
+  --agui-accent: #1a73e8;
+  --agui-danger: #c5221f;
+  --agui-danger-bg: #fce8e6;
+  --agui-danger-border: #f2b8b5;
+  --agui-warning: #8a5700;
+  --agui-warning-bg: #fef7e0;
+  --agui-warning-border: #f9d67a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --agui-surface: #292a2d;
+    --agui-surface-raised: #35363a;
+    --agui-hover: rgba(255, 255, 255, 0.08);
+    --agui-accent: #8ab4f8;
+    --agui-danger: #f28b82;
+    --agui-danger-bg: #3b2422;
+    --agui-danger-border: #5c3330;
+    --agui-warning: #fdd663;
+    --agui-warning-bg: #3a2f16;
+    --agui-warning-border: #5c4a1e;
+  }
+}
+
+.agui-shell {
+  display: flex;
+  flex-direction: column;
+  background: var(--agui-bg);
+  border-bottom: 1px solid var(--agui-border);
+}
+
+/* One horizontal band of the shell. `App` puts the scope bar and run selector in the first one. */
+.agui-shell__band {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 2px 8px;
+}
+
+.agui-shell button:focus-visible,
+.agui-shell input:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
+
+.agui-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.agui-scope__summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agui-scope__metrics {
+  margin-left: auto;
+  color: var(--agui-fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
