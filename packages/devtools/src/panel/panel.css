@@ -906,3 +906,103 @@ li[data-severity='warning'] .agui-detail__severity {
   max-height: 45%;
   border-top: 1px solid var(--agui-border);
 }
+
+/* --- Import (drop zone) --------------------------------------------------
+ * Both schemes are covered by the shared tokens: the target paints
+ * `--agui-surface` on `--agui-border`, the partial-decode block reuses the
+ * warning tokens, and a failed import reuses the danger tokens. Nothing here
+ * hard-codes a colour.
+ */
+
+.agui-drop {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agui-drop__target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px;
+  border: 1px dashed var(--agui-border);
+  border-radius: 4px;
+  background: var(--agui-surface);
+  color: var(--agui-fg);
+}
+
+.agui-drop__target--over {
+  border-color: var(--agui-accent);
+  border-style: solid;
+  background: var(--agui-hover);
+}
+
+.agui-drop__hint {
+  margin: 0;
+  color: var(--agui-fg-muted);
+}
+
+.agui-drop__pick {
+  font: inherit;
+  padding: 2px 10px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: var(--agui-surface-raised);
+  color: var(--agui-fg);
+  cursor: pointer;
+}
+
+.agui-drop__pick:hover {
+  background: var(--agui-hover);
+}
+
+.agui-drop__pick:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
+
+/*
+ * The file input is driven by the button above it, which is a real focusable control with an
+ * accessible name — hiding the input keeps Tab order free of a target with no visible focus ring
+ * while leaving exactly one keyboard path to the picker.
+ */
+.agui-drop__input {
+  display: none;
+}
+
+.agui-drop__ok {
+  margin: 0;
+  color: var(--agui-fg-muted);
+}
+
+.agui-drop__error {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-danger-border);
+  border-radius: 3px;
+  background: var(--agui-danger-bg);
+  color: var(--agui-danger);
+}
+
+.agui-drop__partial {
+  padding: 6px 8px;
+  border: 1px solid var(--agui-warning-border);
+  border-radius: 3px;
+  background: var(--agui-warning-bg);
+  color: var(--agui-fg);
+}
+
+.agui-drop__partial-head {
+  margin: 0;
+  font-weight: 600;
+}
+
+.agui-drop__partial-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  max-height: 12em;
+  overflow-y: auto;
+  color: var(--agui-fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
