@@ -1,0 +1,37 @@
+{
+  "name": "ag-ui-devtools",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Chrome DevTools panel for inspecting AG-UI protocol streams",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "package": "vite build && cd dist && zip -qr ../ag-ui-devtools-0.1.0.zip .",
+    "test": "vitest run",
+    "test:ci": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint .",
+    "gen:events": "tsx scripts/gen-event-table.ts"
+  },
+  "dependencies": {
+    "preact": "^10.29.8"
+  },
+  "devDependencies": {
+    "@ag-ui/core": "0.0.57",
+    "@crxjs/vite-plugin": "^2.7.1",
+    "@eslint/js": "^9.39.5",
+    "@preact/preset-vite": "^2.10.6",
+    "@types/chrome": "^0.2.6",
+    "@types/node": "^22.20.1",
+    "eslint": "^9.39.5",
+    "globals": "^17.11.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.67.0",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10",
+    "zod": "^3.25.76"
+  }
+}
