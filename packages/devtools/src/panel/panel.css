@@ -515,6 +515,7 @@ body {
 .agui-event-row {
   display: flex;
   box-sizing: border-box;
+  position: relative;
   width: 100%;
   align-items: center;
   gap: 8px;
@@ -578,6 +579,47 @@ body {
   border-left-style: dotted;
   border-left-color: var(--agui-severity-info);
   background: var(--agui-severity-info-bg);
+}
+
+/*
+ * Two annotated rows in a row must read as TWO findings, not one region.
+ *
+ * Consecutive tinted rows share an identical fill and an unbroken 3px gutter mark, so a pair
+ * of adjacent issues merges into a single block: the badge says 3 and the list looks like 2,
+ * which in a validator-first tool misstates the finding count. This severs the pair with a
+ * 1px line of the page background — a gap, not another mark — drawn across the full border
+ * box so it cuts the gutter as well as the tint. It carries no severity meaning of its own,
+ * so the solid / dashed / dotted channel that makes the three ranks separable without colour
+ * vision is untouched, and the same rule works in both schemes because `--agui-bg` is what
+ * the list is painted on in each.
+ *
+ * Drawn as an overlay, not as a border or a margin: `VirtualList` positions rows from a fixed
+ * `rowHeight`, so anything that changed the 22px box would desynchronize the window from the
+ * sizer. Nothing here participates in layout.
+ *
+ * `+` sees only rows inside the rendered window, so the first row of the window never gets a
+ * separator even when the record above it is annotated. That row is at least `overscan` rows
+ * outside the viewport, so the case is not observable.
+ */
+.agui-event-row[data-severity] + .agui-event-row[data-severity] {
+  /*
+   * Chromium's UA stylesheet clips a `<button>` to its padding box, which swallows exactly the
+   * 3px of overhang below and leaves the gutter mark running unbroken through the separator —
+   * the failure mode this rule exists to fix. Scoped to the rows that carry a separator rather
+   * than set on every row: nothing in a row overflows (the summary ellipsizes inside its own
+   * `overflow: hidden`), so this only ever un-clips the hairline.
+   */
+  overflow: visible;
+}
+
+.agui-event-row[data-severity] + .agui-event-row[data-severity]::before {
+  content: '';
+  position: absolute;
+  /* `left: -3px` reaches back over the 3px gutter: an absolutely positioned child is placed
+   * against the padding box, and the gutter is the border between that and the border box. */
+  inset: 0 0 auto -3px;
+  height: 1px;
+  background: var(--agui-bg);
 }
 
 /* Selection outranks the issue tint; the left border keeps the severity visible. */
