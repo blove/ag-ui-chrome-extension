@@ -9,6 +9,10 @@
  */
 import { render } from 'preact';
 
+// Without this the panel has no stylesheet at all: the class names below would resolve to
+// nothing and the panel would render black-on-dark under the DevTools dark theme.
+import './panel.css';
+
 const PANEL_NAME = 'AG-UI DevTools';
 const EMPTY_STATE = 'No capture yet — the capture layer lands in the next milestone.';
 
