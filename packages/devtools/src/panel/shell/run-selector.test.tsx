@@ -116,7 +116,7 @@ describe('RunSelector', () => {
     render(<RunSelector store={store} />);
     openSelector();
 
-    fireEvent.input(screen.getByRole('searchbox', { name: 'Search runs' }), {
+    fireEvent.input(screen.getByRole('combobox', { name: 'Search runs' }), {
       target: { value: 't_2' },
     });
 
@@ -130,7 +130,7 @@ describe('RunSelector', () => {
     render(<RunSelector store={store} />);
     openSelector();
 
-    fireEvent.input(screen.getByRole('searchbox', { name: 'Search runs' }), {
+    fireEvent.input(screen.getByRole('combobox', { name: 'Search runs' }), {
       target: { value: 'nope' },
     });
 
@@ -159,7 +159,7 @@ describe('RunSelector', () => {
     render(<RunSelector store={store} />);
     openSelector();
 
-    fireEvent.input(screen.getByRole('searchbox', { name: 'Search runs' }), {
+    fireEvent.input(screen.getByRole('combobox', { name: 'Search runs' }), {
       target: { value: 'r_487' },
     });
     fireEvent.click(screen.getByRole('option', { name: /r_487/ }));
@@ -189,7 +189,7 @@ describe('RunSelector', () => {
     render(<RunSelector store={store} />);
     openSelector();
 
-    fireEvent.pointerDown(screen.getByRole('searchbox', { name: 'Search runs' }));
+    fireEvent.pointerDown(screen.getByRole('combobox', { name: 'Search runs' }));
 
     expect(screen.getByRole('listbox')).toBeTruthy();
   });
@@ -199,9 +199,190 @@ describe('RunSelector', () => {
     render(<RunSelector store={store} />);
     openSelector();
 
-    fireEvent.keyDown(screen.getByRole('searchbox', { name: 'Search runs' }), { key: 'Escape' });
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Search runs' }), { key: 'Escape' });
 
     expect(screen.queryByRole('listbox')).toBeNull();
     expect(store.get().scope).toBe('r_2');
+  });
+});
+
+/**
+ * The list is virtualized, so only ~12 of 400 options exist in the DOM at any moment. Roving DOM
+ * focus therefore cannot reach option 300 — the node is not there to be focused, and Tab skips it.
+ * These tests hold the combobox contract that replaces it: the search box keeps focus,
+ * `aria-activedescendant` names the active option, and `scrollToIndex` mounts whatever it names.
+ */
+describe('RunSelector keyboard navigation', () => {
+  const MANY: Run[] = Array.from({ length: 400 }, (_, i) =>
+    makeRun(`r_${String(i + 1).padStart(3, '0')}`, `t_${i % 7}`, 'finished'),
+  );
+
+  function search(): HTMLElement {
+    return screen.getByRole('combobox', { name: 'Search runs' });
+  }
+
+  function activeOption(): HTMLElement | null {
+    const id = screen.getByRole('listbox').getAttribute('aria-activedescendant');
+    return id === null ? null : document.getElementById(id);
+  }
+
+  function press(key: string, times = 1): void {
+    for (let i = 0; i < times; i += 1) fireEvent.keyDown(search(), { key });
+  }
+
+  it('starts with the first option active and points the listbox at it', () => {
+    const store = createPanelStore({ ...initialPanelState(), runs: RUNS, scope: null });
+    render(<RunSelector store={store} />);
+    openSelector();
+
+    expect(activeOption()?.getAttribute('aria-label')).toMatch(/^All runs/);
+  });
+
+  it('moves the active option down and up with the arrow keys', () => {
+    const store = createPanelStore({ ...initialPanelState(), runs: RUNS, scope: null });
+    render(<RunSelector store={store} />);
+    openSelector();
+
+    press('ArrowDown', 2);
+    expect(activeOption()?.getAttribute('aria-label')).toMatch(/^r_2 · /);
+
+    press('ArrowUp');
+    expect(activeOption()?.getAttribute('aria-label')).toMatch(/^r_1 · /);
+  });
+
+  it('does not run off either end of the list', () => {
+    const store = createPanelStore({ ...initialPanelState(), runs: RUNS, scope: null });
+    render(<RunSelector store={store} />);
+    openSelector();
+
+    press('ArrowUp', 3);
+    expect(activeOption()?.getAttribute('aria-label')).toMatch(/^All runs/);
+
+    press('ArrowDown', 20);
+    expect(activeOption()?.getAttribute('aria-label')).toMatch(/^r_3 · /);
+  });
+
+  it('chooses the active option with Enter, which the probe found did nothing', () => {
+    const store = createPanelStore({ ...initialPanelState(), runs: RUNS, scope: null });
+    render(<RunSelector store={store} />);
+    openSelector();
+
+    press('ArrowDown', 3);
+    fireEvent.keyDown(search(), { key: 'Enter' });
+
+    expect(store.get().scope).toBe('r_3');
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('brings an option far below the rendered window into the DOM as it is arrowed to', () => {
+    // 400 runs + the all-runs entry, of which the 256px viewport holds ~12. Option 40 is well
+    // outside the initial window, so it can only be reachable if the window follows the active
+    // index — the property that was broken.
+    const store = createPanelStore({ ...initialPanelState(), runs: MANY, scope: null });
+    render(<RunSelector store={store} />);
+    openSelector();
+
+    expect(screen.queryByRole('option', { name: /^r_040 · / })).toBeNull();
+
+    press('ArrowDown', 40);
+
+    expect(screen.getByRole('option', { name: /^r_040 · / })).toBeTruthy();
+    expect(activeOption()?.getAttribute('aria-label')).toMatch(/^r_040 · /);
+  });
+
+  it('reaches the last of 400 options with End, and the first again with Home', () => {
+    const store = createPanelStore({ ...initialPanelState(), runs: MANY, scope: null });
+    render(<RunSelector store={store} />);
+    openSelector();
+
+    press('End');
+
+    expect(screen.getByRole('option', { name: /^r_400 · / })).toBeTruthy();
+    expect(activeOption()?.getAttribute('aria-label')).toMatch(/^r_400 · /);
+
+    press('Home');
+
+    expect(screen.getByRole('option', { name: /^All runs/ })).toBeTruthy();
+    expect(activeOption()?.getAttribute('aria-label')).toMatch(/^All runs/);
+  });
+
+  it('selects a distant run with Enter without ever showing it on screen first', () => {
+    const store = createPanelStore({ ...initialPanelState(), runs: MANY, scope: null });
+    render(<RunSelector store={store} />);
+    openSelector();
+
+    press('End');
+    fireEvent.keyDown(search(), { key: 'Enter' });
+
+    expect(store.get().scope).toBe('r_400');
+  });
+
+  it('keeps the active option mounted after the list is scrolled by hand and then filtered', () => {
+    /*
+     * The one case `scrollToIndex` alone cannot carry, and the exception to the note that keyboard
+     * navigation always moves to a *different* index.
+     *
+     * Scrolling with the wheel moves the window without going through `scrollToIndex`, so the last
+     * index it served is still 0. Typing resets the active index to 0 as well — the same value, and
+     * `VirtualList` deliberately will not re-scroll for an index it has already served. The query
+     * below still matches 400 runs, so `VirtualList`'s clamp of `scrollTop` to `maxScrollTop` does
+     * not rescue it either: without a remount the window stays at the bottom and
+     * `aria-activedescendant` names an option ~390 rows above it that is not in the DOM.
+     */
+    const store = createPanelStore({ ...initialPanelState(), runs: MANY, scope: null });
+    const { container } = render(<RunSelector store={store} />);
+    openSelector();
+
+    const viewport = container.querySelector('.agui-vlist');
+    expect(viewport).not.toBeNull();
+    (viewport as HTMLElement).scrollTop = 12_000;
+    fireEvent.scroll(viewport as HTMLElement);
+    expect(screen.queryByRole('option', { name: /^All runs/ })).toBeNull();
+
+    fireEvent.input(search(), { target: { value: 't_' } });
+
+    expect(screen.getAllByRole('option').length).toBeLessThan(30);
+    expect(activeOption()).not.toBeNull();
+    expect(activeOption()?.getAttribute('aria-label')).toMatch(/^r_001 · /);
+  });
+
+  it('keeps focus in the search box while the active option moves', () => {
+    const store = createPanelStore({ ...initialPanelState(), runs: MANY, scope: null });
+    render(<RunSelector store={store} />);
+    openSelector();
+
+    press('ArrowDown', 30);
+
+    expect(document.activeElement).toBe(search());
+  });
+
+  it('wires the trigger and the search box to the listbox by id', () => {
+    const store = createPanelStore({ ...initialPanelState(), runs: RUNS, scope: null });
+    render(<RunSelector store={store} />);
+
+    const trigger = screen.getByRole('button', { name: /^Run:/ });
+    expect(trigger.getAttribute('aria-controls')).toBeNull();
+
+    openSelector();
+
+    const listboxId = screen.getByRole('listbox').id;
+    expect(listboxId).not.toBe('');
+    expect(trigger.getAttribute('aria-controls')).toBe(listboxId);
+    expect(search().getAttribute('aria-controls')).toBe(listboxId);
+    expect(search().getAttribute('aria-activedescendant')).toBe(activeOption()?.id);
+  });
+
+  it('ignores the arrow keys when the query matches nothing', () => {
+    const store = createPanelStore({ ...initialPanelState(), runs: RUNS, scope: 'r_2' });
+    render(<RunSelector store={store} />);
+    openSelector();
+
+    fireEvent.input(search(), { target: { value: 'nope' } });
+    press('ArrowDown', 3);
+    fireEvent.keyDown(search(), { key: 'Enter' });
+
+    expect(screen.getByText('No run matches "nope"')).toBeTruthy();
+    expect(store.get().scope).toBe('r_2');
+    expect(search().getAttribute('aria-activedescendant')).toBeNull();
   });
 });

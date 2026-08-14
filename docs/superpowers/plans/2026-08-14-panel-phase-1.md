@@ -3476,7 +3476,7 @@ Create `src/panel/shell/run-selector.tsx`:
 
 ```tsx
 import type { JSX } from 'preact';
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useId, useMemo, useRef, useState } from 'preact/hooks';
 import type { Run } from '../../core/model/types';
 import { VirtualList } from '../common/virtual-list';
 import type { RunScope } from '../model/panel-types';
@@ -3524,6 +3524,21 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
   const [query, setQuery] = useState('');
   const current = scopedRun(state);
   const containerRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  /*
+   * The active option — the one Enter would choose — as an index rather than a focused element.
+   * A virtualized listbox holds ~12 of its 400 options in the DOM, so roving DOM focus cannot
+   * reach option 300: the node does not exist to be focused. `aria-activedescendant` moves the
+   * *reported* focus without moving the real one.
+   */
+  const [activeIndex, setActiveIndex] = useState(0);
+  const baseId = useId();
+  const listboxId = `${baseId}-listbox`;
+  const optionId = (index: number): string => `${baseId}-option-${index}`;
+
+  useEffect(() => {
+    if (open) searchRef.current?.focus();
+  }, [open]);
 
   /*
    * Dismiss on a pointer press anywhere else. Escape and choosing an option are not enough on
@@ -3553,10 +3568,50 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
     return [...head, ...runs.map((run): RunOption => ({ kind: 'run', run }))];
   }, [state.runs, query]);
 
+  // A filter can shorten the list under a high active index; clamping at the point of use keeps
+  // `aria-activedescendant` pointing at an option that exists.
+  const lastIndex = options.length - 1;
+  const active = Math.min(activeIndex, lastIndex);
+
   function choose(scope: RunScope): void {
     store.update((s) => selectScope(s, scope));
     setQuery('');
+    setActiveIndex(0);
     setOpen(false);
+  }
+
+  function chooseOption(option: RunOption | undefined): void {
+    if (option === undefined) return;
+    choose(option.kind === 'all' ? null : option.run.runId);
+  }
+
+  /** Arrow / Home / End / Enter on the search box, the combobox pattern. */
+  function onSearchKeyDown(event: KeyboardEvent): void {
+    if (lastIndex < 0) return;
+    switch (event.key) {
+      case 'ArrowDown':
+        event.preventDefault();
+        setActiveIndex(Math.min(active + 1, lastIndex));
+        break;
+      case 'ArrowUp':
+        event.preventDefault();
+        setActiveIndex(Math.max(active - 1, 0));
+        break;
+      case 'Home':
+        event.preventDefault();
+        setActiveIndex(0);
+        break;
+      case 'End':
+        event.preventDefault();
+        setActiveIndex(lastIndex);
+        break;
+      case 'Enter':
+        event.preventDefault();
+        chooseOption(options[active]);
+        break;
+      default:
+        break;
+    }
   }
 
   const triggerText =
@@ -3582,7 +3637,11 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
         class="agui-run-selector__trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen(!open)}
+        aria-controls={open && options.length > 0 ? listboxId : undefined}
+        onClick={() => {
+          setActiveIndex(0);
+          setOpen(!open);
+        }}
       >
         {triggerText}
         <span aria-hidden="true" class="agui-run-selector__caret">
@@ -3593,30 +3652,62 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
       {open && (
         <div class="agui-run-selector__popup">
           <input
+            ref={searchRef}
             type="search"
+            // The search box *is* the combobox: it keeps DOM focus the whole time the popup is
+            // open, and `aria-activedescendant` is only honoured on the focused element.
+            role="combobox"
             class="agui-run-selector__search"
             aria-label="Search runs"
             placeholder="Search runs"
+            aria-expanded={options.length > 0}
+            aria-controls={options.length > 0 ? listboxId : undefined}
+            aria-activedescendant={active >= 0 ? optionId(active) : undefined}
             value={query}
-            onInput={(e) => setQuery(e.currentTarget.value)}
+            onKeyDown={onSearchKeyDown}
+            onInput={(e) => {
+              setQuery(e.currentTarget.value);
+              setActiveIndex(0);
+            }}
           />
           {options.length === 0 ? (
             <p class="agui-run-selector__empty">{`No run matches "${query}"`}</p>
           ) : (
-            <div role="listbox" aria-label="Runs" class="agui-run-selector__list">
+            <div
+              id={listboxId}
+              role="listbox"
+              aria-label="Runs"
+              aria-activedescendant={active >= 0 ? optionId(active) : undefined}
+              class="agui-run-selector__list"
+            >
               <VirtualList<RunOption>
+                /*
+                 * Remounted per query, which resets the scroll offset to the top. `scrollToIndex`
+                 * is a value and not a command: it will not re-scroll for an index it has already
+                 * served. After a wheel scroll (which never goes through `scrollToIndex`) a new
+                 * query resets the active index to 0 — the same value it served on mount — so the
+                 * window would stay where the wheel left it and `aria-activedescendant` would name
+                 * an option not in the DOM. A new query is a new list, so remounting is the honest
+                 * fix rather than a nonce.
+                 */
+                key={query}
                 items={options}
                 rowHeight={ROW_HEIGHT_PX}
                 height={LIST_HEIGHT_PX}
                 overscan={4}
-                renderRow={(option) =>
+                // Keeps the active option mounted, which is what makes `aria-activedescendant`
+                // resolvable at index 300 of 400.
+                scrollToIndex={active >= 0 ? active : undefined}
+                renderRow={(option, index) =>
                   option.kind === 'all' ? (
                     <button
                       key="all"
+                      id={optionId(index)}
                       type="button"
                       role="option"
                       aria-selected={state.scope === null}
                       class="agui-run-option"
+                      data-active={index === active}
                       onClick={() => choose(null)}
                     >
                       <span class="agui-run-option__id">All runs</span>
@@ -3627,10 +3718,12 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
                   ) : (
                     <button
                       key={option.run.runId}
+                      id={optionId(index)}
                       type="button"
                       role="option"
                       aria-selected={state.scope === option.run.runId}
                       class="agui-run-option"
+                      data-active={index === active}
                       onClick={() => choose(option.run.runId)}
                     >
                       <span class="agui-run-option__id">{option.run.runId}</span>
@@ -3737,6 +3830,16 @@ Append to `src/panel/panel.css`:
 
 .agui-run-option:hover {
   background: var(--agui-hover);
+}
+
+/*
+ * The active option — the one Enter would choose. DOM focus stays in the search box, so without a
+ * drawn ring there is no visible focus at all.
+ */
+.agui-run-option[data-active='true'] {
+  background: var(--agui-hover);
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
 }
 
 /* Selection is marked by a rule as well as a tint, so it survives a colour-blind reading. */
