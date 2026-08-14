@@ -753,7 +753,7 @@ export interface ReconstructedMessage {
   startedAtMs: number;
   endedAtMs?: number;
   closed: boolean;
-  chunkSeqs: number[];
+  contentSeqs: number[];
 }
 
 export interface ToolCallRecord {
@@ -6614,7 +6614,7 @@ function message(overrides: Partial<ReconstructedMessage> & { messageId: string 
     content: '',
     startedAtMs: 0,
     closed: false,
-    chunkSeqs: [],
+    contentSeqs: [],
     ...overrides,
   };
 }
@@ -6750,8 +6750,8 @@ describe('computeMetrics', () => {
     const run = makeRun({
       startedAtMs: 0,
       messages: new Map([
-        ['m1', message({ messageId: 'm1', content: 'ab', startedAtMs: 10, endedAtMs: 520, closed: true, chunkSeqs: [2, 3] })],
-        ['m2', message({ messageId: 'm2', content: 'c', startedAtMs: 600, chunkSeqs: [5] })],
+        ['m1', message({ messageId: 'm1', content: 'ab', startedAtMs: 10, endedAtMs: 520, closed: true, contentSeqs: [2, 3] })],
+        ['m2', message({ messageId: 'm2', content: 'c', startedAtMs: 600, contentSeqs: [5] })],
       ]),
     });
     const records = [
@@ -7038,7 +7038,7 @@ describe('createRunBuilder — lifecycle and text messages', () => {
     expect(message.startedAtMs).toBe(10);
     expect(message.endedAtMs).toBe(40);
     expect(message.closed).toBe(true);
-    expect(message.chunkSeqs).toEqual([3, 4]);
+    expect(message.contentSeqs).toEqual([3, 4]);
 
     expect(run.issues.filter((issue) => issue.severity === 'error')).toEqual([]);
     expect(run.metrics.durationMs).toBe(50);
@@ -7371,7 +7371,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     if (!message) {
       // Content for a never-opened messageId is still reconstructed so the panel shows it;
       // the validator has already flagged the missing START on this same event.
-      message = { messageId, role, content: '', startedAtMs: tMs, closed: false, chunkSeqs: [] };
+      message = { messageId, role, content: '', startedAtMs: tMs, closed: false, contentSeqs: [] };
       entry.run.messages.set(messageId, message);
       if (role === 'assistant') entry.validation.openTextMessages.add(messageId);
       else entry.validation.openReasoningMessages.add(messageId);
@@ -7403,7 +7403,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
         if (messageId !== undefined) {
           const message = ensureMessage(entry, messageId, 'assistant', record.tMs);
           message.content += str(event.delta) ?? '';
-          message.chunkSeqs.push(record.seq);
+          message.contentSeqs.push(record.seq);
         }
         break;
       }
@@ -7427,7 +7427,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
         if (messageId !== undefined) {
           const message = ensureMessage(entry, messageId, 'reasoning', record.tMs);
           message.content += str(event.delta) ?? '';
-          message.chunkSeqs.push(record.seq);
+          message.contentSeqs.push(record.seq);
         }
         break;
       }
@@ -9254,7 +9254,7 @@ function runToPlain(run: Run): Record<string, unknown> {
     outcome: run.outcome,
     messages: entries(run.messages).map(([id, message]) => [
       id,
-      { ...message, chunkSeqs: [...message.chunkSeqs] },
+      { ...message, contentSeqs: [...message.contentSeqs] },
     ]),
     toolCalls: entries(run.toolCalls).map(([id, toolCall]) => [id, { ...toolCall }]),
     activities: entries(run.activities).map(([id, activity]) => [id, { ...activity }]),

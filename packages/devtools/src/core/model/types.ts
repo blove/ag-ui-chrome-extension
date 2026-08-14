@@ -9,6 +9,15 @@
 /** Synthetic run id used for events that arrive with no open run. */
 export const ORPHANED_RUN_ID = '__orphaned__';
 
+/**
+ * A decoded protocol event. `type` stays a loose `string` on purpose: requirements §7
+ * says an unknown event type is a warning to be displayed, never an error, so the model
+ * must be able to hold a type this build has never heard of.
+ *
+ * Declare concrete event shapes as `type` aliases, not `interface`s — TypeScript derives
+ * an implicit index signature for aliases but not for interfaces, so an interface will
+ * not be assignable here.
+ */
 export type AguiEvent = { type: string; [key: string]: unknown };
 
 export type IssueSeverity = 'error' | 'warning' | 'info';
@@ -127,7 +136,12 @@ export interface ReconstructedMessage {
   startedAtMs: number;
   endedAtMs?: number;
   closed: boolean;
-  chunkSeqs: number[];
+  /**
+   * Seqs of the records that contributed content to this message. Named for content,
+   * not chunks: it collects every `*_MESSAGE_CONTENT` record, whether it arrived as a
+   * discrete CONTENT event or was synthesized by expanding a `*_CHUNK`.
+   */
+  contentSeqs: number[];
 }
 
 export interface ToolCallRecord {
@@ -145,6 +159,11 @@ export interface ToolCallRecord {
 }
 
 export interface ActivityRecord {
+  /**
+   * Composite key, built as `` `${messageId}#${activityType}` ``. AG-UI identifies an
+   * activity by both fields while this record carries a single string, so every producer
+   * and every lookup must compose it the same way.
+   */
   activityId: string;
   value: unknown;
   updatedAtMs: number;
