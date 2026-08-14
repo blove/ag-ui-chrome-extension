@@ -736,3 +736,132 @@ li[data-severity='warning'] .agui-detail__severity {
   outline: 2px solid var(--agui-accent);
   outline-offset: 1px;
 }
+
+/* --- Timeline waterfall (P3) ---------------------------------------------
+ * Bar colours (`--agui-bar-*`) and `--agui-track` are declared once with the rest of the
+ * Timeline palette above, in both schemes.
+ */
+
+.agui-waterfall {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--agui-border);
+}
+
+.agui-waterfall__toggle {
+  width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--agui-fg-muted);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.agui-waterfall__toggle:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
+
+.agui-waterfall__empty {
+  margin: 4px 0;
+  color: var(--agui-fg-muted);
+}
+
+.agui-waterfall__lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agui-waterfall__lane {
+  display: grid;
+  grid-template-columns: 16ch minmax(0, 1fr) 7ch;
+  gap: 8px;
+  align-items: center;
+}
+
+.agui-waterfall__lane-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--agui-fg-muted);
+}
+
+.agui-waterfall__track {
+  position: relative;
+  display: block;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--agui-track);
+}
+
+.agui-waterfall__bar {
+  position: absolute;
+  top: 0;
+  height: 10px;
+  min-width: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: var(--agui-bar-run);
+  cursor: default;
+}
+
+.agui-waterfall__bar[data-lane='message'] {
+  background: var(--agui-bar-message);
+}
+
+.agui-waterfall__bar[data-lane='tool'] {
+  background: var(--agui-bar-tool);
+}
+
+.agui-waterfall__bar[data-lane='step'] {
+  background: var(--agui-bar-step);
+}
+
+/* An unterminated span is drawn to the edge of the chart, hatched so it does not
+   read as a measured duration. */
+.agui-waterfall__bar[data-open='true'] {
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgb(255 255 255 / 45%) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+.agui-waterfall__bar[data-hovered='true'],
+.agui-waterfall__bar:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
+
+.agui-waterfall__stall {
+  position: absolute;
+  top: -3px;
+  height: 16px;
+  min-width: 3px;
+  padding: 0;
+  border: 1px solid var(--agui-severity-error);
+  border-radius: 2px;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--agui-severity-error) 0 2px,
+    transparent 2px 5px
+  );
+  cursor: default;
+}
+
+.agui-waterfall__stall:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
+
+.agui-waterfall__duration {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--agui-fg-muted);
+}
