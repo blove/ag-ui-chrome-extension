@@ -10283,6 +10283,8 @@ them. Each was verified empirically before being adopted.
 | A11 | Vitest `include` is `src/**/*.test.{ts,tsx}` | A `.tsx` component test would otherwise be silently skipped rather than failing. |
 | A12 | The `globalThis` ban is `Identifier[name='globalThis']`, not `MemberExpression[object.name='globalThis']` | The member-expression form catches `globalThis.chrome` and `globalThis['chrome']` but **not** `(globalThis as SomeType).chrome` — the cast wraps the identifier in a `TSAsExpression` and the selector stops matching. Verified all four forms; only the identifier-level ban catches every one. `core/` has no legitimate use for `globalThis`. |
 
+| A13 | Three further boundary rules: an `ImportExpression` selector for dynamic `import()`, `TSQualifiedName`/`TSTypeQuery` selectors for type-position `chrome`, and `XMLHttpRequest`/`WebSocket`/`EventSource`/`indexedDB`/`caches` added to the globals ban | `no-restricted-imports` registers no `ImportExpression` visitor, so `await import('../../relay/x')` bypassed the import ban entirely. `no-restricted-globals` analyses *value* references, so `p: chrome.runtime.Port` never fired — harmless at runtime but it lets Chrome types into `core/`'s public signatures, breaking the "liftable into a CLI" property. And banning `fetch`/`localStorage` alone left egress and persistence reachable through five other doors. Verified all nine forms fire, with no false positives on an ordinary pure-TS core module. |
+
 > **Authoritative source note.** Amendments A5–A12 changed Task 2's config files after that task
 > was committed. The inline code blocks in Task 2 above were **not** all retro-edited to match.
 > Where the plan text and the committed files under `packages/devtools/` disagree, **the committed

@@ -65,6 +65,28 @@ export default tseslint.config(
           name: 'location',
           message: 'core/ must run under Node. Keep host globals out of core/.',
         },
+        // Banning `fetch` alone leaves the egress door open; these are the other ways out.
+        {
+          name: 'XMLHttpRequest',
+          message: 'core/ must be I/O-free; pass already-read bytes in. See requirements §11 (no egress).',
+        },
+        {
+          name: 'WebSocket',
+          message: 'core/ must be I/O-free; pass already-read bytes in. See requirements §11 (no egress).',
+        },
+        {
+          name: 'EventSource',
+          message: 'core/ must be I/O-free; pass already-read bytes in. See requirements §11 (no egress).',
+        },
+        // Likewise, banning localStorage/sessionStorage alone leaves these persistence paths.
+        {
+          name: 'indexedDB',
+          message: 'core/ must not persist anything. See requirements §11.',
+        },
+        {
+          name: 'caches',
+          message: 'core/ must not persist anything. See requirements §11.',
+        },
       ],
       'no-restricted-imports': [
         'error',
@@ -87,6 +109,25 @@ export default tseslint.config(
           // use for globalThis, so banning every reference is both simpler and airtight.
           selector: "Identifier[name='globalThis']",
           message: 'globalThis bypasses the core/ boundary. Reference nothing host-specific from core/.',
+        },
+        {
+          // `no-restricted-imports` registers visitors for ImportDeclaration and the two export
+          // forms only — there is no ImportExpression visitor — so `await import('../../relay/x')`
+          // slips past the import ban entirely. This selector closes that path.
+          selector: "ImportExpression > Literal[value=/(^|\\/)(sw|relay|inject|panel)\\//]",
+          message: 'core/ must not import from Chrome-facing surfaces. Pass plain data into core/ instead.',
+        },
+        {
+          // `no-restricted-globals` is a scope-analysis rule over *value* references, so a
+          // type position like `p: chrome.runtime.Port` never fires. Emits no runtime code, but
+          // it lets Chrome types leak into core/'s public signatures, which breaks the
+          // "liftable into a CLI" property the boundary exists to protect.
+          selector: "TSQualifiedName > Identifier[name='chrome']",
+          message: 'core/ must stay Chrome-free, including in type positions.',
+        },
+        {
+          selector: "TSTypeQuery > Identifier[name='chrome']",
+          message: 'core/ must stay Chrome-free, including in type positions.',
         },
       ],
     },
