@@ -7422,6 +7422,14 @@ export function computeMetrics(
     const event = record.event;
     if (event === null) continue;
 
+    // This counts the RECONSTRUCTED event stream, not wire frames, and that is deliberate.
+    // With `expandChunks` on, one `TEXT_MESSAGE_CHUNK` frame contributes a START and a
+    // CONTENT, and the run builder's end-of-stream flush contributes the matching END — so a
+    // chunked run reports the same event mix as the equivalent explicit triad, which is what
+    // makes the two comparable. The WIRE-FRAME measure is `totalStreamBytes` above, and it
+    // correctly stays put for every synthesized event because those records carry
+    // `raw: undefined`. The two numbers answer different questions; do not reconcile one to
+    // the other. Both halves are pinned by tests in `run-builder.test.ts`.
     eventCountByType[event.type] = (eventCountByType[event.type] ?? 0) + 1;
     const messageId = typeof event.messageId === 'string' ? event.messageId : undefined;
     const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : undefined;
@@ -8476,6 +8484,13 @@ keepalive never enters `run.recordSeqs`, the issue attaches to the connection's 
 (or to `ORPHANED_RUN_ID` when it has none), and `Issue.seq` / `Issue.tMs` come from the
 keepalive that *closed* the gap.
 
+This cycle also **owns the end-of-stream chunk flush** (A24). `expandChunk` is per-event and
+synthesizes a trailing `*_END` only when a NEW id opens, so the last message and tool call of
+a chunk-only stream never close on their own. The builder — the only layer with a run-end hook
+— synthesizes them at `RUN_FINISHED` / `RUN_ERROR`, at `closeConnection`, and at a
+`RUN_STARTED` that takes the connection over from a run that never terminated (A27), and feeds
+them through the same fold as real events.
+
 - [ ] **Step 1: Write the failing test**
 
 Append the following to `src/core/normalizer/run-builder.test.ts`:
@@ -8549,6 +8564,227 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(call.closed).toBe(false);
   });
 
+  it('closes the trailing chunked message, reasoning and tool call at RUN_FINISHED', () => {
+    const builder = createRunBuilder();
+    const frames: AguiEvent[] = [
+      { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' },
+      { type: 'TEXT_MESSAGE_CHUNK', messageId: 'm1', role: 'assistant', delta: 'Hi' },
+      { type: 'REASONING_MESSAGE_CHUNK', messageId: 'rm1', delta: 'hmm' },
+      { type: 'TOOL_CALL_CHUNK', toolCallId: 'tc1', toolCallName: 'search', delta: '{"q":"cats"}' },
+      { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' },
+    ];
+
+    frames.forEach((frame, index) => builder.addRecord(rec(index + 1, index * 10, 'c1', frame)));
+    builder.closeConnection('c1', 50);
+
+    const run = builder.getRun('r1')!;
+
+    // A chunk-only stream is the CopilotKit default. `expandChunk` synthesizes a trailing
+    // END only when a NEW id opens, so without the run-end flush every healthy chunked run
+    // reported these two warnings — and the panel got no structured tool arguments.
+    expect(run.issues.filter((issue) => issue.code === 'unclosed-message')).toEqual([]);
+    expect(run.issues.filter((issue) => issue.code === 'unclosed-tool-call')).toEqual([]);
+    // the flush runs BEFORE the terminal transition, so the synthesized ENDs are still legal
+    expect(run.issues.filter((issue) => issue.code === 'event-after-terminal')).toEqual([]);
+
+    const message = run.messages.get('m1')!;
+    expect(message.closed).toBe(true);
+    expect(message.endedAtMs).toBe(40);
+
+    const reasoning = run.messages.get('rm1')!;
+    expect(reasoning.closed).toBe(true);
+    expect(reasoning.endedAtMs).toBe(40);
+
+    const call = run.toolCalls.get('tc1')!;
+    expect(call.closed).toBe(true);
+    expect(call.endedAtMs).toBe(40);
+    // `args` is parsed only in the TOOL_CALL_END case, so this is what the flush buys the panel
+    expect(call.args).toEqual({ q: 'cats' });
+    expect(call.argsParseError).toBeUndefined();
+    expect(run.outcome).toBe('finished');
+    expect(run.endedAtMs).toBe(40);
+
+    // `eventCountByType` counts the RECONSTRUCTED stream, so the flushed ENDs count exactly
+    // as the expander's synthesized STARTs always have. Five frames arrived; eleven events
+    // were reconstructed.
+    expect(run.metrics.eventCountByType).toEqual({
+      RUN_STARTED: 1,
+      TEXT_MESSAGE_START: 1,
+      TEXT_MESSAGE_CONTENT: 1,
+      TEXT_MESSAGE_END: 1,
+      REASONING_MESSAGE_START: 1,
+      REASONING_MESSAGE_CONTENT: 1,
+      REASONING_MESSAGE_END: 1,
+      TOOL_CALL_START: 1,
+      TOOL_CALL_ARGS: 1,
+      TOOL_CALL_END: 1,
+      RUN_FINISHED: 1,
+    });
+    // `totalStreamBytes` is the WIRE-FRAME measure and does not move: every synthesized
+    // event's record carries `raw: undefined`. The two numbers answer different questions.
+    expect(run.metrics.totalStreamBytes).toBe(
+      frames.reduce((total, frame) => total + JSON.stringify(frame).length, 0),
+    );
+  });
+
+  it('closes the trailing chunked message and tool call when the connection closes mid-run', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'm1', role: 'assistant', delta: 'Hi' }));
+    builder.addRecord(
+      rec(3, 20, 'c1', { type: 'TOOL_CALL_CHUNK', toolCallId: 'tc1', toolCallName: 'search', delta: '{"q":1}' }),
+    );
+    builder.closeConnection('c1', 90);
+
+    const run = builder.getRun('r1')!;
+
+    expect(run.issues.filter((issue) => issue.code === 'unclosed-message')).toEqual([]);
+    expect(run.issues.filter((issue) => issue.code === 'unclosed-tool-call')).toEqual([]);
+    // the stream still died without a terminal event — that issue is real and stays
+    expect(run.issues.filter((issue) => issue.code === 'run-never-terminated')).toHaveLength(1);
+
+    const message = run.messages.get('m1')!;
+    expect(message.closed).toBe(true);
+    expect(message.endedAtMs).toBe(90);
+
+    const call = run.toolCalls.get('tc1')!;
+    expect(call.closed).toBe(true);
+    expect(call.endedAtMs).toBe(90);
+    expect(call.args).toEqual({ q: 1 });
+
+    expect(run.outcome).toBe('aborted');
+    // the flush is not a frame off the wire: it contributes no seq of its own
+    expect(run.recordSeqs).toEqual([1, 2, 3]);
+  });
+
+  it('closes an unterminated run chunk state against that run when the next run starts', () => {
+    const builder = createRunBuilder();
+
+    // requirements §4.2: `POST {base}/agent/:agentId/connect` resumes a stream on a
+    // connection that may already have carried a run, so two runs on one connection —
+    // the first of them never terminated — is a first-class path, not a curiosity.
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rA' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'mA', role: 'assistant', delta: 'A' }));
+    builder.addRecord(
+      rec(3, 20, 'c1', { type: 'TOOL_CALL_CHUNK', toolCallId: 'tcA', toolCallName: 'search', delta: '{"q":"a"}' }),
+    );
+    builder.addRecord(rec(4, 30, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rB' }));
+
+    const runA = builder.getRun('rA')!;
+    const runB = builder.getRun('rB')!;
+
+    // the chunk state is connection-scoped, so it has to be flushed against the OUTGOING run
+    const message = runA.messages.get('mA')!;
+    expect(message.closed).toBe(true);
+    expect(message.endedAtMs).toBe(30);
+
+    const call = runA.toolCalls.get('tcA')!;
+    expect(call.closed).toBe(true);
+    expect(call.endedAtMs).toBe(30);
+    expect(call.args).toEqual({ q: 'a' });
+
+    // run B emitted nothing of its own yet, and must not inherit run A's leftovers
+    expect([...runB.messages.keys()]).toEqual([]);
+    expect([...runB.toolCalls.keys()]).toEqual([]);
+    expect(runB.recordSeqs).toEqual([4]);
+    // the flush is not a frame off the wire: run A's record list is unchanged
+    expect(runA.recordSeqs).toEqual([1, 2, 3]);
+  });
+
+  it('attaches any unclosed-* warning from a run switch to the outgoing run, never the incoming one', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rA' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'mA', role: 'assistant', delta: 'A' }));
+    builder.addRecord(
+      rec(3, 20, 'c1', { type: 'TOOL_CALL_CHUNK', toolCallId: 'tcA', toolCallName: 'search', delta: '{"q":"a"}' }),
+    );
+    builder.addRecord(rec(4, 30, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rB' }));
+    builder.closeConnection('c1', 100);
+
+    const runA = builder.getRun('rA')!;
+    const runB = builder.getRun('rB')!;
+
+    // run A's entities were closed by the switch, so neither run reports them as unclosed
+    expect(runA.issues.filter((issue) => issue.code === 'unclosed-message')).toEqual([]);
+    expect(runA.issues.filter((issue) => issue.code === 'unclosed-tool-call')).toEqual([]);
+    expect(runB.issues.filter((issue) => issue.code === 'unclosed-message')).toEqual([]);
+    expect(runB.issues.filter((issue) => issue.code === 'unclosed-tool-call')).toEqual([]);
+    // both runs really did end without a terminal event, and each says so once
+    expect(runA.issues.filter((issue) => issue.code === 'run-never-terminated')).toHaveLength(1);
+    expect(runB.issues.filter((issue) => issue.code === 'run-never-terminated')).toHaveLength(1);
+  });
+
+  it('changes nothing when a RUN_STARTED arrives with an empty chunk state', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rA' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_START', messageId: 'mA', role: 'assistant' }));
+    builder.addRecord(rec(3, 20, 'c1', { type: 'TEXT_MESSAGE_END', messageId: 'mA' }));
+    builder.addRecord(rec(4, 30, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rB' }));
+
+    const runA = builder.getRun('rA')!;
+
+    // an explicit triad never touches the chunk state, and the first RUN_STARTED on a
+    // connection has no outgoing run at all — both must be pure no-ops
+    expect(runA.messages.get('mA')!.endedAtMs).toBe(20);
+    expect(runA.recordSeqs).toEqual([1, 2, 3]);
+    expect(runA.metrics.eventCountByType).toEqual({
+      RUN_STARTED: 1,
+      TEXT_MESSAGE_START: 1,
+      TEXT_MESSAGE_END: 1,
+    });
+    expect(builder.getRun('rB')!.messages.size).toBe(0);
+    expect(builder.runs().map((run) => run.runId)).toEqual(['rA', 'rB']);
+  });
+
+  it('gives a chunked run the same closure and parsed args as the equivalent explicit triad', () => {
+    const chunked = createRunBuilder({ expandChunks: true });
+    chunked.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    chunked.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'm1', role: 'assistant', delta: 'Hello' }));
+    chunked.addRecord(
+      rec(3, 20, 'c1', { type: 'TOOL_CALL_CHUNK', toolCallId: 'tc1', toolCallName: 'search', delta: '{"q":"cats"}' }),
+    );
+    chunked.addRecord(rec(4, 30, 'c1', { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' }));
+
+    const explicit = createRunBuilder({ expandChunks: false });
+    explicit.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    explicit.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_START', messageId: 'm1', role: 'assistant' }));
+    explicit.addRecord(rec(3, 10, 'c1', { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'Hello' }));
+    explicit.addRecord(rec(4, 20, 'c1', { type: 'TOOL_CALL_START', toolCallId: 'tc1', toolCallName: 'search' }));
+    explicit.addRecord(rec(5, 20, 'c1', { type: 'TOOL_CALL_ARGS', toolCallId: 'tc1', delta: '{"q":"cats"}' }));
+    explicit.addRecord(rec(6, 30, 'c1', { type: 'TEXT_MESSAGE_END', messageId: 'm1' }));
+    explicit.addRecord(rec(7, 30, 'c1', { type: 'TOOL_CALL_END', toolCallId: 'tc1' }));
+    explicit.addRecord(rec(8, 30, 'c1', { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' }));
+
+    const fromChunks = chunked.getRun('r1')!;
+    const fromTriad = explicit.getRun('r1')!;
+    const chunkMessage = fromChunks.messages.get('m1')!;
+    const triadMessage = fromTriad.messages.get('m1')!;
+    const chunkCall = fromChunks.toolCalls.get('tc1')!;
+    const triadCall = fromTriad.toolCalls.get('tc1')!;
+
+    // equivalence that matters to the panel, not just `content`
+    expect([chunkMessage.content, chunkMessage.closed, chunkMessage.endedAtMs]).toEqual([
+      triadMessage.content,
+      triadMessage.closed,
+      triadMessage.endedAtMs,
+    ]);
+    expect([chunkMessage.closed, chunkMessage.endedAtMs]).toEqual([true, 30]);
+
+    expect([chunkCall.argsText, chunkCall.closed, chunkCall.endedAtMs, chunkCall.args]).toEqual([
+      triadCall.argsText,
+      triadCall.closed,
+      triadCall.endedAtMs,
+      triadCall.args,
+    ]);
+    expect(chunkCall.args).toEqual({ q: 'cats' });
+
+    expect(fromChunks.outcome).toBe(fromTriad.outcome);
+    expect(fromChunks.endedAtMs).toBe(fromTriad.endedAtMs);
+  });
+
   it('attaches chunk-expansion issues to the run even when nothing could be synthesized', () => {
     const builder = createRunBuilder();
 
@@ -8583,7 +8819,7 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(run.metrics.durationMs).toBe(100);
   });
 
-  it('does not raise run-never-terminated for a run that already finished, and closes once', () => {
+  it('leaves a run that already finished untouched when its connection closes', () => {
     const builder = createRunBuilder();
 
     builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
@@ -8595,6 +8831,31 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(run.issues.filter((issue) => issue.code === 'run-never-terminated')).toEqual([]);
     expect(run.outcome).toBe('finished');
     expect(run.endedAtMs).toBe(10);
+    // NOTE: the second close proves nothing here — `finalizeRules` emits nothing for a
+    // FINISHED run however many times it runs. The `closedAtMs` guard is pinned by the
+    // next test, which closes an UNTERMINATED run twice.
+  });
+
+  it('emits the run-end issues exactly once when an unterminated run is closed twice', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_START', messageId: 'm1', role: 'assistant' }));
+    builder.closeConnection('c1', 100);
+    builder.closeConnection('c1', 200);
+
+    const run = builder.getRun('r1')!;
+
+    // `conn.closedAtMs` is the only thing standing between this and a double emission:
+    // `finalizeRules` is a pure function of a validation state that closing does not reset,
+    // so a second pass over an unterminated run re-raises every run-end issue — which is
+    // exactly what breaks Task 16's "exactly three issues" assertion.
+    expect(run.issues.filter((issue) => issue.code === 'run-never-terminated')).toHaveLength(1);
+    expect(run.issues.filter((issue) => issue.code === 'unclosed-message')).toHaveLength(1);
+    // the FIRST close wins: the run ended when its connection did, not at a later redundant close
+    expect(run.endedAtMs).toBe(100);
+    expect(run.metrics.durationMs).toBe(100);
+    expect(run.outcome).toBe('aborted');
   });
 
   it('closes only the runs belonging to the connection that closed', () => {
@@ -8651,6 +8912,32 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(run.recordSeqs).toEqual([1]);
   });
 
+  it('treats an exactly-15 s keepalive gap as no gap at all', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(keepalive(2, 1_000, 'c1', 'ka'));
+    builder.addRecord(keepalive(3, 16_000, 'c1', 'ka')); // exactly 15 000 ms
+
+    // requirements §7 flags a gap LONGER than 15 s, so the comparison is strictly greater
+    // and the boundary itself is clean. 11 s and 28 s cannot tell `<=` from `<`; this can.
+    expect(builder.getRun('r1')!.issues.filter((issue) => issue.code === 'keepalive-gap')).toEqual([]);
+  });
+
+  it('raises keepalive-gap one millisecond past the 15 s threshold', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(keepalive(2, 1_000, 'c1', 'ka'));
+    builder.addRecord(keepalive(3, 16_001, 'c1', 'ka')); // 15 001 ms — the first gap there is
+
+    const gaps = builder.getRun('r1')!.issues.filter((issue) => issue.code === 'keepalive-gap');
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.seq).toBe(3);
+    expect(gaps[0]!.message).toContain('15001ms');
+  });
+
   it('attaches a keepalive gap to the orphaned run when the connection has no run', () => {
     const builder = createRunBuilder();
 
@@ -8697,6 +8984,9 @@ Expected: FAIL — the new tests throw
 `keepalive-gap` — Task 13a drops keepalive records on the floor), and
 `TypeError: Cannot read properties of undefined (reading 'issues')` (nothing has ever
 created the orphaned run, since a keepalive alone did not).
+The three end-of-stream-flush tests fail differently — chunk expansion runs but nothing ever
+closes what it opened, so they report `unclosed-message` / `unclosed-tool-call` issues and
+`expected [ 'Hello', false, undefined ] to deeply equal [ 'Hello', true, 30 ]`.
 The 14 tests from Tasks 13a and 13b still pass.
 
 - [ ] **Step 3: Write the implementation**
@@ -8776,7 +9066,9 @@ and replace the `ensureConn` function with:
   }
 ```
 
-3.4 — Replace the whole `addRecord` function with the keepalive fold plus the new
+3.4 — Replace the whole `addRecord` function with the keepalive fold, the end-of-stream chunk
+flush (`takeChunkFlushEvents` / `foldEvent` / `flushChunkStateOntoCurrentRun` — see A24 and
+A27), and the new
 `addRecord`:
 
 ```ts
@@ -8802,6 +9094,8 @@ and replace the `ensureConn` function with:
     if (previousMs === undefined) return;
 
     const gapMs = record.tMs - previousMs;
+    // Strictly greater: requirements §7 flags a gap LONGER than 15 s, so exactly 15 000 ms
+    // is clean. Both sides of that boundary are pinned by tests — 15 000 and 15 001.
     if (gapMs <= KEEPALIVE_GAP_MS) return;
 
     // Anchored to the keepalive that CLOSED the gap — it is a real record with a real seq,
@@ -8814,6 +9108,86 @@ and replace the `ensureConn` function with:
         { tMs: record.tMs },
       ),
     ]);
+  }
+
+  /**
+   * The `*_END` events a connection's chunk state still owes, in triad order, clearing that
+   * state as it goes.
+   *
+   * `expandChunk` synthesizes a trailing END only when a NEW id opens, and it is per-event:
+   * it has no end-of-stream hook, so the LAST message and tool call of a chunk-only stream —
+   * the CopilotKit default — would otherwise never close. That cost every healthy chunked run
+   * a spurious `unclosed-message` and `unclosed-tool-call`, and left `ToolCallRecord.args`
+   * `undefined` even for perfectly valid JSON, because `args` is parsed only in the builder's
+   * `TOOL_CALL_END` case. Closing the stream is the run builder's job, so it lives here.
+   *
+   * When `expandChunks` is false nothing ever writes `conn.chunkState`, so this yields nothing.
+   */
+  function takeChunkFlushEvents(conn: ConnEntry): AguiEvent[] {
+    const state = conn.chunkState;
+    const events: AguiEvent[] = [];
+    if (state.openTextMessageId !== undefined) {
+      events.push({ type: 'TEXT_MESSAGE_END', messageId: state.openTextMessageId });
+    }
+    if (state.openReasoningMessageId !== undefined) {
+      events.push({ type: 'REASONING_MESSAGE_END', messageId: state.openReasoningMessageId });
+    }
+    if (state.openToolCallId !== undefined) {
+      events.push({ type: 'TOOL_CALL_END', toolCallId: state.openToolCallId });
+    }
+    conn.chunkState = createChunkExpanderState();
+    return events;
+  }
+
+  /**
+   * Fold one event onto one run: validate (pure), then mutate, then record, then attach.
+   *
+   * Every event takes this path — off the wire, out of chunk expansion, or out of the
+   * end-of-stream flush — so message closing, `endedAtMs` and tool-args parsing happen in
+   * exactly one place and a synthesized END is validated like any other.
+   */
+  function foldEvent(
+    entry: RunEntry,
+    event: AguiEvent,
+    record: EventRecord,
+    countBytes: boolean,
+  ): void {
+    const issues = runRules(event, record, entry.validation);
+    applyTransition(entry, event, record);
+    noteRecord(entry, record, event, countBytes);
+    attachIssues(entry, issues);
+  }
+
+  /**
+   * Flush the connection's chunk state onto its CURRENT run — the one that owns whatever the
+   * state still holds open — for the two exits that are not a terminal event: the connection
+   * closing, and a new `RUN_STARTED` taking the connection over.
+   *
+   * No frame carries these: the stream stopped, or moved on. They anchor to the run's last
+   * real seq — the same anchor `finalizeRules` uses for the run-end codes — so anything they
+   * raise still points at a record the user can select, and `raw: undefined` keeps them out
+   * of `totalStreamBytes` because nothing was ever on the wire. `tMs` is the moment the run
+   * demonstrably ended: the close, or the incoming `RUN_STARTED`.
+   *
+   * A no-op when the connection has no current run or the chunk state is empty.
+   */
+  function flushChunkStateOntoCurrentRun(conn: ConnEntry, tMs: number): void {
+    if (conn.openRunId === undefined) return;
+    const entry = entries.get(conn.openRunId);
+    if (entry === undefined) return;
+    const seq = entry.run.recordSeqs.at(-1) ?? 0;
+    for (const event of takeChunkFlushEvents(conn)) {
+      const record: EventRecord = {
+        kind: 'event',
+        seq,
+        tMs,
+        connId: conn.connId,
+        raw: undefined,
+        event,
+        issues: [],
+      };
+      foldEvent(entry, event, record, false);
+    }
   }
 
   function addRecord(record: CaptureRecord): void {
@@ -8852,13 +9226,25 @@ and replace the `ensureConn` function with:
     let first: RunEntry | undefined;
     for (let i = 0; i < events.length; i += 1) {
       const event = events[i]!;
+      // A RUN_STARTED hands the connection to a new run, and `resolveRun` is what performs
+      // that switch — so the flush goes BEFORE it. The chunk state is connection-scoped, so
+      // whatever it still holds open belongs to the OUTGOING run; flushing after the switch
+      // would only move the mis-attribution, materializing a phantom message or tool call on
+      // the incoming run. Not theoretical: requirements §4.2's
+      // `POST {base}/agent/:agentId/connect` resumes a stream on a connection that may
+      // already have carried a run.
+      if (event.type === 'RUN_STARTED') flushChunkStateOntoCurrentRun(conn, record.tMs);
       const entry = resolveRun(conn, event, record);
       if (first === undefined) first = entry;
-      const issues = runRules(event, record, entry.validation);
-      applyTransition(entry, event, record);
+      // The terminal event is the last moment at which the chunk state's outstanding ENDs
+      // are still legal, so they are folded here — strictly BEFORE this event is validated
+      // and applied. `applyTransition` sets `validation.terminated` on the terminal event,
+      // and after that every event, synthesized ones included, trips `event-after-terminal`.
+      if (event.type === 'RUN_FINISHED' || event.type === 'RUN_ERROR') {
+        for (const flushed of takeChunkFlushEvents(conn)) foldEvent(entry, flushed, record, false);
+      }
       // Only the first expanded event carries the raw frame, so its bytes are counted once.
-      noteRecord(entry, record, event, i === 0);
-      attachIssues(entry, issues);
+      foldEvent(entry, event, record, i === 0);
     }
 
     // 5. Record bookkeeping and issue attachment for the record as a whole.
@@ -8875,8 +9261,15 @@ and replace the `ensureConn` function with:
 ```ts
     closeConnection(connId: string, tMs: number): void {
       const conn = conns.get(connId);
+      // Idempotent by `closedAtMs`, not by luck: `finalizeRules` is a pure function of a
+      // validation state that closing does not reset, so a second pass over an UNTERMINATED
+      // run re-raises `run-never-terminated` and every `unclosed-*`. A finished run hides
+      // the bug — `finalizeRules` emits nothing for it however often it runs.
       if (conn === undefined || conn.closedAtMs !== undefined) return;
       conn.closedAtMs = tMs;
+      // A run that never terminated got no flush from `addRecord`, so it happens here —
+      // and BEFORE `finalizeRules`, which reads the very sets the synthesized ENDs clear.
+      flushChunkStateOntoCurrentRun(conn, tMs);
       for (const runId of conn.runIds) {
         const entry = entries.get(runId);
         if (entry === undefined) continue;
@@ -8898,7 +9291,7 @@ and replace the `ensureConn` function with:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run src/core/normalizer/run-builder.test.ts`
-Expected: 25 passing.
+Expected: 34 passing.
 
 - [ ] **Step 5: Commit**
 
@@ -8943,6 +9336,17 @@ Expected: 25 passing.
    `TEXT_MESSAGE_CONTENT` events. Without it, chunked streams (the CopilotKit default) would
    report `ttftMs: undefined`. A consequence: `eventCountByType` counts *expanded* events when
    `expandChunks` is true and raw events when it is false — the two tests in Task 13c pin both.
+
+   **DECIDED (A24).** The same rule extends to the end-of-stream flush: the synthesized
+   `*_END` events **count** in `eventCountByType`, and contribute **zero** to
+   `totalStreamBytes`. The two fields measure different things and must not be reconciled to
+   each other — `eventCountByType` is a count of the *reconstructed* event stream (which is
+   what makes a chunked run comparable to the equivalent explicit triad; an END synthesized
+   because a new id opened has always counted, so excluding only the run-end ones would be
+   the inconsistent choice), while `totalStreamBytes` is the *wire-frame* measure and stays
+   put because every synthesized record carries `raw: undefined`. Stated at the accumulation
+   site in Task 12 and pinned by a Task 13c test that asserts both numbers on one run, so
+   nobody later "fixes" one to match the other.
 
 5. **Percentile method.** `gapP50Ms` / `gapP95Ms` use nearest-rank
    (`ceil(p/100 * N)`, clamped, no interpolation). The requirements say only "p50/p95". The
@@ -11287,6 +11691,14 @@ them. Each was verified empirically before being adopted.
 | A21 | `ReconstructedMessage.role: MessageRole` → `kind: MessageKind` (`'text' \| 'reasoning'`) | The protocol carries its own `role` on `TEXT_MESSAGE_START` and `TOOL_CALL_RESULT` with different semantics, so the old name invited `role: event.role` in Task 13a — where the fold constructs the message directly from event data. Renamed while there are zero consumers; after 13a it would cost edits across 13a–13c and 16. |
 | A22 | Task 12's `byteLength` encodes with `TextEncoder` instead of returning `json.length` | `String.length` counts UTF-16 code units, not bytes: a CJK codepoint is 1 unit / 3 UTF-8 bytes and an emoji is 2 units / 4 bytes, so a Japanese conversation reporting "1,200 bytes" actually put ~3,000 on the wire. `totalStreamBytes`/`statePatchBytes` exist to diagnose payload size and proxy buffering, which an under-count of ~2.5x defeats. `TextEncoder` is a standard global in Node 22 and in browsers and is not on the `core/` lint fence — verified `pnpm lint` stays clean. Task 12 gains a non-ASCII regression test asserting the count exceeds `JSON.stringify(...).length`, and its three ASCII byte assertions are restated as literal totals so they no longer restate the implementation's own expression. The docstring was narrowed at the same time: it claimed to treat "non-serializable values as zero bytes", but a circular `raw` **throws** out of `JSON.stringify` rather than counting zero. |
 | A23 | Task 8's `isPatchOp` requires an own `value` property on `add`/`replace`/`test` | RFC 6902 §4.1/§4.3/§4.6 make the member mandatory, and requirements §7 lists a bad `op` as an error condition, but the predicate checked only `op`, `path`, and `from`. Confirmed: `applyPatch({a:1}, [{op:'add', path:'/b'}])` returned `{ok:true}` with `value.b === undefined` — a document that no longer round-trips through JSON, since `JSON.stringify` drops the key. The State tab would have shown `{"a":1}` while the in-memory model held a `b`, and a `test` with no `value` reported `test-failed`, blaming the server's state for a malformed operation. The failure is `invalid-op`, matching every other malformed op. The check is `Object.prototype.hasOwnProperty.call`, **not** `op.value !== undefined`: `{"value": null}` is legal RFC 6902 and the commonest way a server clears a field, while `{"value": undefined}` cannot arrive from JSON at all. Verified no previously-passing test asserted the old behavior. |
+
+| A24 | Task 13c gains an **end-of-stream chunk flush**: the builder synthesizes the outstanding `TEXT_MESSAGE_END` / `REASONING_MESSAGE_END` / `TOOL_CALL_END` for whatever `conn.chunkState` still holds open, at `RUN_FINISHED` / `RUN_ERROR` and at `closeConnection` | **A gap in the plan's own design, not a deviation from it** — the plan never said who closes the *last* chunked entity, and neither Task 10 nor Task 13c did. `expandChunk` emits a trailing END only when a NEW id opens, and it is per-event with no run-end hook; nothing else flushed the state. Confirmed on a cleanly-finished chunked run: `issues: ['unclosed-message@4/warning', 'unclosed-tool-call@4/warning']`, `m1.closed === false`, `tc.closed === false`, `tc.args === undefined`. This is the **default path** — chunked streaming is what CopilotKit emits — so every healthy chunked run carried two spurious warnings and the panel showed no structured tool arguments, since `args` is parsed only in the builder's `TOOL_CALL_END` case (`argsText` was a perfectly valid `{}`). Ordering is load-bearing: the flush runs **before** the terminal event is validated and applied, because `applyTransition` sets `validation.terminated` and every event after that — synthesized ones included — trips `event-after-terminal`. The synthesized ENDs go through the same `foldEvent` as real events (`runRules` → `applyTransition` → `noteRecord` → `attachIssues`), so closing, `endedAtMs`, tool-args parsing and `tool-args-not-json` on genuinely malformed args all behave identically to the explicit triad. Consequence: with `expandChunks` true, `eventCountByType` counts the synthesized ENDs, exactly as gap 4 already documents for the rest of expansion; the close-time flush carries `raw: undefined` and the run's last real seq, so it adds no bytes and no `recordSeqs` entry. |
+
+| A25 | Task 13c's double-close test uses an **unterminated** run, and the already-finished one is renamed to say what it actually covers | R1 makes `conn.closedAtMs` the guard that keeps `finalizeRules` from running twice, but the test that claimed to cover it closed an **already-finished** run — for which `finalizeRules` emits nothing however many times it is called. Confirmed by mutation: deleting `|| conn.closedAtMs !== undefined` left all 25 tests green, so the one line R1 identifies as load-bearing ("would have broken Task 16's exactly three issues assertion") was unpinned. The replacement closes an unterminated run twice and asserts exactly one `run-never-terminated` and exactly one `unclosed-message`, plus that the FIRST close's `tMs` wins for `endedAtMs` — a second close must not re-date the run. |
+
+| A26 | Task 13c pins **both sides** of the 15 s keepalive boundary — 15 000 ms raises nothing, 15 001 ms raises exactly one `keepalive-gap` | The code comment promises "strictly greater, so an exactly-15s gap is fine", but the test reached the threshold with 11 s and 28 s, which cannot distinguish `<=` from `<`. Confirmed by mutation: flipping `gapMs <= KEEPALIVE_GAP_MS` to `<` passed everything. requirements §7's threshold is the kind of constant that gets "tidied" by an off-by-one later, and the only defence is a test at the boundary itself. |
+
+| A27 | A24's flush also fires at a **`RUN_STARTED` that takes the connection over**, attributed to the OUTGOING run, before `resolveRun` switches `conn.openRunId`. A24's `flushChunkStateAtClose` is generalized to `flushChunkStateOntoCurrentRun`. Task 12's `eventCountByType` accumulation site gains a comment fixing the reconstructed-stream-vs-wire-frame distinction (see gap 4) | `conn.chunkState` is connection-scoped and survives a run switch, so an unterminated chunked run followed by a new `RUN_STARTED` on the same connection leaked its open ids into the NEXT run: the next `*_END` — whether from the expander opening a new id or from A24's run-end flush — called `ensureMessage`/`ensureToolCall` on the incoming run and materialized a phantom message or tool call there, while the outgoing run kept an entity that never closed. Multi-run connections are a first-class path, not a curiosity: requirements §4.2's `POST {base}/agent/:agentId/connect` resumes a stream on a connection that may already have carried a run. Ordering is the whole fix — flushing *after* `resolveRun` would move the mis-attribution rather than repair it, so the flush is the first thing the fold loop does for a `RUN_STARTED`. Strictly a no-op when the connection has no current run or the chunk state is empty, which is every ordinary first `RUN_STARTED`. **Residual, deliberately not covered:** chunks that arrive before any `RUN_STARTED` fold into `ORPHANED_RUN_ID`, which is not a connection's current run, so the switch is a no-op for them and their open ids can still leak into the first real run. That path is a protocol violation already flagged `event-before-run-started` on every event, and closing it would mean attributing synthesized ENDs to the orphaned bucket, which gap 8 keeps out of the connection-close machinery on purpose. |
 
 ### Keepalive attribution — decided here, previously unspecified
 

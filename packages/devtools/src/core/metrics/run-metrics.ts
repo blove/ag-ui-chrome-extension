@@ -68,6 +68,14 @@ export function computeMetrics(
     const event = record.event;
     if (event === null) continue;
 
+    // This counts the RECONSTRUCTED event stream, not wire frames, and that is deliberate.
+    // With `expandChunks` on, one `TEXT_MESSAGE_CHUNK` frame contributes a START and a
+    // CONTENT, and the run builder's end-of-stream flush contributes the matching END — so a
+    // chunked run reports the same event mix as the equivalent explicit triad, which is what
+    // makes the two comparable. The WIRE-FRAME measure is `totalStreamBytes` above, and it
+    // correctly stays put for every synthesized event because those records carry
+    // `raw: undefined`. The two numbers answer different questions; do not reconcile one to
+    // the other. Both halves are pinned by tests in `run-builder.test.ts`.
     eventCountByType[event.type] = (eventCountByType[event.type] ?? 0) + 1;
     const messageId = typeof event.messageId === 'string' ? event.messageId : undefined;
     const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : undefined;
