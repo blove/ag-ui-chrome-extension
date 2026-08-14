@@ -152,6 +152,16 @@ describe('Waterfall', () => {
     expect(screen.getByRole('button', { name: /^run r_bad/ })).toBeTruthy();
   });
 
+  it('charts nothing for an unknown scope id, as the event list already does', () => {
+    // `visibleRecords` treats an unknown scope as "nothing rather than everything". Charting
+    // every run here instead would put a full waterfall above an empty event list.
+    const store = createPanelStore({ ...fixtureState('happy'), scope: 'r_nope' });
+    render(<Waterfall store={store} collapsed={false} />);
+
+    expect(screen.queryByRole('button', { name: /^run r_happy/ })).toBeNull();
+    expect(screen.getByText('No runs to chart.')).toBeTruthy();
+  });
+
   it('says there is nothing to chart rather than rendering an empty strip', () => {
     const store = createPanelStore(initialPanelState());
     render(<Waterfall store={store} collapsed={false} />);

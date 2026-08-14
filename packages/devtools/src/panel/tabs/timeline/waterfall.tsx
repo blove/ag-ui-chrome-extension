@@ -128,10 +128,12 @@ interface Chart {
 }
 
 function buildChart(state: PanelState): Chart {
-  // Scoped to one run when the scope bar names one; otherwise every run is charted, which is
-  // what keeps the cross-run view P3 asks for from going blank.
+  // Scoped to one run when the scope bar names one; 'all runs' charts every run, which is what
+  // keeps the cross-run view P3 asks for from going blank. A scope naming a run that is not
+  // here charts nothing — `visibleRecords` resolves an unknown id to "nothing rather than
+  // everything", and a full waterfall above an empty event list would be a lie about both.
   const scoped = scopedRun(state);
-  const runs = scoped === undefined ? state.runs : [scoped];
+  const runs = state.scope === null ? state.runs : scoped === undefined ? [] : [scoped];
   const bySeq = new Map<number, CaptureRecord>(state.records.map((record) => [record.seq, record]));
   const bars = runs.flatMap((run) => barsForRun(run, bySeq));
 
