@@ -1,0 +1,9 @@
+{"kind":"header","schemaVersion":1,"tool":"ag-ui-devtools@0.1.0","capturedAt":"2026-08-13T10:10:00.000Z","url":"http://localhost:3000/","framework":"react/copilotkit","transport":"sse","redacted":[]}
+{"kind":"request","connId":"c1","tMs":0,"method":"POST","url":"/api/copilotkit/agent/default/run","input":{"threadId":"t_chunk","runId":"r_chunk","state":{},"messages":[{"id":"m_user_1","role":"user","content":"Search the docs."}],"tools":[],"context":[],"forwardedProps":{}}}
+{"kind":"event","connId":"c1","seq":1,"tMs":10,"event":{"type":"RUN_STARTED","threadId":"t_chunk","runId":"r_chunk"}}
+{"kind":"event","connId":"c1","seq":2,"tMs":25,"event":{"type":"TEXT_MESSAGE_CHUNK","messageId":"m_1","role":"assistant","delta":"Hello"}}
+{"kind":"event","connId":"c1","seq":3,"tMs":40,"event":{"type":"TEXT_MESSAGE_CHUNK","delta":", world"}}
+{"kind":"event","connId":"c1","seq":4,"tMs":55,"event":{"type":"TEXT_MESSAGE_CHUNK","delta":"!"}}
+{"kind":"event","connId":"c1","seq":5,"tMs":70,"event":{"type":"TOOL_CALL_CHUNK","toolCallId":"tc_1","toolCallName":"search_docs","parentMessageId":"m_1","delta":"{\"q\":\"ag-ui\","}}
+{"kind":"event","connId":"c1","seq":6,"tMs":85,"event":{"type":"TOOL_CALL_CHUNK","delta":"\"limit\":5}"}}
+{"kind":"event","connId":"c1","seq":7,"tMs":100,"event":{"type":"RUN_FINISHED","threadId":"t_chunk","runId":"r_chunk"}}

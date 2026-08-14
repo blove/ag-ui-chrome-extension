@@ -1,0 +1,12 @@
+{"kind":"header","schemaVersion":1,"tool":"ag-ui-devtools@0.1.0","capturedAt":"2026-08-13T10:05:00.000Z","url":"http://localhost:3000/","framework":"react/copilotkit","transport":"sse","redacted":[]}
+{"kind":"request","connId":"c1","tMs":0,"method":"POST","url":"/api/copilotkit/agent/default/run","input":{"threadId":"t_bad","runId":"r_bad","state":{"counter":0},"messages":[{"id":"m_user_1","role":"user","content":"Check my profile."}],"tools":[],"context":[],"forwardedProps":{}}}
+{"kind":"event","connId":"c1","seq":1,"tMs":10,"event":{"type":"RUN_STARTED","threadId":"t_bad","runId":"r_bad"}}
+{"kind":"event","connId":"c1","seq":2,"tMs":20,"event":{"type":"STEP_STARTED","stepName":"analyze"}}
+{"kind":"event","connId":"c1","seq":3,"tMs":30,"event":{"type":"TEXT_MESSAGE_START","messageId":"m_1","role":"assistant"}}
+{"kind":"event","connId":"c1","seq":4,"tMs":45,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_1","delta":"Let me check that"}}
+{"kind":"event","connId":"c1","seq":5,"tMs":60,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_1","delta":""}}
+{"kind":"event","connId":"c1","seq":6,"tMs":75,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_1","delta":" for you."}}
+{"kind":"event","connId":"c1","seq":7,"tMs":90,"event":{"type":"TEXT_MESSAGE_END","messageId":"m_1"}}
+{"kind":"event","connId":"c1","seq":8,"tMs":100,"event":{"type":"STATE_SNAPSHOT","snapshot":{"counter":1,"profile":{"name":"Ada"}}}}
+{"kind":"event","connId":"c1","seq":9,"tMs":115,"event":{"type":"STATE_DELTA","delta":[{"op":"add","path":"/missing/child","value":42}]}}
+{"kind":"event","connId":"c1","seq":10,"tMs":130,"event":{"type":"STEP_FINISHED","stepName":"analyze"}}
