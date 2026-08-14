@@ -3476,7 +3476,7 @@ Create `src/panel/shell/run-selector.tsx`:
 
 ```tsx
 import type { JSX } from 'preact';
-import { useMemo, useState } from 'preact/hooks';
+import { useEffect, useId, useMemo, useRef, useState } from 'preact/hooks';
 import type { Run } from '../../core/model/types';
 import { VirtualList } from '../common/virtual-list';
 import type { RunScope } from '../model/panel-types';
@@ -3523,6 +3523,43 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const current = scopedRun(state);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  /*
+   * The active option — the one Enter would choose — as an index rather than a focused element.
+   * A virtualized listbox holds ~12 of its 400 options in the DOM, so roving DOM focus cannot
+   * reach option 300: the node does not exist to be focused. `aria-activedescendant` moves the
+   * *reported* focus without moving the real one.
+   */
+  const [activeIndex, setActiveIndex] = useState(0);
+  const baseId = useId();
+  const listboxId = `${baseId}-listbox`;
+  const optionId = (index: number): string => `${baseId}-option-${index}`;
+
+  useEffect(() => {
+    if (open) searchRef.current?.focus();
+  }, [open]);
+
+  /*
+   * Dismiss on a pointer press anywhere else. Escape and choosing an option are not enough on
+   * their own: a click on an unrelated control would otherwise leave a 256px popup parked across
+   * the tab strip. `pointerdown` fires before the outside control's `click`, so that control
+   * still receives the press it was aimed at.
+   */
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent): void => {
+      const container = containerRef.current;
+      if (container === null) return;
+      const target = event.target;
+      if (target instanceof Node && container.contains(target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [open]);
 
   const options = useMemo<RunOption[]>(() => {
     const q = query.trim().toLowerCase();
@@ -3531,10 +3568,50 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
     return [...head, ...runs.map((run): RunOption => ({ kind: 'run', run }))];
   }, [state.runs, query]);
 
+  // A filter can shorten the list under a high active index; clamping at the point of use keeps
+  // `aria-activedescendant` pointing at an option that exists.
+  const lastIndex = options.length - 1;
+  const active = Math.min(activeIndex, lastIndex);
+
   function choose(scope: RunScope): void {
     store.update((s) => selectScope(s, scope));
     setQuery('');
+    setActiveIndex(0);
     setOpen(false);
+  }
+
+  function chooseOption(option: RunOption | undefined): void {
+    if (option === undefined) return;
+    choose(option.kind === 'all' ? null : option.run.runId);
+  }
+
+  /** Arrow / Home / End / Enter on the search box, the combobox pattern. */
+  function onSearchKeyDown(event: KeyboardEvent): void {
+    if (lastIndex < 0) return;
+    switch (event.key) {
+      case 'ArrowDown':
+        event.preventDefault();
+        setActiveIndex(Math.min(active + 1, lastIndex));
+        break;
+      case 'ArrowUp':
+        event.preventDefault();
+        setActiveIndex(Math.max(active - 1, 0));
+        break;
+      case 'Home':
+        event.preventDefault();
+        setActiveIndex(0);
+        break;
+      case 'End':
+        event.preventDefault();
+        setActiveIndex(lastIndex);
+        break;
+      case 'Enter':
+        event.preventDefault();
+        chooseOption(options[active]);
+        break;
+      default:
+        break;
+    }
   }
 
   const triggerText =
@@ -3546,6 +3623,7 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
 
   return (
     <div
+      ref={containerRef}
       class="agui-run-selector"
       onKeyDown={(e) => {
         if (e.key === 'Escape' && open) {
@@ -3559,7 +3637,11 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
         class="agui-run-selector__trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen(!open)}
+        aria-controls={open && options.length > 0 ? listboxId : undefined}
+        onClick={() => {
+          setActiveIndex(0);
+          setOpen(!open);
+        }}
       >
         {triggerText}
         <span aria-hidden="true" class="agui-run-selector__caret">
@@ -3570,30 +3652,62 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
       {open && (
         <div class="agui-run-selector__popup">
           <input
+            ref={searchRef}
             type="search"
+            // The search box *is* the combobox: it keeps DOM focus the whole time the popup is
+            // open, and `aria-activedescendant` is only honoured on the focused element.
+            role="combobox"
             class="agui-run-selector__search"
             aria-label="Search runs"
             placeholder="Search runs"
+            aria-expanded={options.length > 0}
+            aria-controls={options.length > 0 ? listboxId : undefined}
+            aria-activedescendant={active >= 0 ? optionId(active) : undefined}
             value={query}
-            onInput={(e) => setQuery(e.currentTarget.value)}
+            onKeyDown={onSearchKeyDown}
+            onInput={(e) => {
+              setQuery(e.currentTarget.value);
+              setActiveIndex(0);
+            }}
           />
           {options.length === 0 ? (
             <p class="agui-run-selector__empty">{`No run matches "${query}"`}</p>
           ) : (
-            <div role="listbox" aria-label="Runs" class="agui-run-selector__list">
+            <div
+              id={listboxId}
+              role="listbox"
+              aria-label="Runs"
+              aria-activedescendant={active >= 0 ? optionId(active) : undefined}
+              class="agui-run-selector__list"
+            >
               <VirtualList<RunOption>
+                /*
+                 * Remounted per query, which resets the scroll offset to the top. `scrollToIndex`
+                 * is a value and not a command: it will not re-scroll for an index it has already
+                 * served. After a wheel scroll (which never goes through `scrollToIndex`) a new
+                 * query resets the active index to 0 — the same value it served on mount — so the
+                 * window would stay where the wheel left it and `aria-activedescendant` would name
+                 * an option not in the DOM. A new query is a new list, so remounting is the honest
+                 * fix rather than a nonce.
+                 */
+                key={query}
                 items={options}
                 rowHeight={ROW_HEIGHT_PX}
                 height={LIST_HEIGHT_PX}
                 overscan={4}
-                renderRow={(option) =>
+                // Keeps the active option mounted, which is what makes `aria-activedescendant`
+                // resolvable at index 300 of 400.
+                scrollToIndex={active >= 0 ? active : undefined}
+                renderRow={(option, index) =>
                   option.kind === 'all' ? (
                     <button
                       key="all"
+                      id={optionId(index)}
                       type="button"
                       role="option"
                       aria-selected={state.scope === null}
                       class="agui-run-option"
+                      data-active={index === active}
                       onClick={() => choose(null)}
                     >
                       <span class="agui-run-option__id">All runs</span>
@@ -3604,10 +3718,12 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
                   ) : (
                     <button
                       key={option.run.runId}
+                      id={optionId(index)}
                       type="button"
                       role="option"
                       aria-selected={state.scope === option.run.runId}
                       class="agui-run-option"
+                      data-active={index === active}
                       onClick={() => choose(option.run.runId)}
                     >
                       <span class="agui-run-option__id">{option.run.runId}</span>
@@ -3714,6 +3830,16 @@ Append to `src/panel/panel.css`:
 
 .agui-run-option:hover {
   background: var(--agui-hover);
+}
+
+/*
+ * The active option — the one Enter would choose. DOM focus stays in the search box, so without a
+ * drawn ring there is no visible focus at all.
+ */
+.agui-run-option[data-active='true'] {
+  background: var(--agui-hover);
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
 }
 
 /* Selection is marked by a rule as well as a tint, so it survives a colour-blind reading. */
@@ -4297,15 +4423,18 @@ export function issueBadgeText(total: number): string {
  * The visible text is a prefix of the accessible name, and the name states the filter state in
  * words — a filtered list must never be mistakable for a clean one, for a screen reader either.
  */
-export function issueBadgeLabel(counts: Counts, issuesOnly: boolean): string {
+export function issueBadgeLabel(counts: Counts, issuesOnly: boolean, scope: RunScope): string {
   const head =
     counts.total === 0
       ? '0 issues'
       : `${issueBadgeText(counts.total)}: ${counts.error} error, ${counts.warning} warning, ${counts.info} info`;
+  // "in the current run scope" is a lie when the scope is every run — the count is the whole
+  // capture's, and calling it scoped invites a reader to under-read a total.
+  const where = scope === null ? 'across all runs' : 'in the current run scope';
   const action = issuesOnly
     ? 'filtered to events with issues; activate to show all events'
     : 'activate to show only events with issues';
-  return `${head}. Currently ${action}`;
+  return `${head} detected ${where}. Currently ${action}`;
 }
 
 /**
@@ -4398,7 +4527,7 @@ export function Toolbar({ store, onImport }: ToolbarProps): JSX.Element {
         class="agui-issue-badge"
         data-tone={tone}
         aria-pressed={state.filter.issuesOnly}
-        aria-label={issueBadgeLabel(counts, state.filter.issuesOnly)}
+        aria-label={issueBadgeLabel(counts, state.filter.issuesOnly, state.scope)}
         onClick={() => store.update(toggleIssuesOnly)}
       >
         <span aria-hidden="true" class="agui-issue-badge__dot" />
@@ -4481,11 +4610,30 @@ Append to `src/panel/panel.css`:
   cursor: pointer;
 }
 
+/* Tone is a glyph as well as a hue, so error and warning stay separable without colour vision. */
 .agui-issue-badge__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentcolor;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  font-size: 10px;
+  line-height: 1;
+  color: currentcolor;
+}
+
+.agui-issue-badge__dot::before {
+  content: '•';
+}
+
+.agui-issue-badge[data-tone='error'] .agui-issue-badge__dot::before {
+  content: '×';
+  font-size: 12px;
+}
+
+.agui-issue-badge[data-tone='warning'] .agui-issue-badge__dot::before {
+  content: '▲';
+  font-size: 8px;
 }
 
 .agui-issue-badge[data-tone='error'] {
@@ -4731,7 +4879,7 @@ export function usePanelState(store: PanelStore): PanelState {
 
 ```tsx
 import type { JSX, RefObject } from 'preact';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { CaptureRecord, Issue, IssueSeverity } from '../../../core/model/types';
 import { VirtualList } from '../../common/virtual-list';
 import { summarizeEvent } from '../../common/format';
@@ -4791,6 +4939,74 @@ function useMeasuredHeight(ref: RefObject<HTMLDivElement>): number {
   return height;
 }
 
+interface EventRowProps {
+  record: CaptureRecord;
+  issues: Issue[];
+  selected: boolean;
+  /** True for the one row in the tab order (the roving tabindex). */
+  tabbable: boolean;
+  /** Shared standing request: the seq that should take DOM focus as soon as its row exists. */
+  focusSeqRef: { current: number | null };
+  onSelect: (seq: number) => void;
+}
+
+/**
+ * One row, and the owner of its own focus.
+ *
+ * Focus is claimed by the row rather than handed to it by the list, because a row navigated to
+ * may not exist yet. `VirtualList` scrolls in its own layout effect, and the setState it makes
+ * there re-renders `VirtualList` alone — `EventList` does not re-render, so an effect there cannot
+ * see the window that finally contains the target row and cannot retry. Every row instead checks
+ * the standing request whenever it renders, including the render in which it first appears.
+ */
+function EventRow({
+  record,
+  issues,
+  selected,
+  tabbable,
+  focusSeqRef,
+  onSelect,
+}: EventRowProps): JSX.Element {
+  const ref = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (focusSeqRef.current !== record.seq) return;
+    focusSeqRef.current = null;
+    ref.current?.focus();
+  });
+
+  const severity = worstSeverity(issues);
+  const summary = summarizeEvent(record);
+  // The tint carries no accessible information on its own, so the severity and the codes go into
+  // the row's name. An explicit label rather than the concatenated spans: adjacent inline spans
+  // produce a name with no separators.
+  const label =
+    severity === undefined
+      ? `seq ${record.seq} ${typeLabel(record)} ${summary}`
+      : `seq ${record.seq} ${typeLabel(record)} ${summary} — ${severity}: ${issues
+          .map((issue) => issue.code)
+          .join(', ')}`;
+
+  return (
+    <button
+      ref={ref}
+      type="button"
+      role="option"
+      class="agui-event-row"
+      style={{ height: `${ROW_HEIGHT_PX}px` }}
+      data-seq={record.seq}
+      data-severity={severity}
+      aria-label={label}
+      aria-selected={selected}
+      tabIndex={tabbable ? 0 : -1}
+      onClick={() => onSelect(record.seq)}
+    >
+      <span class="agui-event-row__seq">{record.seq}</span>
+      <span class="agui-event-row__type">{typeLabel(record)}</span>
+      <span class="agui-event-row__summary">{summary}</span>
+    </button>
+  );
+}
+
 export function EventList({ store }: EventListProps): JSX.Element {
   const state = usePanelState(store);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -4799,9 +5015,66 @@ export function EventList({ store }: EventListProps): JSX.Element {
   const records = visibleRecords(state);
   const bySeq = issuesBySeq(state);
   const selectedIndex = records.findIndex((record) => record.seq === state.selectedSeq);
+  /*
+   * Roving tabindex: exactly one row is in the tab order, and it is the selected one. Falling
+   * back to row 0 matters — a `selectedSeq` filtered out of view would otherwise leave no
+   * tabbable row at all and strand the whole list outside the tab order.
+   */
+  const rovingIndex = selectedIndex === -1 ? 0 : selectedIndex;
+
+  /** A standing request for DOM focus, claimed by whichever row turns out to carry that seq. */
+  const focusSeqRef = useRef<number | null>(null);
+
+  /**
+   * Arrow / Home / End move the selection, and the selection is what the window follows.
+   *
+   * Selection *is* navigation in this listbox: `scrollToIndex` already tracks `selectedSeq`, so
+   * writing the store is the whole of "scroll the new row into view".
+   */
+  function onKeyDown(event: KeyboardEvent): void {
+    const last = records.length - 1;
+    if (last < 0) return;
+
+    let next: number;
+    switch (event.key) {
+      // With nothing selected, the first arrow press lands on the first row rather than the
+      // second — otherwise row 0 is unreachable by keyboard from a cold start.
+      case 'ArrowDown':
+        next = selectedIndex === -1 ? 0 : Math.min(selectedIndex + 1, last);
+        break;
+      case 'ArrowUp':
+        next = selectedIndex === -1 ? 0 : Math.max(selectedIndex - 1, 0);
+        break;
+      case 'Home':
+        next = 0;
+        break;
+      case 'End':
+        next = last;
+        break;
+      default:
+        return;
+    }
+
+    const seq = records[next]?.seq;
+    if (seq === undefined) return;
+    event.preventDefault();
+    focusSeqRef.current = seq;
+    store.update((prev) => selectSeq(prev, seq));
+  }
 
   return (
-    <div ref={containerRef} class="agui-event-list" aria-label="Event list" role="group">
+    /*
+     * A real listbox, not a `group` of buttons. Virtualization means Tab can only ever reach the
+     * ~26 rows of 5002 that are mounted, so the tab-stop-per-row model cannot express this list
+     * at all; a listbox has one tab stop and arrow keys for the rest.
+     */
+    <div
+      ref={containerRef}
+      class="agui-event-list"
+      aria-label="Event list"
+      role="listbox"
+      onKeyDown={onKeyDown}
+    >
       {records.length === 0 ? (
         <p class="agui-event-list__empty">No events match the current filter.</p>
       ) : (
@@ -4810,40 +5083,21 @@ export function EventList({ store }: EventListProps): JSX.Element {
           rowHeight={ROW_HEIGHT_PX}
           height={height}
           scrollToIndex={selectedIndex === -1 ? undefined : selectedIndex}
-          renderRow={(record) => {
-            const issues = bySeq.get(record.seq) ?? [];
-            const severity = worstSeverity(issues);
-            const summary = summarizeEvent(record);
-            // The tint carries no accessible information on its own, so the severity and the
-            // codes go into the row's name. An explicit label rather than the concatenated
-            // spans: adjacent inline spans produce a name with no separators.
-            const label =
-              severity === undefined
-                ? `seq ${record.seq} ${typeLabel(record)} ${summary}`
-                : `seq ${record.seq} ${typeLabel(record)} ${summary} — ${severity}: ${issues
-                    .map((issue) => issue.code)
-                    .join(', ')}`;
-            return (
-              // P7: keyed and gutter-labelled by `seq`, never by the array index — filtering
-              // reorders visible rows and `Issue.seq` refers to this number.
-              <button
-                key={record.seq}
-                type="button"
-                class="agui-event-row"
-                style={{ height: `${ROW_HEIGHT_PX}px` }}
-                data-severity={severity}
-                aria-label={label}
-                aria-pressed={record.seq === state.selectedSeq}
-                onClick={() => {
-                  store.update((prev) => selectSeq(prev, record.seq));
-                }}
-              >
-                <span class="agui-event-row__seq">{record.seq}</span>
-                <span class="agui-event-row__type">{typeLabel(record)}</span>
-                <span class="agui-event-row__summary">{summary}</span>
-              </button>
-            );
-          }}
+          renderRow={(record, index) => (
+            // P7: keyed by `seq`, never by the array index — filtering reorders visible rows
+            // and `Issue.seq` refers to this number.
+            <EventRow
+              key={record.seq}
+              record={record}
+              issues={bySeq.get(record.seq) ?? []}
+              selected={record.seq === state.selectedSeq}
+              tabbable={index === rovingIndex}
+              focusSeqRef={focusSeqRef}
+              onSelect={(seq) => {
+                store.update((prev) => selectSeq(prev, seq));
+              }}
+            />
+          )}
         />
       )}
     </div>
@@ -4957,24 +5211,28 @@ every pair below: the weakest is muted text on a tinted row at 4.65:1 (light) an
   color: var(--agui-fg-muted);
 }
 
+/* Severity is a hue *and* a border style, so the three ranks survive a colour-blind reading. */
 .agui-event-row[data-severity='error'] {
+  border-left-style: solid;
   border-left-color: var(--agui-severity-error);
   background: var(--agui-severity-error-bg);
 }
 
 .agui-event-row[data-severity='warning'] {
+  border-left-style: dashed;
   border-left-color: var(--agui-severity-warning);
   background: var(--agui-severity-warning-bg);
 }
 
 .agui-event-row[data-severity='info'] {
+  border-left-style: dotted;
   border-left-color: var(--agui-severity-info);
   background: var(--agui-severity-info-bg);
 }
 
 /* Selection outranks the issue tint; the left border keeps the severity visible. */
-.agui-event-row[aria-pressed='true'],
-.agui-event-row[data-severity][aria-pressed='true'] {
+.agui-event-row[aria-selected='true'],
+.agui-event-row[data-severity][aria-selected='true'] {
   background: var(--agui-row-selected);
 }
 ```

@@ -117,3 +117,622 @@ body {
   height: var(--agui-vlist-row-height);
   overflow: hidden;
 }
+
+/* ── Shell ──────────────────────────────────────────────────────────────────────────────────────
+ *
+ * Tokens for the three shell bands. Light is the base and dark is the override, matching the
+ * existing block above: every colour is stated in both schemes, never inherited.
+ *
+ * Danger and warning exist only for the issue badge and the per-run issue counts (P2 reserves the
+ * danger colour for issues — nothing else in the chrome may use it).
+ */
+
+:root {
+  --agui-surface: #f8f9fa;
+  --agui-surface-raised: #ffffff;
+  --agui-hover: rgba(0, 0, 0, 0.06);
+  --agui-accent: #1a73e8;
+  --agui-danger: #c5221f;
+  --agui-danger-bg: #fce8e6;
+  --agui-danger-border: #f2b8b5;
+  --agui-warning: #8a5700;
+  --agui-warning-bg: #fef7e0;
+  --agui-warning-border: #f9d67a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --agui-surface: #292a2d;
+    --agui-surface-raised: #35363a;
+    --agui-hover: rgba(255, 255, 255, 0.08);
+    --agui-accent: #8ab4f8;
+    --agui-danger: #f28b82;
+    --agui-danger-bg: #3b2422;
+    --agui-danger-border: #5c3330;
+    --agui-warning: #fdd663;
+    --agui-warning-bg: #3a2f16;
+    --agui-warning-border: #5c4a1e;
+  }
+}
+
+.agui-shell {
+  display: flex;
+  flex-direction: column;
+  background: var(--agui-bg);
+  border-bottom: 1px solid var(--agui-border);
+}
+
+/* One horizontal band of the shell. `App` puts the scope bar and run selector in the first one. */
+.agui-shell__band {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 2px 8px;
+}
+
+.agui-shell button:focus-visible,
+.agui-shell input:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
+
+.agui-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.agui-scope__summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agui-scope__metrics {
+  margin-left: auto;
+  color: var(--agui-fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── Run selector (P10) ─────────────────────────────────────────────────────────────────────── */
+
+.agui-run-selector {
+  position: relative;
+}
+
+.agui-run-selector__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  color: var(--agui-fg);
+  background: var(--agui-surface);
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agui-run-selector__trigger:hover {
+  background: var(--agui-hover);
+}
+
+.agui-run-selector__caret {
+  color: var(--agui-fg-muted);
+}
+
+.agui-run-selector__popup {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 2px);
+  left: 0;
+  width: 320px;
+  max-width: 90vw;
+  padding: 6px;
+  background: var(--agui-surface-raised);
+  border: 1px solid var(--agui-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 25%);
+}
+
+.agui-run-selector__search {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  color: var(--agui-fg);
+  background: var(--agui-bg);
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  margin-bottom: 4px;
+}
+
+.agui-run-selector__empty {
+  margin: 8px 6px;
+  color: var(--agui-fg-muted);
+}
+
+.agui-run-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0 6px;
+  font: inherit;
+  text-align: left;
+  color: var(--agui-fg);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.agui-run-option:hover {
+  background: var(--agui-hover);
+}
+
+/*
+ * The active option — the one Enter would choose. DOM focus stays in the search box the whole
+ * time the popup is open, so without a drawn ring there is no visible focus at all: the caret
+ * blinks in the search box while the arrow keys move something the eye cannot follow.
+ */
+.agui-run-option[data-active='true'] {
+  background: var(--agui-hover);
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
+}
+
+/* Selection is marked by a rule as well as a tint, so it survives a colour-blind reading. */
+.agui-run-option[aria-selected='true'] {
+  background: var(--agui-hover);
+  box-shadow: inset 2px 0 0 var(--agui-accent);
+}
+
+.agui-run-option__id {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.agui-run-option__meta {
+  color: var(--agui-fg-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.agui-run-option__issues {
+  margin-left: auto;
+  white-space: nowrap;
+  color: var(--agui-fg-muted);
+}
+
+.agui-run-option__issues[data-tone='error'] {
+  color: var(--agui-danger);
+}
+
+.agui-run-option__issues[data-tone='warning'] {
+  color: var(--agui-warning);
+}
+
+/* ── Tab strip ──────────────────────────────────────────────────────────────────────────────── */
+
+.agui-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--agui-border);
+}
+
+.agui-tabs__tab {
+  appearance: none;
+  font: inherit;
+  color: var(--agui-fg-muted);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.agui-tabs__tab:hover {
+  color: var(--agui-fg);
+  background: var(--agui-hover);
+}
+
+/* The underline carries the selection on its own; the accent colour only reinforces it. */
+.agui-tabs__tab[aria-selected='true'] {
+  color: var(--agui-accent);
+  border-bottom-color: var(--agui-accent);
+}
+
+.agui-tabs__tab:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
+}
+
+/* ── Toolbar and issue badge (P2) ───────────────────────────────────────────────────────────── */
+
+.agui-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 8px;
+}
+
+.agui-toolbar__button {
+  appearance: none;
+  font: inherit;
+  color: var(--agui-fg);
+  background: var(--agui-surface);
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.agui-toolbar__button:hover:not(:disabled) {
+  background: var(--agui-hover);
+}
+
+.agui-toolbar__button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agui-toolbar__button[aria-pressed='true']:not(:disabled) {
+  color: var(--agui-accent);
+  border-color: var(--agui-accent);
+  background: var(--agui-hover);
+}
+
+.agui-toolbar__filter {
+  flex: 1 1 120px;
+  min-width: 80px;
+  font: inherit;
+  color: var(--agui-fg);
+  background: var(--agui-surface-raised);
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.agui-toolbar__dropped {
+  color: var(--agui-fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The badge is pushed to the trailing edge so it holds the same spot at every width. */
+.agui-issue-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--agui-fg-muted);
+  background: var(--agui-surface);
+  border: 1px solid var(--agui-border);
+  border-radius: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+/*
+ * The tone is carried by a glyph as well as by the hue. Assistive tech reads the badge's name,
+ * which already spells the severities out, so this is for the sighted red/amber-deficient reader:
+ * with the two tones' colours indistinguishable, `×` and `▲` still are. Ten pixels of chrome, so
+ * the shapes do the work and nothing shouts.
+ */
+.agui-issue-badge__dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  font-size: 10px;
+  line-height: 1;
+  color: currentcolor;
+}
+
+.agui-issue-badge__dot::before {
+  content: '•';
+}
+
+.agui-issue-badge[data-tone='error'] .agui-issue-badge__dot::before {
+  content: '×';
+  font-size: 12px;
+}
+
+.agui-issue-badge[data-tone='warning'] .agui-issue-badge__dot::before {
+  content: '▲';
+  font-size: 8px;
+}
+
+.agui-issue-badge[data-tone='error'] {
+  color: var(--agui-danger);
+  background: var(--agui-danger-bg);
+  border-color: var(--agui-danger-border);
+}
+
+.agui-issue-badge[data-tone='warning'] {
+  color: var(--agui-warning);
+  background: var(--agui-warning-bg);
+  border-color: var(--agui-warning-border);
+}
+
+/* Pressed state is a ring plus the visible `filtered` tag, never colour alone. */
+.agui-issue-badge[aria-pressed='true'] {
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px currentcolor;
+}
+
+.agui-issue-badge__flag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ---------------------------------------------------------------------------
+ * Timeline tab. Light is the base and dark is the override, matching this
+ * file's existing convention: Chrome propagates the DevTools theme to panel
+ * documents as `prefers-color-scheme`, so both schemes are stated explicitly.
+ *
+ * `--agui-accent` is already declared identically by the shell block above and
+ * is deliberately not repeated. The severity trio is stated separately from the
+ * shell's `--agui-danger` / `--agui-warning` because those are reserved for the
+ * chrome's issue badge (P2) and these tint data rows — same hues today, but
+ * they are answerable to different contrast floors. Contrast was measured for
+ * every pair below: the weakest is muted text on a tinted row at 4.65:1 (light)
+ * and 4.84:1 (dark).
+ * ------------------------------------------------------------------------- */
+
+:root {
+  --agui-row-selected: #d2e3fc;
+  --agui-row-hover: rgb(0 0 0 / 6%);
+  --agui-track: #f1f3f4;
+
+  --agui-severity-error: #b3261e;
+  --agui-severity-error-bg: #fce8e6;
+  --agui-severity-warning: #8a5100;
+  --agui-severity-warning-bg: #fef7e0;
+  --agui-severity-info: #1967d2;
+  --agui-severity-info-bg: #e8f0fe;
+
+  --agui-bar-run: #80868b;
+  --agui-bar-message: #1a73e8;
+  --agui-bar-tool: #188038;
+  --agui-bar-step: #8430ce;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --agui-row-selected: #1f3350;
+    --agui-row-hover: rgb(255 255 255 / 8%);
+    --agui-track: #2b2c2f;
+
+    --agui-severity-error: #f28b82;
+    --agui-severity-error-bg: #3a2321;
+    --agui-severity-warning: #fdd663;
+    --agui-severity-warning-bg: #38321e;
+    --agui-severity-info: #8ab4f8;
+    --agui-severity-info-bg: #1f2b3e;
+
+    --agui-bar-run: #9aa0a6;
+    --agui-bar-message: #8ab4f8;
+    --agui-bar-tool: #81c995;
+    --agui-bar-step: #c58af9;
+  }
+}
+
+.agui-event-list {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agui-event-list__empty {
+  margin: 12px;
+  color: var(--agui-fg-muted);
+}
+
+.agui-event-row {
+  display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--agui-fg);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.agui-event-row:hover {
+  background: var(--agui-row-hover);
+}
+
+.agui-event-row:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
+}
+
+.agui-event-row__seq {
+  flex: 0 0 4ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--agui-fg-muted);
+}
+
+.agui-event-row__type {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.agui-event-row__summary {
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--agui-fg-muted);
+}
+
+/*
+ * Severity is a hue *and* a border style, so the three ranks stay separable without colour
+ * vision. Solid / dashed / dotted reads as increasing lightness of mark, which matches the
+ * ranking, and at a 3px gutter on a 22px row it is a texture rather than an alarm.
+ */
+.agui-event-row[data-severity='error'] {
+  border-left-style: solid;
+  border-left-color: var(--agui-severity-error);
+  background: var(--agui-severity-error-bg);
+}
+
+.agui-event-row[data-severity='warning'] {
+  border-left-style: dashed;
+  border-left-color: var(--agui-severity-warning);
+  background: var(--agui-severity-warning-bg);
+}
+
+.agui-event-row[data-severity='info'] {
+  border-left-style: dotted;
+  border-left-color: var(--agui-severity-info);
+  background: var(--agui-severity-info-bg);
+}
+
+/* Selection outranks the issue tint; the left border keeps the severity visible. */
+.agui-event-row[aria-selected='true'],
+.agui-event-row[data-severity][aria-selected='true'] {
+  background: var(--agui-row-selected);
+}
+
+/* ── Timeline detail pane ──────────────────────────────────────────────────────────────────── */
+
+.agui-detail {
+  min-width: 0;
+  padding: 8px 12px;
+  overflow: auto;
+}
+
+.agui-detail__empty {
+  margin: 4px 0;
+  color: var(--agui-fg-muted);
+}
+
+.agui-detail__title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--agui-fg-muted);
+}
+
+.agui-detail__verdict ul {
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.agui-detail__verdict li {
+  padding: 6px 8px;
+  border-left: 3px solid var(--agui-severity-info);
+  border-radius: 2px;
+  background: var(--agui-severity-info-bg);
+}
+
+.agui-detail__verdict li + li {
+  margin-top: 6px;
+}
+
+.agui-detail__verdict li[data-severity='error'] {
+  border-left-color: var(--agui-severity-error);
+  background: var(--agui-severity-error-bg);
+}
+
+.agui-detail__verdict li[data-severity='warning'] {
+  border-left-color: var(--agui-severity-warning);
+  background: var(--agui-severity-warning-bg);
+}
+
+.agui-detail__verdict-head,
+.agui-detail__verdict-message {
+  margin: 0;
+}
+
+.agui-detail__severity {
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--agui-severity-info);
+}
+
+li[data-severity='error'] .agui-detail__severity {
+  color: var(--agui-severity-error);
+}
+
+li[data-severity='warning'] .agui-detail__severity {
+  color: var(--agui-severity-warning);
+}
+
+.agui-detail__fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 6px 0 0;
+}
+
+/* `display: contents` lets the dt/dd wrapper carry the key without breaking the grid. */
+.agui-detail__field {
+  display: contents;
+}
+
+.agui-detail__fields dt {
+  color: var(--agui-fg-muted);
+}
+
+.agui-detail__fields dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agui-detail__json {
+  margin: 0;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+}
+
+.agui-detail__raw {
+  margin-top: 12px;
+}
+
+.agui-detail__raw button {
+  padding: 2px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--agui-fg);
+  font: inherit;
+  cursor: default;
+}
+
+.agui-detail__raw button:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
