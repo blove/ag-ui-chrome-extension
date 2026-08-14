@@ -1519,7 +1519,10 @@ Expected: the two hashes are identical.
 Verify the devDependency boundary — nothing under `src/` may import `@ag-ui/core`:
 
 ```sh
-grep -rn "@ag-ui/core" src/ ; echo "exit=$?"
+# Anchored to imports on purpose. A bare `grep "@ag-ui/core" src/` matches the
+# GENERATED_FROM_VERSION stamp the generator writes into src/, plus doc comments,
+# so it reports 4 hits and exit=0 even when nothing imports the package.
+grep -rnE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"]@ag-ui/core" src/ ; echo "exit=$?"
 ```
 Expected: no output, `exit=1`.
 
