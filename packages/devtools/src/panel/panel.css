@@ -447,3 +447,132 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+
+/* ---------------------------------------------------------------------------
+ * Timeline tab. Light is the base and dark is the override, matching this
+ * file's existing convention: Chrome propagates the DevTools theme to panel
+ * documents as `prefers-color-scheme`, so both schemes are stated explicitly.
+ *
+ * `--agui-accent` is already declared identically by the shell block above and
+ * is deliberately not repeated. The severity trio is stated separately from the
+ * shell's `--agui-danger` / `--agui-warning` because those are reserved for the
+ * chrome's issue badge (P2) and these tint data rows — same hues today, but
+ * they are answerable to different contrast floors. Contrast was measured for
+ * every pair below: the weakest is muted text on a tinted row at 4.65:1 (light)
+ * and 4.84:1 (dark).
+ * ------------------------------------------------------------------------- */
+
+:root {
+  --agui-row-selected: #d2e3fc;
+  --agui-row-hover: rgb(0 0 0 / 6%);
+  --agui-track: #f1f3f4;
+
+  --agui-severity-error: #b3261e;
+  --agui-severity-error-bg: #fce8e6;
+  --agui-severity-warning: #8a5100;
+  --agui-severity-warning-bg: #fef7e0;
+  --agui-severity-info: #1967d2;
+  --agui-severity-info-bg: #e8f0fe;
+
+  --agui-bar-run: #80868b;
+  --agui-bar-message: #1a73e8;
+  --agui-bar-tool: #188038;
+  --agui-bar-step: #8430ce;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --agui-row-selected: #1f3350;
+    --agui-row-hover: rgb(255 255 255 / 8%);
+    --agui-track: #2b2c2f;
+
+    --agui-severity-error: #f28b82;
+    --agui-severity-error-bg: #3a2321;
+    --agui-severity-warning: #fdd663;
+    --agui-severity-warning-bg: #38321e;
+    --agui-severity-info: #8ab4f8;
+    --agui-severity-info-bg: #1f2b3e;
+
+    --agui-bar-run: #9aa0a6;
+    --agui-bar-message: #8ab4f8;
+    --agui-bar-tool: #81c995;
+    --agui-bar-step: #c58af9;
+  }
+}
+
+.agui-event-list {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agui-event-list__empty {
+  margin: 12px;
+  color: var(--agui-fg-muted);
+}
+
+.agui-event-row {
+  display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--agui-fg);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.agui-event-row:hover {
+  background: var(--agui-row-hover);
+}
+
+.agui-event-row:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
+}
+
+.agui-event-row__seq {
+  flex: 0 0 4ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--agui-fg-muted);
+}
+
+.agui-event-row__type {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.agui-event-row__summary {
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--agui-fg-muted);
+}
+
+.agui-event-row[data-severity='error'] {
+  border-left-color: var(--agui-severity-error);
+  background: var(--agui-severity-error-bg);
+}
+
+.agui-event-row[data-severity='warning'] {
+  border-left-color: var(--agui-severity-warning);
+  background: var(--agui-severity-warning-bg);
+}
+
+.agui-event-row[data-severity='info'] {
+  border-left-color: var(--agui-severity-info);
+  background: var(--agui-severity-info-bg);
+}
+
+/* Selection outranks the issue tint; the left border keeps the severity visible. */
+.agui-event-row[aria-pressed='true'],
+.agui-event-row[data-severity][aria-pressed='true'] {
+  background: var(--agui-row-selected);
+}
