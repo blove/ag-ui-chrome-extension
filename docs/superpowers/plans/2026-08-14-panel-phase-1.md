@@ -69,7 +69,7 @@ ends with verification commands rather than a TDD loop.
 - Test: `packages/devtools/src/panel/test-setup.test.tsx`
 
 Versions confirmed with `npm view` on 2026-08-14: `@testing-library/preact` **3.2.4**
-(peer `preact: >=10`, satisfied by the installed `preact 10.29.8`), `jsdom` **30.0.1**.
+(peer `preact: >=10`, satisfied by the installed `preact 10.29.8`), `jsdom` **29.1.1** — NOT 30.x. jsdom 30 requires Node `^22.22.2 || ^24.15.0 || >=26.0.0`, and with the repo's `engine-strict=true` that is a hard `ERR_PNPM_UNSUPPORTED_ENGINE` install failure on Node 22.14. jsdom 29.1.1 accepts `^22.13.0` and works in both local and CI.
 
 Vitest API confirmed against the **installed** `vitest@4.1.10`, not assumed: `node_modules/vitest/
 dist/chunks/reporters.d.DtoKVV2s.d.ts:2859` declares `projects?: TestProjectConfiguration[]` on
@@ -81,7 +81,7 @@ There is no `workspace` key in 4.1.10. Both project shapes below were executed e
 Run:
 
 ```
-pnpm --filter ag-ui-devtools add -D @testing-library/preact@^3.2.4 jsdom@^30.0.1
+pnpm --filter ag-ui-devtools add -D @testing-library/preact@^3.2.4 jsdom@^29.1.1
 ```
 
 Resulting `packages/devtools/package.json`:
@@ -118,7 +118,7 @@ Resulting `packages/devtools/package.json`:
     "@types/node": "^22.20.1",
     "eslint": "^9.39.5",
     "globals": "^17.11.0",
-    "jsdom": "^30.0.1",
+    "jsdom": "^29.1.1",
     "tsx": "^4.19.2",
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.67.0",
@@ -314,7 +314,7 @@ Expected: both clean, no output beyond the command echo.
 `npx vitest run --config <scratch>/vitest.repo-core.config.ts --project core` (a config outside the
 tree, so nothing in the repo was modified), printing exactly `Test Files 18 passed (18)` /
 `Tests 355 passed (355)`. The panel project, `test-setup.ts`, and `test-setup.test.tsx` were run in
-a scratch package with the real `jsdom@30.0.1` + `@testing-library/preact@3.2.4` installed:
+a scratch package with the real `jsdom@29.1.1` + `@testing-library/preact@3.2.4` installed:
 `Test Files 1 passed (1)` / `Tests 4 passed (4)`. `tsc --noEmit` under a copy of
 `tsconfig.base.json` (`noUncheckedIndexedAccess` on, `types: ["chrome","node"]`) and `eslint` under
 an equivalent flat config both came back clean.
