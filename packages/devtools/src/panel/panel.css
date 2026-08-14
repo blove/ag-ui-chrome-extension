@@ -865,3 +865,44 @@ li[data-severity='warning'] .agui-detail__severity {
   font-variant-numeric: tabular-nums;
   color: var(--agui-fg-muted);
 }
+
+/* --- Timeline layout (P4) ------------------------------------------------
+ * The split is driven by `data-layout`, not a media query: NARROW_BREAKPOINT_PX
+ * is defined once in common/layout.ts and nothing else may restate 600.
+ */
+
+.agui-timeline {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.agui-timeline__body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.agui-timeline[data-layout='split'] .agui-timeline__body {
+  flex-direction: row;
+}
+
+.agui-timeline[data-layout='split'] .agui-event-list {
+  flex: 1 1 60%;
+}
+
+.agui-timeline[data-layout='split'] .agui-detail {
+  flex: 1 1 40%;
+  border-left: 1px solid var(--agui-border);
+}
+
+.agui-timeline[data-layout='stacked'] .agui-timeline__body {
+  flex-direction: column;
+}
+
+.agui-timeline[data-layout='stacked'] .agui-detail {
+  flex: 0 1 auto;
+  max-height: 45%;
+  border-top: 1px solid var(--agui-border);
+}
