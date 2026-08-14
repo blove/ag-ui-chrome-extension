@@ -49,6 +49,11 @@ Every module with behaviour has a sibling `*.test.ts(x)` written **before** it.
 
 - Commands run from `packages/devtools/` unless a step says otherwise.
 - Pure-logic tests carry a `// @vitest-environment node` docblock; everything else runs in jsdom.
+- **Never write the string `@vitest-environment` in prose.** Vitest scans a test file's first
+  comment for the directive and does not care that it appears inside an explanatory sentence. A
+  header comment saying "this file does *not* use `@vitest-environment node`" silently runs the
+  file in node — found the hard way in Task 2, where it cost five `document is not defined`
+  failures in a jsdom test.
 - Tests query by role and accessible name. Class names are not a contract.
 - `noUncheckedIndexedAccess` is on and test files are typechecked — `.at(-1)`, never `[length - 1]`.
 - `src/core/**` is not modified by this plan and stays behind its lint fence.
@@ -8151,7 +8156,7 @@ task text above. Per-section `## Contract gaps` notes are preserved as authored.
 | R3 | `initialPanelState().capture` was unspecified | `{ kind: 'unsupported' }` — phase 1 ships no capture layer. Pinned by a test. |
 | R4 | **`CaptureRecord.issues` is always empty on the import path.** The run builder attaches issues to the *run*, and `loadJsonl` returns the records it fed in | `issuesBySeq` is the **only** authoritative source for row annotation and `issuesOnly` filtering. A component rendering from `record.issues` would silently show nothing. Stated in Task 3 and honoured in Task 7. |
 | R5 | "Serialized record" was ambiguous for the text filter | The filter matches the **event payload** (or `keepalive <comment>`), not `JSON.stringify(record)` — otherwise typing `5` matches every record with a 5 in its timestamp. |
-| R6 | `decodeErrors` had no home in `PanelState`; no action committed a successful load | `PanelState` gains `decodeErrors: string[]`, and `store.ts` gains `applyLoaded(state, loaded, filename, importedAtMs)`. A partially-decoded file must never look clean. |
+| R6 | `decodeErrors` had no home in `PanelState`; no action committed a successful load | **CORRECTED during execution.** This row originally called for `PanelState.decodeErrors: string[]` and for `applyLoaded` to live in `store.ts` (Task 2). Both are wrong. `applyLoaded` imports `LoadedCapture` from `load-jsonl`, which Task 4 creates — writing it in Task 2 fails `typecheck` outright, or forces a duplicate type declaration. And the plan body already solves the visibility requirement without a new field: `DropZone` shows the failing lines at import time, and `applyLoaded` writes a one-line summary into `loadError` so the incompleteness survives leaving the tab. A `decodeErrors` field would be dead on arrival, since every specified consumer reads `loadError`. **Resolution: `applyLoaded` stays in `src/panel/import/apply-loaded.ts` (Task 9); no `decodeErrors` field is added.** The requirement — a partially-decoded file must never look clean — is met either way. |
 | R7 | Pure-logic tests under `src/panel/**` would run in jsdom | `// @vitest-environment node` docblock per file. Verified honoured by Vitest 4. |
 | R8 | `VirtualListProps.overscan` had no default; `follow` ownership was unspecified | Default `4`. `VirtualList` owns pinned-ness internally — `follow` is a capability switch, not a live pinned flag — so the store needs no field. |
 | R9 | **Design §3 says hovering a waterfall bar highlights the corresponding events. Delivered as click, not hover** | Cross-component highlighting needs a `hoveredSeqs` field in `PanelState`, and writing hover into the store on every mousemove re-renders the panel. Hover applies local emphasis to the bar; **clicking** calls `selectSeq`, which the list already reacts to. This is a deliberate partial delivery of the design — recorded, not hidden. |
