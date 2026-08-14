@@ -167,6 +167,33 @@ describe('RunSelector', () => {
     expect(store.get().scope).toBe('r_487');
   });
 
+  it('closes on a pointer press outside without changing the scope', () => {
+    const store = createPanelStore({ ...initialPanelState(), runs: RUNS, scope: 'r_2' });
+    render(
+      <div>
+        <RunSelector store={store} />
+        <button type="button">Elsewhere</button>
+      </div>,
+    );
+    openSelector();
+    expect(screen.getByRole('listbox')).toBeTruthy();
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Elsewhere' }));
+
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(store.get().scope).toBe('r_2');
+  });
+
+  it('stays open for a pointer press inside the popup', () => {
+    const store = createPanelStore({ ...initialPanelState(), runs: RUNS, scope: 'r_2' });
+    render(<RunSelector store={store} />);
+    openSelector();
+
+    fireEvent.pointerDown(screen.getByRole('searchbox', { name: 'Search runs' }));
+
+    expect(screen.getByRole('listbox')).toBeTruthy();
+  });
+
   it('closes on Escape without changing the scope', () => {
     const store = createPanelStore({ ...initialPanelState(), runs: RUNS, scope: 'r_2' });
     render(<RunSelector store={store} />);

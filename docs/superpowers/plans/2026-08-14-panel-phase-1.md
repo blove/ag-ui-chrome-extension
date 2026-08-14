@@ -3476,7 +3476,7 @@ Create `src/panel/shell/run-selector.tsx`:
 
 ```tsx
 import type { JSX } from 'preact';
-import { useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Run } from '../../core/model/types';
 import { VirtualList } from '../common/virtual-list';
 import type { RunScope } from '../model/panel-types';
@@ -3523,6 +3523,28 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const current = scopedRun(state);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  /*
+   * Dismiss on a pointer press anywhere else. Escape and choosing an option are not enough on
+   * their own: a click on an unrelated control would otherwise leave a 256px popup parked across
+   * the tab strip. `pointerdown` fires before the outside control's `click`, so that control
+   * still receives the press it was aimed at.
+   */
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent): void => {
+      const container = containerRef.current;
+      if (container === null) return;
+      const target = event.target;
+      if (target instanceof Node && container.contains(target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [open]);
 
   const options = useMemo<RunOption[]>(() => {
     const q = query.trim().toLowerCase();
@@ -3546,6 +3568,7 @@ export function RunSelector({ store }: RunSelectorProps): JSX.Element {
 
   return (
     <div
+      ref={containerRef}
       class="agui-run-selector"
       onKeyDown={(e) => {
         if (e.key === 'Escape' && open) {
