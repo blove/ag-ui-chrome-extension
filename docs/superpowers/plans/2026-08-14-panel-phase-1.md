@@ -2614,6 +2614,29 @@ describe('formatBytes', () => {
     expect(formatBytes(999_999)).toBe('1 MB');
   });
 
+  /*
+   * The byte unit renders with `Math.round`, not `toFixed(1)`, so its promotion threshold is
+   * 999.5 — not the 999.95 the loop uses one unit up. A `bytes < 1000` guard admits 999.5 and
+   * then rounds it to the `1000 B` the loop exists to prevent.
+   */
+  it('promotes at the byte boundary too, where rounding is to whole bytes', () => {
+    expect(formatBytes(999.4)).toBe('999 B');
+    expect(formatBytes(999.5)).toBe('1 kB');
+  });
+
+  it('never renders 1000 of a unit at any scale', () => {
+    const near = [999.4, 999.5, 999.9, 999.94, 999.95, 999.99, 999.999, 1000];
+    const bad: string[] = [];
+    // B through GB: `1000 TB` is the top unit overflowing, which no promotion can fix.
+    for (let exponent = 0; exponent <= 3; exponent += 1) {
+      for (const value of near) {
+        const rendered = formatBytes(value * 1000 ** exponent);
+        if (/^1000\b/.test(rendered)) bad.push(`${value * 1000 ** exponent} -> ${rendered}`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
   it('scales through megabytes and gigabytes', () => {
     expect(formatBytes(8_400_000)).toBe('8.4 MB');
     expect(formatBytes(2_500_000_000)).toBe('2.5 GB');
@@ -2801,10 +2824,15 @@ const BYTE_UNITS = ['B', 'kB', 'MB', 'GB', 'TB'] as const;
 /** `12.4 kB`, `840 B`. */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  if (bytes < 1000) return `${Math.round(bytes)} B`;
+  // Round before branching, like formatDuration: bytes render whole, so 999.5 is `1000 B` —
+  // the same "1000 of the smaller unit" the loop below refuses to emit one unit up.
+  if (Math.round(bytes) < 1000) return `${Math.round(bytes)} B`;
 
-  let value = bytes;
-  let unit = 0;
+  // Past the guard the value must promote, so the first division is unconditional. Leaving it
+  // to the loop would strand 999.5 <= bytes < 999.95 in the byte unit as `999.5 B` — a
+  // fractional byte count, which is the other half of the same rounding mismatch.
+  let value = bytes / 1000;
+  let unit = 1;
   // 999.95 rather than 1000: 999999 B rounds to `1000.0 kB` at one decimal, which should
   // have promoted to `1 MB`.
   while (value >= 999.95 && unit < BYTE_UNITS.length - 1) {
@@ -2917,7 +2945,7 @@ function truncate(text: string, max: number): string {
 - [ ] **Step 19: Run test to verify it passes**
 
 Run: `pnpm vitest run src/panel/common/format.test.ts`
-Expected: PASS, 27 tests.
+Expected: PASS, 29 tests.
 
 - [ ] **Step 20: Commit**
 

@@ -86,6 +86,29 @@ describe('formatBytes', () => {
     expect(formatBytes(999_999)).toBe('1 MB');
   });
 
+  /*
+   * The byte unit renders with `Math.round`, not `toFixed(1)`, so its promotion threshold is
+   * 999.5 — not the 999.95 the loop uses one unit up. A `bytes < 1000` guard admits 999.5 and
+   * then rounds it to the `1000 B` the loop exists to prevent.
+   */
+  it('promotes at the byte boundary too, where rounding is to whole bytes', () => {
+    expect(formatBytes(999.4)).toBe('999 B');
+    expect(formatBytes(999.5)).toBe('1 kB');
+  });
+
+  it('never renders 1000 of a unit at any scale', () => {
+    const near = [999.4, 999.5, 999.9, 999.94, 999.95, 999.99, 999.999, 1000];
+    const bad: string[] = [];
+    // B through GB: `1000 TB` is the top unit overflowing, which no promotion can fix.
+    for (let exponent = 0; exponent <= 3; exponent += 1) {
+      for (const value of near) {
+        const rendered = formatBytes(value * 1000 ** exponent);
+        if (/^1000\b/.test(rendered)) bad.push(`${value * 1000 ** exponent} -> ${rendered}`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
   it('scales through megabytes and gigabytes', () => {
     expect(formatBytes(8_400_000)).toBe('8.4 MB');
     expect(formatBytes(2_500_000_000)).toBe('2.5 GB');

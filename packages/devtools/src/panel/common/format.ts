@@ -36,10 +36,15 @@ const BYTE_UNITS = ['B', 'kB', 'MB', 'GB', 'TB'] as const;
 /** `12.4 kB`, `840 B`. */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  if (bytes < 1000) return `${Math.round(bytes)} B`;
+  // Round before branching, like formatDuration: bytes render whole, so 999.5 is `1000 B` —
+  // the same "1000 of the smaller unit" the loop below refuses to emit one unit up.
+  if (Math.round(bytes) < 1000) return `${Math.round(bytes)} B`;
 
-  let value = bytes;
-  let unit = 0;
+  // Past the guard the value must promote, so the first division is unconditional. Leaving it
+  // to the loop would strand 999.5 <= bytes < 999.95 in the byte unit as `999.5 B` — a
+  // fractional byte count, which is the other half of the same rounding mismatch.
+  let value = bytes / 1000;
+  let unit = 1;
   // 999.95 rather than 1000: 999999 B rounds to `1000.0 kB` at one decimal, which should
   // have promoted to `1 MB`.
   while (value >= 999.95 && unit < BYTE_UNITS.length - 1) {
