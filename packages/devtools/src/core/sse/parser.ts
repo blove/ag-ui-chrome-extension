@@ -47,6 +47,10 @@ export function createSseParser(): SseParser {
       dispatch(out);
       return;
     }
+    if (line.startsWith(':')) {
+      out.push({ kind: 'keepalive', comment: stripOneLeadingSpace(line.slice(1)) });
+      return;
+    }
     const colon = line.indexOf(':');
     const field = colon === -1 ? line : line.slice(0, colon);
     const value = colon === -1 ? '' : stripOneLeadingSpace(line.slice(colon + 1));
@@ -99,8 +103,15 @@ export function createSseParser(): SseParser {
     },
 
     flush(): SseFrame[] {
-      // Trailing-frame handling is driven out in cycle 3.
-      return [];
+      const out: SseFrame[] = [];
+      if (buffer !== '') {
+        // A held-back trailing CR was a real terminator after all.
+        const line = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer;
+        buffer = '';
+        handleLine(line, out);
+      }
+      dispatch(out);
+      return out;
     },
   };
 }

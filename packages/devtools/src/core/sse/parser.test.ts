@@ -132,3 +132,93 @@ describe('createSseParser — chunk boundaries', () => {
     ]);
   });
 });
+
+describe('createSseParser — comments and keepalives', () => {
+  it('emits a comment line as a keepalive frame with the leading space stripped', () => {
+    const parser = createSseParser();
+    expect(parser.push(': keepalive\n')).toEqual([{ kind: 'keepalive', comment: 'keepalive' }]);
+  });
+
+  it('emits a bare colon heartbeat as an empty keepalive', () => {
+    const parser = createSseParser();
+    expect(parser.push(':\n')).toEqual([{ kind: 'keepalive', comment: '' }]);
+  });
+
+  it('keeps everything after the first colon and one space in the comment', () => {
+    const parser = createSseParser();
+    expect(parser.push('::ping: 1\n')).toEqual([{ kind: 'keepalive', comment: ':ping: 1' }]);
+  });
+
+  it('emits keepalives immediately, before the frame terminates', () => {
+    const parser = createSseParser();
+    expect(parser.push(': ka\ndata: hi\n')).toEqual([{ kind: 'keepalive', comment: 'ka' }]);
+    expect(parser.push('\n')).toEqual([{ kind: 'event', data: 'hi' }]);
+  });
+
+  it('does not emit an event for a frame containing only comments', () => {
+    const parser = createSseParser();
+    expect(parser.push(': one\n: two\n\n')).toEqual([
+      { kind: 'keepalive', comment: 'one' },
+      { kind: 'keepalive', comment: 'two' },
+    ]);
+  });
+
+  it('interleaves keepalives and events in emission order', () => {
+    const parser = createSseParser();
+    expect(parser.push('data: a\n\n: ka\ndata: b\n\n')).toEqual([
+      { kind: 'event', data: 'a' },
+      { kind: 'keepalive', comment: 'ka' },
+      { kind: 'event', data: 'b' },
+    ]);
+  });
+});
+
+describe('createSseParser — flush', () => {
+  it('returns [] when nothing has been pushed', () => {
+    expect(createSseParser().flush()).toEqual([]);
+  });
+
+  it('emits a trailing frame that was never terminated by a blank line', () => {
+    const parser = createSseParser();
+    expect(parser.push('data: {"type":"RUN_ERROR"}\n')).toEqual([]);
+    expect(parser.flush()).toEqual([{ kind: 'event', data: '{"type":"RUN_ERROR"}' }]);
+  });
+
+  it('emits a trailing frame whose last line has no terminator at all', () => {
+    const parser = createSseParser();
+    expect(parser.push('event: done\ndata: tail')).toEqual([]);
+    expect(parser.flush()).toEqual([{ kind: 'event', data: 'tail', eventName: 'done' }]);
+  });
+
+  it('emits a trailing comment as a keepalive', () => {
+    const parser = createSseParser();
+    expect(parser.push(': bye')).toEqual([]);
+    expect(parser.flush()).toEqual([{ kind: 'keepalive', comment: 'bye' }]);
+  });
+
+  it('resolves a held-back trailing CR as a line terminator', () => {
+    const parser = createSseParser();
+    expect(parser.push('data: a\r\r')).toEqual([]);
+    expect(parser.flush()).toEqual([{ kind: 'event', data: 'a' }]);
+  });
+
+  it('returns [] when the stream ended on a clean frame boundary', () => {
+    const parser = createSseParser();
+    expect(parser.push('data: a\n\n')).toEqual([{ kind: 'event', data: 'a' }]);
+    expect(parser.flush()).toEqual([]);
+  });
+
+  it('resets after flushing so a second flush returns []', () => {
+    const parser = createSseParser();
+    parser.push('data: a');
+    expect(parser.flush()).toEqual([{ kind: 'event', data: 'a' }]);
+    expect(parser.flush()).toEqual([]);
+  });
+
+  it('can keep parsing after a flush', () => {
+    const parser = createSseParser();
+    parser.push('data: a');
+    expect(parser.flush()).toEqual([{ kind: 'event', data: 'a' }]);
+    expect(parser.push('data: b\n\n')).toEqual([{ kind: 'event', data: 'b' }]);
+  });
+});
