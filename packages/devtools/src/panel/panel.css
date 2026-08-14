@@ -348,3 +348,102 @@ body {
   outline: 2px solid var(--agui-accent);
   outline-offset: -2px;
 }
+
+/* ── Toolbar and issue badge (P2) ───────────────────────────────────────────────────────────── */
+
+.agui-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 8px;
+}
+
+.agui-toolbar__button {
+  appearance: none;
+  font: inherit;
+  color: var(--agui-fg);
+  background: var(--agui-surface);
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.agui-toolbar__button:hover:not(:disabled) {
+  background: var(--agui-hover);
+}
+
+.agui-toolbar__button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agui-toolbar__button[aria-pressed='true']:not(:disabled) {
+  color: var(--agui-accent);
+  border-color: var(--agui-accent);
+  background: var(--agui-hover);
+}
+
+.agui-toolbar__filter {
+  flex: 1 1 120px;
+  min-width: 80px;
+  font: inherit;
+  color: var(--agui-fg);
+  background: var(--agui-surface-raised);
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.agui-toolbar__dropped {
+  color: var(--agui-fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The badge is pushed to the trailing edge so it holds the same spot at every width. */
+.agui-issue-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--agui-fg-muted);
+  background: var(--agui-surface);
+  border: 1px solid var(--agui-border);
+  border-radius: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.agui-issue-badge__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentcolor;
+}
+
+.agui-issue-badge[data-tone='error'] {
+  color: var(--agui-danger);
+  background: var(--agui-danger-bg);
+  border-color: var(--agui-danger-border);
+}
+
+.agui-issue-badge[data-tone='warning'] {
+  color: var(--agui-warning);
+  background: var(--agui-warning-bg);
+  border-color: var(--agui-warning-border);
+}
+
+/* Pressed state is a ring plus the visible `filtered` tag, never colour alone. */
+.agui-issue-badge[aria-pressed='true'] {
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px currentcolor;
+}
+
+.agui-issue-badge__flag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
