@@ -576,3 +576,120 @@ body {
 .agui-event-row[data-severity][aria-pressed='true'] {
   background: var(--agui-row-selected);
 }
+
+/* ── Timeline detail pane ──────────────────────────────────────────────────────────────────── */
+
+.agui-detail {
+  min-width: 0;
+  padding: 8px 12px;
+  overflow: auto;
+}
+
+.agui-detail__empty {
+  margin: 4px 0;
+  color: var(--agui-fg-muted);
+}
+
+.agui-detail__title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--agui-fg-muted);
+}
+
+.agui-detail__verdict ul {
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.agui-detail__verdict li {
+  padding: 6px 8px;
+  border-left: 3px solid var(--agui-severity-info);
+  border-radius: 2px;
+  background: var(--agui-severity-info-bg);
+}
+
+.agui-detail__verdict li + li {
+  margin-top: 6px;
+}
+
+.agui-detail__verdict li[data-severity='error'] {
+  border-left-color: var(--agui-severity-error);
+  background: var(--agui-severity-error-bg);
+}
+
+.agui-detail__verdict li[data-severity='warning'] {
+  border-left-color: var(--agui-severity-warning);
+  background: var(--agui-severity-warning-bg);
+}
+
+.agui-detail__verdict-head,
+.agui-detail__verdict-message {
+  margin: 0;
+}
+
+.agui-detail__severity {
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--agui-severity-info);
+}
+
+li[data-severity='error'] .agui-detail__severity {
+  color: var(--agui-severity-error);
+}
+
+li[data-severity='warning'] .agui-detail__severity {
+  color: var(--agui-severity-warning);
+}
+
+.agui-detail__fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 6px 0 0;
+}
+
+/* `display: contents` lets the dt/dd wrapper carry the key without breaking the grid. */
+.agui-detail__field {
+  display: contents;
+}
+
+.agui-detail__fields dt {
+  color: var(--agui-fg-muted);
+}
+
+.agui-detail__fields dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agui-detail__json {
+  margin: 0;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+}
+
+.agui-detail__raw {
+  margin-top: 12px;
+}
+
+.agui-detail__raw button {
+  padding: 2px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--agui-fg);
+  font: inherit;
+  cursor: default;
+}
+
+.agui-detail__raw button:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
