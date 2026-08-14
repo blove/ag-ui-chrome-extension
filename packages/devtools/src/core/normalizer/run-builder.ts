@@ -476,6 +476,81 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     ]);
   }
 
+  /**
+   * The `*_END` events a connection's chunk state still owes, in triad order, clearing that
+   * state as it goes.
+   *
+   * `expandChunk` synthesizes a trailing END only when a NEW id opens, and it is per-event:
+   * it has no end-of-stream hook, so the LAST message and tool call of a chunk-only stream —
+   * the CopilotKit default — would otherwise never close. That cost every healthy chunked run
+   * a spurious `unclosed-message` and `unclosed-tool-call`, and left `ToolCallRecord.args`
+   * `undefined` even for perfectly valid JSON, because `args` is parsed only in the builder's
+   * `TOOL_CALL_END` case. Closing the stream is the run builder's job, so it lives here.
+   *
+   * When `expandChunks` is false nothing ever writes `conn.chunkState`, so this yields nothing.
+   */
+  function takeChunkFlushEvents(conn: ConnEntry): AguiEvent[] {
+    const state = conn.chunkState;
+    const events: AguiEvent[] = [];
+    if (state.openTextMessageId !== undefined) {
+      events.push({ type: 'TEXT_MESSAGE_END', messageId: state.openTextMessageId });
+    }
+    if (state.openReasoningMessageId !== undefined) {
+      events.push({ type: 'REASONING_MESSAGE_END', messageId: state.openReasoningMessageId });
+    }
+    if (state.openToolCallId !== undefined) {
+      events.push({ type: 'TOOL_CALL_END', toolCallId: state.openToolCallId });
+    }
+    conn.chunkState = createChunkExpanderState();
+    return events;
+  }
+
+  /**
+   * Fold one event onto one run: validate (pure), then mutate, then record, then attach.
+   *
+   * Every event takes this path — off the wire, out of chunk expansion, or out of the
+   * end-of-stream flush — so message closing, `endedAtMs` and tool-args parsing happen in
+   * exactly one place and a synthesized END is validated like any other.
+   */
+  function foldEvent(
+    entry: RunEntry,
+    event: AguiEvent,
+    record: EventRecord,
+    countBytes: boolean,
+  ): void {
+    const issues = runRules(event, record, entry.validation);
+    applyTransition(entry, event, record);
+    noteRecord(entry, record, event, countBytes);
+    attachIssues(entry, issues);
+  }
+
+  /**
+   * Flush the connection's chunk state onto a run that never reached a terminal event.
+   *
+   * There is no frame to carry these: the stream simply stopped. They anchor to the run's
+   * last real seq — the same anchor `finalizeRules` uses for the run-end codes — so anything
+   * they raise still points at a record the user can select, and `raw: undefined` keeps them
+   * out of `totalStreamBytes` because nothing was ever on the wire.
+   */
+  function flushChunkStateAtClose(conn: ConnEntry, tMs: number): void {
+    if (conn.openRunId === undefined) return;
+    const entry = entries.get(conn.openRunId);
+    if (entry === undefined) return;
+    const seq = entry.run.recordSeqs.at(-1) ?? 0;
+    for (const event of takeChunkFlushEvents(conn)) {
+      const record: EventRecord = {
+        kind: 'event',
+        seq,
+        tMs,
+        connId: conn.connId,
+        raw: undefined,
+        event,
+        issues: [],
+      };
+      foldEvent(entry, event, record, false);
+    }
+  }
+
   function addRecord(record: CaptureRecord): void {
     const conn = ensureConn(record.connId);
 
@@ -514,11 +589,15 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
       const event = events[i]!;
       const entry = resolveRun(conn, event, record);
       if (first === undefined) first = entry;
-      const issues = runRules(event, record, entry.validation);
-      applyTransition(entry, event, record);
+      // The terminal event is the last moment at which the chunk state's outstanding ENDs
+      // are still legal, so they are folded here — strictly BEFORE this event is validated
+      // and applied. `applyTransition` sets `validation.terminated` on the terminal event,
+      // and after that every event, synthesized ones included, trips `event-after-terminal`.
+      if (event.type === 'RUN_FINISHED' || event.type === 'RUN_ERROR') {
+        for (const flushed of takeChunkFlushEvents(conn)) foldEvent(entry, flushed, record, false);
+      }
       // Only the first expanded event carries the raw frame, so its bytes are counted once.
-      noteRecord(entry, record, event, i === 0);
-      attachIssues(entry, issues);
+      foldEvent(entry, event, record, i === 0);
     }
 
     // 5. Record bookkeeping and issue attachment for the record as a whole.
@@ -549,6 +628,9 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
       const conn = conns.get(connId);
       if (conn === undefined || conn.closedAtMs !== undefined) return;
       conn.closedAtMs = tMs;
+      // A run that never terminated got no flush from `addRecord`, so it happens here —
+      // and BEFORE `finalizeRules`, which reads the very sets the synthesized ENDs clear.
+      flushChunkStateAtClose(conn, tMs);
       for (const runId of conn.runIds) {
         const entry = entries.get(runId);
         if (entry === undefined) continue;

@@ -405,6 +405,123 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(call.closed).toBe(false);
   });
 
+  it('closes the trailing chunked message, reasoning and tool call at RUN_FINISHED', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'm1', role: 'assistant', delta: 'Hi' }));
+    builder.addRecord(rec(3, 20, 'c1', { type: 'REASONING_MESSAGE_CHUNK', messageId: 'rm1', delta: 'hmm' }));
+    builder.addRecord(
+      rec(4, 30, 'c1', { type: 'TOOL_CALL_CHUNK', toolCallId: 'tc1', toolCallName: 'search', delta: '{"q":"cats"}' }),
+    );
+    builder.addRecord(rec(5, 40, 'c1', { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' }));
+    builder.closeConnection('c1', 50);
+
+    const run = builder.getRun('r1')!;
+
+    // A chunk-only stream is the CopilotKit default. `expandChunk` synthesizes a trailing
+    // END only when a NEW id opens, so without the run-end flush every healthy chunked run
+    // reported these two warnings — and the panel got no structured tool arguments.
+    expect(run.issues.filter((issue) => issue.code === 'unclosed-message')).toEqual([]);
+    expect(run.issues.filter((issue) => issue.code === 'unclosed-tool-call')).toEqual([]);
+    // the flush runs BEFORE the terminal transition, so the synthesized ENDs are still legal
+    expect(run.issues.filter((issue) => issue.code === 'event-after-terminal')).toEqual([]);
+
+    const message = run.messages.get('m1')!;
+    expect(message.closed).toBe(true);
+    expect(message.endedAtMs).toBe(40);
+
+    const reasoning = run.messages.get('rm1')!;
+    expect(reasoning.closed).toBe(true);
+    expect(reasoning.endedAtMs).toBe(40);
+
+    const call = run.toolCalls.get('tc1')!;
+    expect(call.closed).toBe(true);
+    expect(call.endedAtMs).toBe(40);
+    // `args` is parsed only in the TOOL_CALL_END case, so this is what the flush buys the panel
+    expect(call.args).toEqual({ q: 'cats' });
+    expect(call.argsParseError).toBeUndefined();
+    expect(run.outcome).toBe('finished');
+    expect(run.endedAtMs).toBe(40);
+  });
+
+  it('closes the trailing chunked message and tool call when the connection closes mid-run', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'm1', role: 'assistant', delta: 'Hi' }));
+    builder.addRecord(
+      rec(3, 20, 'c1', { type: 'TOOL_CALL_CHUNK', toolCallId: 'tc1', toolCallName: 'search', delta: '{"q":1}' }),
+    );
+    builder.closeConnection('c1', 90);
+
+    const run = builder.getRun('r1')!;
+
+    expect(run.issues.filter((issue) => issue.code === 'unclosed-message')).toEqual([]);
+    expect(run.issues.filter((issue) => issue.code === 'unclosed-tool-call')).toEqual([]);
+    // the stream still died without a terminal event — that issue is real and stays
+    expect(run.issues.filter((issue) => issue.code === 'run-never-terminated')).toHaveLength(1);
+
+    const message = run.messages.get('m1')!;
+    expect(message.closed).toBe(true);
+    expect(message.endedAtMs).toBe(90);
+
+    const call = run.toolCalls.get('tc1')!;
+    expect(call.closed).toBe(true);
+    expect(call.endedAtMs).toBe(90);
+    expect(call.args).toEqual({ q: 1 });
+
+    expect(run.outcome).toBe('aborted');
+    // the flush is not a frame off the wire: it contributes no seq of its own
+    expect(run.recordSeqs).toEqual([1, 2, 3]);
+  });
+
+  it('gives a chunked run the same closure and parsed args as the equivalent explicit triad', () => {
+    const chunked = createRunBuilder({ expandChunks: true });
+    chunked.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    chunked.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'm1', role: 'assistant', delta: 'Hello' }));
+    chunked.addRecord(
+      rec(3, 20, 'c1', { type: 'TOOL_CALL_CHUNK', toolCallId: 'tc1', toolCallName: 'search', delta: '{"q":"cats"}' }),
+    );
+    chunked.addRecord(rec(4, 30, 'c1', { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' }));
+
+    const explicit = createRunBuilder({ expandChunks: false });
+    explicit.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    explicit.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_START', messageId: 'm1', role: 'assistant' }));
+    explicit.addRecord(rec(3, 10, 'c1', { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'Hello' }));
+    explicit.addRecord(rec(4, 20, 'c1', { type: 'TOOL_CALL_START', toolCallId: 'tc1', toolCallName: 'search' }));
+    explicit.addRecord(rec(5, 20, 'c1', { type: 'TOOL_CALL_ARGS', toolCallId: 'tc1', delta: '{"q":"cats"}' }));
+    explicit.addRecord(rec(6, 30, 'c1', { type: 'TEXT_MESSAGE_END', messageId: 'm1' }));
+    explicit.addRecord(rec(7, 30, 'c1', { type: 'TOOL_CALL_END', toolCallId: 'tc1' }));
+    explicit.addRecord(rec(8, 30, 'c1', { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' }));
+
+    const fromChunks = chunked.getRun('r1')!;
+    const fromTriad = explicit.getRun('r1')!;
+    const chunkMessage = fromChunks.messages.get('m1')!;
+    const triadMessage = fromTriad.messages.get('m1')!;
+    const chunkCall = fromChunks.toolCalls.get('tc1')!;
+    const triadCall = fromTriad.toolCalls.get('tc1')!;
+
+    // equivalence that matters to the panel, not just `content`
+    expect([chunkMessage.content, chunkMessage.closed, chunkMessage.endedAtMs]).toEqual([
+      triadMessage.content,
+      triadMessage.closed,
+      triadMessage.endedAtMs,
+    ]);
+    expect([chunkMessage.closed, chunkMessage.endedAtMs]).toEqual([true, 30]);
+
+    expect([chunkCall.argsText, chunkCall.closed, chunkCall.endedAtMs, chunkCall.args]).toEqual([
+      triadCall.argsText,
+      triadCall.closed,
+      triadCall.endedAtMs,
+      triadCall.args,
+    ]);
+    expect(chunkCall.args).toEqual({ q: 'cats' });
+
+    expect(fromChunks.outcome).toBe(fromTriad.outcome);
+    expect(fromChunks.endedAtMs).toBe(fromTriad.endedAtMs);
+  });
+
   it('attaches chunk-expansion issues to the run even when nothing could be synthesized', () => {
     const builder = createRunBuilder();
 
