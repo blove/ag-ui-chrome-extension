@@ -312,3 +312,39 @@ body {
 .agui-run-option__issues[data-tone='warning'] {
   color: var(--agui-warning);
 }
+
+/* ── Tab strip ──────────────────────────────────────────────────────────────────────────────── */
+
+.agui-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--agui-border);
+}
+
+.agui-tabs__tab {
+  appearance: none;
+  font: inherit;
+  color: var(--agui-fg-muted);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.agui-tabs__tab:hover {
+  color: var(--agui-fg);
+  background: var(--agui-hover);
+}
+
+/* The underline carries the selection on its own; the accent colour only reinforces it. */
+.agui-tabs__tab[aria-selected='true'] {
+  color: var(--agui-accent);
+  border-bottom-color: var(--agui-accent);
+}
+
+.agui-tabs__tab:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
+}
