@@ -1061,3 +1061,66 @@ li[data-severity='warning'] .agui-detail__severity {
   outline: 2px solid var(--agui-accent);
   outline-offset: 1px;
 }
+
+/* --- Session tab ---------------------------------------------------------
+ * A label/value list rather than a table: every row is a fact about where the
+ * data came from, and several of the values are full sentences explaining an
+ * absence, so they need to wrap freely.
+ */
+
+.agui-session {
+  padding: 12px 16px;
+  overflow-y: auto;
+  color: var(--agui-fg);
+}
+
+.agui-session__title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.agui-session__heading {
+  margin: 16px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--agui-fg-muted);
+}
+
+.agui-session__grid {
+  margin: 0;
+  border-top: 1px solid var(--agui-border);
+}
+
+.agui-session__row {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--agui-border);
+}
+
+.agui-session__label {
+  flex: 0 0 12em;
+  color: var(--agui-fg-muted);
+}
+
+.agui-session__value {
+  flex: 1 1 auto;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.agui-session__note {
+  margin: 0 0 8px;
+  max-width: 72ch;
+  color: var(--agui-fg-muted);
+}
+
+.agui-session__note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
