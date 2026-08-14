@@ -3454,9 +3454,16 @@ function hasOwn(obj: Record<string, unknown>, key: string): boolean {
  * Narrow one untrusted wire operation to a `PatchOp`.
  *
  * A patch arrives as `unknown[]`, so an entry may be a bare string, an object with no `op`
- * key, or a `move` with no `from`. Each is rejected here and reported as `invalid-op` with
- * the raw value carried through untouched. `value` is deliberately not checked: it is
- * typed `unknown`, so an `add` that omits it simply adds `undefined`.
+ * key, a `move` with no `from`, or an `add` with no `value`. Each is rejected here and
+ * reported as `invalid-op` with the raw value carried through untouched.
+ *
+ * The `value` check is an OWN-PROPERTY test, not `op.value !== undefined`. RFC 6902 §4.1 /
+ * §4.3 / §4.6 require the member on `add`/`replace`/`test`, and `{"value": null}` is a
+ * perfectly legal patch that must still apply; `{"value": undefined}` cannot come off the
+ * wire at all, since JSON has no `undefined`. Accepting a missing `value` used to add the
+ * key with an `undefined` value, producing a document that no longer round-trips through
+ * JSON: `JSON.stringify` drops the key, so the State tab would render `{"a":1}` while the
+ * in-memory model held a `b`.
  */
 function isPatchOp(op: unknown): op is PatchOp {
   if (!isRecord(op)) return false;
@@ -3464,6 +3471,7 @@ function isPatchOp(op: unknown): op is PatchOp {
   if (typeof name !== 'string' || !KNOWN_OPS.has(name)) return false;
   if (typeof op.path !== 'string') return false;
   if (name === 'move' || name === 'copy') return typeof op.from === 'string';
+  if (name === 'add' || name === 'replace' || name === 'test') return hasOwn(op, 'value');
   return true;
 }
 
@@ -3849,6 +3857,75 @@ describe('applyPatch — invalid-op', () => {
     if (result.ok) throw new Error('expected failure');
     expect(result.reason).toBe('invalid-op');
   });
+
+  it('fails with invalid-op for an add with no value member', () => {
+    // RFC 6902 §4.1 requires `value`. Accepting it would set the key to `undefined`, and the
+    // resulting document no longer round-trips through JSON — `JSON.stringify` drops the key,
+    // so the State tab would render `{"a":1}` while the model held a `b`.
+    const result = applyPatch({ a: 1 }, [{ op: 'add', path: '/b' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'add', path: '/b' },
+      reason: 'invalid-op',
+    });
+  });
+
+  it('fails with invalid-op for a replace with no value member', () => {
+    // RFC 6902 §4.3.
+    const result = applyPatch({ a: 1 }, [{ op: 'replace', path: '/a' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'replace', path: '/a' },
+      reason: 'invalid-op',
+    });
+  });
+
+  it('fails with invalid-op for a test with no value member', () => {
+    // RFC 6902 §4.6. Without the check this compares the document against `undefined` and
+    // reports `test-failed`, blaming the server's state for a malformed operation.
+    const result = applyPatch({ a: 1 }, [{ op: 'test', path: '/a' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'test', path: '/a' },
+      reason: 'invalid-op',
+    });
+  });
+
+  it('accepts an explicit null value — the check is own-property, not !== undefined', () => {
+    // `{"value": null}` is legal RFC 6902 and the commonest way a server clears a field.
+    // A `value !== undefined` guard would have rejected it.
+    expect(applyPatch({ a: 1 }, [{ op: 'add', path: '/b', value: null }])).toEqual({
+      ok: true,
+      value: { a: 1, b: null },
+    });
+    expect(applyPatch({ a: 1 }, [{ op: 'replace', path: '/a', value: null }])).toEqual({
+      ok: true,
+      value: { a: null },
+    });
+    expect(applyPatch({ a: null }, [{ op: 'test', path: '/a', value: null }])).toEqual({
+      ok: true,
+      value: { a: null },
+    });
+  });
+
+  it('still accepts remove, move and copy without a value member', () => {
+    // The requirement is per-op: only add/replace/test carry `value`.
+    expect(applyPatch({ a: 1, b: 2 }, [{ op: 'remove', path: '/b' }])).toEqual({
+      ok: true,
+      value: { a: 1 },
+    });
+    expect(applyPatch({ a: 1, b: {} }, [{ op: 'move', path: '/b/a', from: '/a' }])).toEqual({
+      ok: true,
+      value: { b: { a: 1 } },
+    });
+    expect(applyPatch({ a: 1, b: {} }, [{ op: 'copy', path: '/b/a', from: '/a' }])).toEqual({
+      ok: true,
+      value: { a: 1, b: { a: 1 } },
+    });
+  });
 });
 
 describe('applyPatch — failure positioning', () => {
@@ -3968,9 +4045,16 @@ function hasOwn(obj: Record<string, unknown>, key: string): boolean {
  * Narrow one untrusted wire operation to a `PatchOp`.
  *
  * A patch arrives as `unknown[]`, so an entry may be a bare string, an object with no `op`
- * key, or a `move` with no `from`. Each is rejected here and reported as `invalid-op` with
- * the raw value carried through untouched. `value` is deliberately not checked: it is
- * typed `unknown`, so an `add` that omits it simply adds `undefined`.
+ * key, a `move` with no `from`, or an `add` with no `value`. Each is rejected here and
+ * reported as `invalid-op` with the raw value carried through untouched.
+ *
+ * The `value` check is an OWN-PROPERTY test, not `op.value !== undefined`. RFC 6902 §4.1 /
+ * §4.3 / §4.6 require the member on `add`/`replace`/`test`, and `{"value": null}` is a
+ * perfectly legal patch that must still apply; `{"value": undefined}` cannot come off the
+ * wire at all, since JSON has no `undefined`. Accepting a missing `value` used to add the
+ * key with an `undefined` value, producing a document that no longer round-trips through
+ * JSON: `JSON.stringify` drops the key, so the State tab would render `{"a":1}` while the
+ * in-memory model held a `b`.
  */
 function isPatchOp(op: unknown): op is PatchOp {
   if (!isRecord(op)) return false;
@@ -3978,6 +4062,7 @@ function isPatchOp(op: unknown): op is PatchOp {
   if (typeof name !== 'string' || !KNOWN_OPS.has(name)) return false;
   if (typeof op.path !== 'string') return false;
   if (name === 'move' || name === 'copy') return typeof op.from === 'string';
+  if (name === 'add' || name === 'replace' || name === 'test') return hasOwn(op, 'value');
   return true;
 }
 
@@ -4212,7 +4297,7 @@ export function applyPatch(doc: unknown, ops: readonly unknown[]): PatchResult {
 
 Run: `pnpm vitest run src/core/state/json-patch.test.ts`
 
-Expected: PASS, 67 tests.
+Expected: PASS, 72 tests.
 
 - [ ] **Step 15: Commit**
 
@@ -4606,8 +4691,8 @@ Run: `git add src/core/state/timeline.ts src/core/state/timeline.test.ts && git 
    narrow is reported verbatim in `op`. The tests pass plain array literals. Still decided
    here, and not by the contract: `isPatchOp` also requires a string `path`, and a string
    `from` on `move`/`copy`, since neither is representable as a `PatchOp` otherwise and
-   `parsePointer` would throw on a missing one. `value` is not checked — it is typed
-   `unknown`, so an `add` that omits it adds `undefined`.
+   `parsePointer` would throw on a missing one. **Amended (A23):** `value` is also
+   required — by own-property check — on `add`/`replace`/`test`, per RFC 6902 §4.1/§4.3/§4.6.
 
 6. **`frames()` copy semantics.** The contract types `frames(): StateFrame[]` without
    saying whether the array is live. Decided here: it returns a fresh array each call
@@ -11201,6 +11286,7 @@ them. Each was verified empirically before being adopted.
 | A20 | `makeIssue(code, message, seq, extra?)` is the only sanctioned `Issue` constructor | A14's table was advisory — `{code:'empty-text-delta', severity:'info'}` still compiled, which is the exact hole A14 was created to close. Correlating `severity` to `code` at the type level rejects the misgrade but breaks the generic factory every emitter needs (a known correlated-union limitation). The factory upholds the guarantee instead. |
 | A21 | `ReconstructedMessage.role: MessageRole` → `kind: MessageKind` (`'text' \| 'reasoning'`) | The protocol carries its own `role` on `TEXT_MESSAGE_START` and `TOOL_CALL_RESULT` with different semantics, so the old name invited `role: event.role` in Task 13a — where the fold constructs the message directly from event data. Renamed while there are zero consumers; after 13a it would cost edits across 13a–13c and 16. |
 | A22 | Task 12's `byteLength` encodes with `TextEncoder` instead of returning `json.length` | `String.length` counts UTF-16 code units, not bytes: a CJK codepoint is 1 unit / 3 UTF-8 bytes and an emoji is 2 units / 4 bytes, so a Japanese conversation reporting "1,200 bytes" actually put ~3,000 on the wire. `totalStreamBytes`/`statePatchBytes` exist to diagnose payload size and proxy buffering, which an under-count of ~2.5x defeats. `TextEncoder` is a standard global in Node 22 and in browsers and is not on the `core/` lint fence — verified `pnpm lint` stays clean. Task 12 gains a non-ASCII regression test asserting the count exceeds `JSON.stringify(...).length`, and its three ASCII byte assertions are restated as literal totals so they no longer restate the implementation's own expression. The docstring was narrowed at the same time: it claimed to treat "non-serializable values as zero bytes", but a circular `raw` **throws** out of `JSON.stringify` rather than counting zero. |
+| A23 | Task 8's `isPatchOp` requires an own `value` property on `add`/`replace`/`test` | RFC 6902 §4.1/§4.3/§4.6 make the member mandatory, and requirements §7 lists a bad `op` as an error condition, but the predicate checked only `op`, `path`, and `from`. Confirmed: `applyPatch({a:1}, [{op:'add', path:'/b'}])` returned `{ok:true}` with `value.b === undefined` — a document that no longer round-trips through JSON, since `JSON.stringify` drops the key. The State tab would have shown `{"a":1}` while the in-memory model held a `b`, and a `test` with no `value` reported `test-failed`, blaming the server's state for a malformed operation. The failure is `invalid-op`, matching every other malformed op. The check is `Object.prototype.hasOwnProperty.call`, **not** `op.value !== undefined`: `{"value": null}` is legal RFC 6902 and the commonest way a server clears a field, while `{"value": undefined}` cannot arrive from JSON at all. Verified no previously-passing test asserted the old behavior. |
 
 ### Keepalive attribution — decided here, previously unspecified
 

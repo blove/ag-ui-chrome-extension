@@ -523,6 +523,75 @@ describe('applyPatch — invalid-op', () => {
     if (result.ok) throw new Error('expected failure');
     expect(result.reason).toBe('invalid-op');
   });
+
+  it('fails with invalid-op for an add with no value member', () => {
+    // RFC 6902 §4.1 requires `value`. Accepting it would set the key to `undefined`, and the
+    // resulting document no longer round-trips through JSON — `JSON.stringify` drops the key,
+    // so the State tab would render `{"a":1}` while the model held a `b`.
+    const result = applyPatch({ a: 1 }, [{ op: 'add', path: '/b' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'add', path: '/b' },
+      reason: 'invalid-op',
+    });
+  });
+
+  it('fails with invalid-op for a replace with no value member', () => {
+    // RFC 6902 §4.3.
+    const result = applyPatch({ a: 1 }, [{ op: 'replace', path: '/a' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'replace', path: '/a' },
+      reason: 'invalid-op',
+    });
+  });
+
+  it('fails with invalid-op for a test with no value member', () => {
+    // RFC 6902 §4.6. Without the check this compares the document against `undefined` and
+    // reports `test-failed`, blaming the server's state for a malformed operation.
+    const result = applyPatch({ a: 1 }, [{ op: 'test', path: '/a' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'test', path: '/a' },
+      reason: 'invalid-op',
+    });
+  });
+
+  it('accepts an explicit null value — the check is own-property, not !== undefined', () => {
+    // `{"value": null}` is legal RFC 6902 and the commonest way a server clears a field.
+    // A `value !== undefined` guard would have rejected it.
+    expect(applyPatch({ a: 1 }, [{ op: 'add', path: '/b', value: null }])).toEqual({
+      ok: true,
+      value: { a: 1, b: null },
+    });
+    expect(applyPatch({ a: 1 }, [{ op: 'replace', path: '/a', value: null }])).toEqual({
+      ok: true,
+      value: { a: null },
+    });
+    expect(applyPatch({ a: null }, [{ op: 'test', path: '/a', value: null }])).toEqual({
+      ok: true,
+      value: { a: null },
+    });
+  });
+
+  it('still accepts remove, move and copy without a value member', () => {
+    // The requirement is per-op: only add/replace/test carry `value`.
+    expect(applyPatch({ a: 1, b: 2 }, [{ op: 'remove', path: '/b' }])).toEqual({
+      ok: true,
+      value: { a: 1 },
+    });
+    expect(applyPatch({ a: 1, b: {} }, [{ op: 'move', path: '/b/a', from: '/a' }])).toEqual({
+      ok: true,
+      value: { b: { a: 1 } },
+    });
+    expect(applyPatch({ a: 1, b: {} }, [{ op: 'copy', path: '/b/a', from: '/a' }])).toEqual({
+      ok: true,
+      value: { a: 1, b: { a: 1 } },
+    });
+  });
 });
 
 describe('applyPatch — failure positioning', () => {

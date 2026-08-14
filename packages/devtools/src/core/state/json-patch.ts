@@ -46,9 +46,16 @@ function hasOwn(obj: Record<string, unknown>, key: string): boolean {
  * Narrow one untrusted wire operation to a `PatchOp`.
  *
  * A patch arrives as `unknown[]`, so an entry may be a bare string, an object with no `op`
- * key, or a `move` with no `from`. Each is rejected here and reported as `invalid-op` with
- * the raw value carried through untouched. `value` is deliberately not checked: it is
- * typed `unknown`, so an `add` that omits it simply adds `undefined`.
+ * key, a `move` with no `from`, or an `add` with no `value`. Each is rejected here and
+ * reported as `invalid-op` with the raw value carried through untouched.
+ *
+ * The `value` check is an OWN-PROPERTY test, not `op.value !== undefined`. RFC 6902 §4.1 /
+ * §4.3 / §4.6 require the member on `add`/`replace`/`test`, and `{"value": null}` is a
+ * perfectly legal patch that must still apply; `{"value": undefined}` cannot come off the
+ * wire at all, since JSON has no `undefined`. Accepting a missing `value` used to add the
+ * key with an `undefined` value, producing a document that no longer round-trips through
+ * JSON: `JSON.stringify` drops the key, so the State tab would render `{"a":1}` while the
+ * in-memory model held a `b`.
  */
 function isPatchOp(op: unknown): op is PatchOp {
   if (!isRecord(op)) return false;
@@ -56,6 +63,7 @@ function isPatchOp(op: unknown): op is PatchOp {
   if (typeof name !== 'string' || !KNOWN_OPS.has(name)) return false;
   if (typeof op.path !== 'string') return false;
   if (name === 'move' || name === 'copy') return typeof op.from === 'string';
+  if (name === 'add' || name === 'replace' || name === 'test') return hasOwn(op, 'value');
   return true;
 }
 
