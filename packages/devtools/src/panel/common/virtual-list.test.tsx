@@ -192,6 +192,57 @@ describe('VirtualList', () => {
     expect(renderedIndices(container)).not.toContain(39);
   });
 
+  /*
+   * `scrollTop` is state but `count` is a prop, so a shrink re-renders with a scroll position
+   * that no longer exists. Every other shrink test here has `follow` on, and the follow effect
+   * re-pins before the render is seen — these three deliberately leave it off, which is the
+   * filter case P7 hits on every keystroke.
+   */
+  it('renders the whole list when it shrinks under a scrolled viewport (follow off)', () => {
+    const props = { rowHeight: ROW_HEIGHT, height: 200, overscan: 2, renderRow };
+    const { container, rerender } = render(<VirtualList {...props} items={rows(1000)} />);
+
+    const { viewport } = parts(container);
+    viewport.scrollTop = 1000 * ROW_HEIGHT - 200;
+    fireEvent.scroll(viewport);
+    expect(renderedIndices(container)).toContain(999);
+
+    rerender(<VirtualList {...props} items={rows(10)} />);
+
+    // All ten rows fit the 200px viewport, so all ten must render.
+    expect(renderedIndices(container)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  it('renders the tail when the list shrinks past the scroll position (follow off)', () => {
+    const props = { rowHeight: ROW_HEIGHT, height: 200, overscan: 2, renderRow };
+    const { container, rerender } = render(<VirtualList {...props} items={rows(1000)} />);
+
+    const { viewport } = parts(container);
+    viewport.scrollTop = 900 * ROW_HEIGHT;
+    fireEvent.scroll(viewport);
+
+    rerender(<VirtualList {...props} items={rows(300)} />);
+
+    // Clamped to maxScrollTop = 300 * 20 - 200 = 5800, so start = 5800/20 - 2 = 288.
+    expect(renderedIndices(container)).toEqual([288, 289, 290, 291, 292, 293, 294, 295, 296, 297, 298, 299]);
+  });
+
+  it('recovers when the list empties and refills while scrolled (follow off)', () => {
+    const props = { rowHeight: ROW_HEIGHT, height: 200, overscan: 2, renderRow };
+    const { container, rerender } = render(<VirtualList {...props} items={rows(1000)} />);
+
+    const { viewport } = parts(container);
+    viewport.scrollTop = 1000 * ROW_HEIGHT - 200;
+    fireEvent.scroll(viewport);
+
+    rerender(<VirtualList {...props} items={rows(0)} />);
+    expect(parts(container).window.children.length).toBe(0);
+
+    rerender(<VirtualList {...props} items={rows(20)} />);
+    expect(renderedIndices(container).length).toBeGreaterThan(0);
+    expect(renderedIndices(container)).toContain(19);
+  });
+
   it('renders nothing but a zero-height spacer for an empty list', () => {
     const { container } = render(
       <VirtualList items={[]} rowHeight={ROW_HEIGHT} height={200} renderRow={renderRow} />,

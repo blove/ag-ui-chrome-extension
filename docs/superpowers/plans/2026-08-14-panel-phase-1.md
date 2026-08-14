@@ -2205,6 +2205,57 @@ describe('VirtualList', () => {
     expect(renderedIndices(container)).not.toContain(39);
   });
 
+  /*
+   * `scrollTop` is state but `count` is a prop, so a shrink re-renders with a scroll position
+   * that no longer exists. Every other shrink test here has `follow` on, and the follow effect
+   * re-pins before the render is seen — these three deliberately leave it off, which is the
+   * filter case P7 hits on every keystroke.
+   */
+  it('renders the whole list when it shrinks under a scrolled viewport (follow off)', () => {
+    const props = { rowHeight: ROW_HEIGHT, height: 200, overscan: 2, renderRow };
+    const { container, rerender } = render(<VirtualList {...props} items={rows(1000)} />);
+
+    const { viewport } = parts(container);
+    viewport.scrollTop = 1000 * ROW_HEIGHT - 200;
+    fireEvent.scroll(viewport);
+    expect(renderedIndices(container)).toContain(999);
+
+    rerender(<VirtualList {...props} items={rows(10)} />);
+
+    // All ten rows fit the 200px viewport, so all ten must render.
+    expect(renderedIndices(container)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  it('renders the tail when the list shrinks past the scroll position (follow off)', () => {
+    const props = { rowHeight: ROW_HEIGHT, height: 200, overscan: 2, renderRow };
+    const { container, rerender } = render(<VirtualList {...props} items={rows(1000)} />);
+
+    const { viewport } = parts(container);
+    viewport.scrollTop = 900 * ROW_HEIGHT;
+    fireEvent.scroll(viewport);
+
+    rerender(<VirtualList {...props} items={rows(300)} />);
+
+    // Clamped to maxScrollTop = 300 * 20 - 200 = 5800, so start = 5800/20 - 2 = 288.
+    expect(renderedIndices(container)).toEqual([288, 289, 290, 291, 292, 293, 294, 295, 296, 297, 298, 299]);
+  });
+
+  it('recovers when the list empties and refills while scrolled (follow off)', () => {
+    const props = { rowHeight: ROW_HEIGHT, height: 200, overscan: 2, renderRow };
+    const { container, rerender } = render(<VirtualList {...props} items={rows(1000)} />);
+
+    const { viewport } = parts(container);
+    viewport.scrollTop = 1000 * ROW_HEIGHT - 200;
+    fireEvent.scroll(viewport);
+
+    rerender(<VirtualList {...props} items={rows(0)} />);
+    expect(parts(container).window.children.length).toBe(0);
+
+    rerender(<VirtualList {...props} items={rows(20)} />);
+    expect(renderedIndices(container).length).toBeGreaterThan(0);
+    expect(renderedIndices(container)).toContain(19);
+  });
+
   it('renders nothing but a zero-height spacer for an empty list', () => {
     const { container } = render(
       <VirtualList items={[]} rowHeight={ROW_HEIGHT} height={200} renderRow={renderRow} />,
@@ -2366,7 +2417,15 @@ export function VirtualList<T>(props: VirtualListProps<T>): JSX.Element {
     if (next !== current) scrollTo(next);
   }, [scrollToIndex]);
 
-  const { start, end } = windowRange(scrollTop, height, rowHeight, count, overscan);
+  /*
+   * `scrollTop` is state but `count` is a prop, so a shrink — a filter change, a cleared
+   * capture — renders once with a scroll position the shortened list no longer has. Feeding
+   * that stale value straight to `windowRange` clamps `start` to `count` and yields an empty
+   * range: a list that looks like it lost its data. The browser fixes the element's own
+   * scrollTop a frame later at best (and jsdom never does), so clamp at the point of use.
+   */
+  const effectiveScrollTop = Math.min(scrollTop, maxScrollTop);
+  const { start, end } = windowRange(effectiveScrollTop, height, rowHeight, count, overscan);
   const rows = items.slice(start, end).map((item, offset) => renderRow(item, start + offset));
 
   return (
@@ -2441,7 +2500,7 @@ existing tokens and is legible in both schemes by construction):
 - [ ] **Step 14: Run test to verify it passes**
 
 Run: `pnpm vitest run src/panel/common/virtual-list.test.tsx`
-Expected: PASS, 13 tests.
+Expected: PASS, 16 tests.
 
 - [ ] **Step 15: Commit**
 
@@ -8165,6 +8224,19 @@ task text above. Per-section `## Contract gaps` notes are preserved as authored.
 | R10 | `EventList` needs a viewport height `VirtualList` does not derive | Measures its container with `ResizeObserver`, falling back to 480px. jsdom has neither, hence the fallback. |
 | R11 | Reading fixtures in jsdom throws `ENOENT` with the `readFileSync(new URL(...))` pattern `integration.test.ts` uses | Panel tests use Vite's `?raw` import. Any future jsdom test touching fixtures needs the same. |
 | R12 | Compound rows produced accessible names with no separators (`1RUN_STARTEDr_bad`), breaking `getByRole({ name })` | Rows and bars carry an explicit `aria-label`. Applies to `EventList` rows, waterfall bars, and `RunSelector` rows. |
+| R13 | **`VirtualList` rendered zero rows whenever `items` shrank under a scrolled viewport.** `scrollTop` is state and `count` is a prop, so the shrink render used a scroll position the shorter list no longer had; `windowRange` clamped `start` to `count` and returned an empty range. `follow: true` masked it — the follow effect re-pins first — which is why every shrink test in the original suite missed it | `VirtualList` clamps at the point of use: `Math.min(scrollTop, maxScrollTop)` feeds `windowRange`. Three `follow: false` shrink tests pin it. **Task 7 depends on this**: filtering a scrolled 10k list is a shrink, and the pre-fix symptom is an empty event list, which reads as data loss rather than a layout bug. |
+
+## Carried forward from the Task 5 implementation
+
+- **`VirtualList`'s `scrollToIndex` effect keys only on `scrollToIndex`, so requesting the same
+  index twice does not re-scroll.** That is deliberate — appends must not re-trigger a stale scroll
+  request — but it means a user who scrolls away and clicks the *same* row again gets no scroll.
+  **Tasks 7 and 8 need a nonce or an imperative handle** if re-scroll-to-same-index is wanted, which
+  for a click-to-locate interaction it probably is.
+- `summarizeEvent` can end in a lone UTF-16 surrogate when a structured payload's collapsed JSON
+  lands at exactly the 80-char cap with an emoji at that offset — it renders as a replacement box.
+  The string branch is safe because its quotes push it past the cap into `truncate`'s surrogate
+  repair. Narrow enough to leave, recorded so it is not rediscovered as a mystery.
 
 ## Carried forward from the Task 1–4 review
 

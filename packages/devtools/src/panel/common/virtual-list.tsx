@@ -106,7 +106,15 @@ export function VirtualList<T>(props: VirtualListProps<T>): JSX.Element {
     if (next !== current) scrollTo(next);
   }, [scrollToIndex]);
 
-  const { start, end } = windowRange(scrollTop, height, rowHeight, count, overscan);
+  /*
+   * `scrollTop` is state but `count` is a prop, so a shrink — a filter change, a cleared
+   * capture — renders once with a scroll position the shortened list no longer has. Feeding
+   * that stale value straight to `windowRange` clamps `start` to `count` and yields an empty
+   * range: a list that looks like it lost its data. The browser fixes the element's own
+   * scrollTop a frame later at best (and jsdom never does), so clamp at the point of use.
+   */
+  const effectiveScrollTop = Math.min(scrollTop, maxScrollTop);
+  const { start, end } = windowRange(effectiveScrollTop, height, rowHeight, count, overscan);
   const rows = items.slice(start, end).map((item, offset) => renderRow(item, start + offset));
 
   return (
