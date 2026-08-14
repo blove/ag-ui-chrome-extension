@@ -80,33 +80,52 @@ export const ISSUE_SEVERITY: Record<IssueCode, IssueSeverity> = {
 export interface Issue {
   code: IssueCode;
   severity: IssueSeverity;
+  /** Human-readable annotation shown against the offending event in the panel. */
+  message: string;
   /**
    * Sequence number this issue is anchored to.
    *
-   * For issues raised while folding a specific event, this is that record's `seq`.
-   * Five codes have no owning event — `run-never-terminated`, `unclosed-message`,
-   * `unclosed-tool-call`, a leftover-open `unbalanced-steps`, and `keepalive-gap` — and
-   * for those it is the seq of the LAST record attributed to the run, or `0` when the
-   * run recorded none. Derive it with `run.recordSeqs.at(-1) ?? 0`; indexing with
-   * `[length - 1]` is `number | undefined` under `noUncheckedIndexedAccess` and will
-   * not compile.
+   * Usually the `seq` of the record being folded when the issue was raised. Four codes
+   * have no owning record — `run-never-terminated`, `unclosed-message`,
+   * `unclosed-tool-call`, and a leftover-open `unbalanced-steps`, all raised at
+   * connection close — and for those it is the seq of the LAST record attributed to the
+   * run, or `0` when the run recorded none. Derive that with `run.recordSeqs.at(-1) ?? 0`;
+   * indexing with `[length - 1]` is `number | undefined` under `noUncheckedIndexedAccess`
+   * and will not compile.
+   *
+   * `keepalive-gap` is NOT in that group: a keepalive is itself a `CaptureRecord`, so the
+   * issue anchors to the seq of the keepalive that closed the gap.
    */
   seq: number;
-  /** Wall-clock offset, set only for issues raised at connection close. */
+  /**
+   * Wall-clock offset for issues not anchored to a folded event: the close timestamp for
+   * the four connection-close codes, and the arrival time of the late keepalive for
+   * `keepalive-gap`.
+   */
   tMs?: number;
   runId?: string;
   path?: string;
   opIndex?: number;
 }
 
-export interface CaptureRecord {
-  /**
-   * Discriminates a decoded protocol event from an SSE keepalive comment. Keepalives
-   * carry no event and exist only so the run builder can measure heartbeat gaps and
-   * raise `keepalive-gap` (requirements §7, Info). Without this the code would be
-   * unreachable, because the SSE parser's keepalive frames would have nowhere to go.
-   */
-  readonly kind: 'event' | 'keepalive';
+/**
+ * Build an `Issue` with the severity requirements §7 assigns to its code.
+ *
+ * This is the only sanctioned way to construct an `Issue`. `severity` stays a widened
+ * `IssueSeverity` on the interface — correlating it to `code` at the type level breaks the
+ * generic factory every emitter needs — so the guarantee that a code always carries its
+ * specified severity is upheld here rather than by the compiler.
+ */
+export function makeIssue(
+  code: IssueCode,
+  message: string,
+  seq: number,
+  extra: Partial<Pick<Issue, 'runId' | 'path' | 'opIndex' | 'tMs'>> = {},
+): Issue {
+  return { code, severity: ISSUE_SEVERITY[code], message, seq, ...extra };
+}
+
+interface CaptureRecordBase {
   readonly seq: number;
   readonly tMs: number;
   readonly connId: string;
@@ -116,22 +135,42 @@ export interface CaptureRecord {
    * must not double-count them.
    */
   readonly raw: unknown;
-  /**
-   * The decoded event, or `null` when the payload could not be parsed — such a record
-   * is still surfaced and flagged rather than dropped. Always `null` when
-   * `kind === 'keepalive'`.
-   */
-  readonly event: AguiEvent | null;
-  /** The SSE comment body, present only when `kind === 'keepalive'`. */
-  readonly comment?: string;
   issues: Issue[];
 }
 
-export type MessageRole = 'assistant' | 'reasoning';
+/**
+ * One decoded frame off the wire.
+ *
+ * A discriminated union rather than a flag plus optional fields, so the invariants hold
+ * structurally: a keepalive can never carry an event, and an event record can never carry
+ * a comment. That is what stops metrics from counting a keepalive as an event —
+ * requirements §5.4 requires keepalives be recorded but excluded from the event count.
+ */
+export type CaptureRecord =
+  | (CaptureRecordBase & {
+      readonly kind: 'event';
+      /**
+       * The decoded event, or `null` when the payload could not be parsed — such a record
+       * is still surfaced and flagged rather than dropped.
+       */
+      readonly event: AguiEvent | null;
+    })
+  | (CaptureRecordBase & {
+      readonly kind: 'keepalive';
+      /** The SSE comment body. Empty string for a bare `:` heartbeat. */
+      readonly comment: string;
+    });
+
+/**
+ * How a reconstructed message was produced. Deliberately NOT named `role`: the protocol
+ * carries its own `role` field on `TEXT_MESSAGE_START` and `TOOL_CALL_RESULT` with
+ * different semantics, and conflating the two invites `kind: event.role`.
+ */
+export type MessageKind = 'text' | 'reasoning';
 
 export interface ReconstructedMessage {
   messageId: string;
-  role: MessageRole;
+  kind: MessageKind;
   content: string;
   startedAtMs: number;
   endedAtMs?: number;

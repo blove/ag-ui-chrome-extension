@@ -10295,13 +10295,43 @@ them. Each was verified empirically before being adopted.
 | A17 | `Issue.seq` semantics documented; `Issue.tMs?: number` added | Five codes have no owning event. The plan's `finalizeRules` derived `seq` via `run.recordSeqs[run.recordSeqs.length - 1]`, which is `number \| undefined` under `noUncheckedIndexedAccess` and **does not compile**. Task 11 must use `run.recordSeqs.at(-1) ?? 0`. `tMs` exists so the close timestamp no longer has to be smuggled into the message string. |
 | A18 | `CaptureRecord` gains `kind: 'event' \| 'keepalive'` and `comment?`, and its identity fields are `readonly` | `keepalive-gap` was an **unproducible** `IssueCode`: the SSE parser emits keepalive frames, but `CaptureRecord` could not represent one and `JsonlLine` had no keepalive kind, so requirements §7's Info rule was unreachable and design §7's "covers every §7 rule" could not have been true. Task 14 must add a matching `JsonlKeepalive` line kind, and Task 13c must fold keepalive records to raise `keepalive-gap` on gaps > 15 s. `readonly` enforces design §6's promise that `raw` is never mutated. |
 
-**Downstream tasks affected by A14–A18:** Task 8 (`applyPatch` signature, no more `PatchOp` casts),
-Task 9 (build `StateFrame`s as union members; `patch` always set on deltas), Task 11
-(`finalizeRules` seq derivation; read `ISSUE_SEVERITY`; `state-patch-failed` reads `op` as
-`unknown`), Tasks 13a–13c (construct `CaptureRecord`s with `kind`; fold keepalives), Task 14
-(`JsonlKeepalive`), Task 16 (fixtures may include keepalive lines). Two plan snippets additionally
-will not compile as written for unrelated array-index reasons and must use `.at(-1)`:
-`frames[frames.length - 1].value` in Task 11 and `original[0].outcome` in Task 16.
+| A19 | `CaptureRecord` is a discriminated union on `kind`, not a flag plus optionals | As first landed, a keepalive could carry a decoded `event`, an event record could carry a `comment`, and `r.comment` read without any narrowing — all compiled. The union makes the invariants structural, which is what stops Task 12 counting a keepalive as an event; requirements §5.4 requires keepalives be recorded but **excluded from the event count**. Verified: all three incoherent literals are now compile errors. |
+| A20 | `makeIssue(code, message, seq, extra?)` is the only sanctioned `Issue` constructor | A14's table was advisory — `{code:'empty-text-delta', severity:'info'}` still compiled, which is the exact hole A14 was created to close. Correlating `severity` to `code` at the type level rejects the misgrade but breaks the generic factory every emitter needs (a known correlated-union limitation). The factory upholds the guarantee instead. |
+| A21 | `ReconstructedMessage.role: MessageRole` → `kind: MessageKind` (`'text' \| 'reasoning'`) | The protocol carries its own `role` on `TEXT_MESSAGE_START` and `TOOL_CALL_RESULT` with different semantics, so the old name invited `role: event.role` in Task 13a — where the fold constructs the message directly from event data. Renamed while there are zero consumers; after 13a it would cost edits across 13a–13c and 16. |
+
+### Keepalive attribution — decided here, previously unspecified
+
+A19 makes keepalives representable, but nothing in the requirements, design, or plan said how a
+**connection-scoped** keepalive attributes to a **run-scoped** issue. Settled:
+
+- A keepalive record does **not** enter `run.recordSeqs` — it is not a protocol event.
+- `keepalive-gap` attaches to the connection's currently open run, or to `ORPHANED_RUN_ID` when no
+  run is open on that connection.
+- `Issue.seq` is the seq of the keepalive that *closed* the gap; `Issue.tMs` is that keepalive's
+  arrival time. `keepalive-gap` is therefore **not** one of the connection-close codes that derive
+  seq from `recordSeqs.at(-1)`.
+- Task 12 excludes keepalives from `eventCountByType` (requirements §5.4) but includes their bytes
+  in `totalStreamBytes` — they are real bytes on the wire, and the point of tracking them is
+  diagnosing proxy buffering.
+- Task 14 must add a `JsonlKeepalive` line kind to BOTH the `JsonlLine` union and `KNOWN_KINDS`;
+  as the plan body stands, a keepalive line would decode as an `unrecognized kind` error.
+
+**Downstream tasks affected by A14–A21.** Every task below must reconcile the plan's pre-written
+code against the amended types; where they disagree, `types.ts` wins.
+
+| Task | What changes |
+|---|---|
+| 8 | `applyPatch(doc: unknown, ops: readonly unknown[]) => PatchResult`; drop every `as unknown as PatchOp[]` cast — they are no longer needed |
+| 9 | Build `StateFrame`s as union members, `patch` always set on deltas. The test asserting `frame.patch` is `undefined` on a snapshot is now dead — the type guarantees it. Un-narrowed `.patch`/`.failure` access is a `TS2339` |
+| 10, 11 | Construct issues via `makeIssue(...)` instead of object literals; `state-patch-failed` reads `result.op` as `unknown` and must narrow before rendering it. `finalizeRules` derives seq with `recordSeqs.at(-1) ?? 0` |
+| 12 | The `rec()` test helper must build `CaptureRecord`s with `kind: 'event'`. Exclude keepalives from `eventCountByType`, include their bytes in `totalStreamBytes` |
+| 13a–13c | Same `kind` requirement on every constructed record; `ReconstructedMessage.kind` replaces `role`; fold keepalives per the attribution rules above |
+| 14 | Add `JsonlKeepalive` to the `JsonlLine` union **and** to `KNOWN_KINDS` |
+| 16 | `runToPlain` must narrow on `frame.kind` before touching `patch`/`failure`; fixtures may include keepalive lines |
+
+Snippets that will not compile as written, for array-index reasons unrelated to these amendments,
+and must use `.at(-1)`: `frames[frames.length - 1].value` (Task 11), `original[0].outcome`
+(Task 16), and `run.stateTimeline[1]!.failure` (Task 13b).
 
 > **Authoritative source note.** Amendments A5–A12 changed Task 2's config files after that task
 > was committed. The inline code blocks in Task 2 above were **not** all retro-edited to match.
