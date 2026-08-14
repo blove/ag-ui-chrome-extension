@@ -73,12 +73,28 @@ export function createSseParser(): SseParser {
     push(chunk: string): SseFrame[] {
       buffer += chunk;
       const out: SseFrame[] = [];
-      let nl = buffer.indexOf('\n');
-      while (nl !== -1) {
-        handleLine(buffer.slice(0, nl), out);
-        buffer = buffer.slice(nl + 1);
-        nl = buffer.indexOf('\n');
+      let start = 0;
+      let i = 0;
+      while (i < buffer.length) {
+        const ch = buffer[i];
+        if (ch === '\n') {
+          handleLine(buffer.slice(start, i), out);
+          i += 1;
+          start = i;
+        } else if (ch === '\r') {
+          if (i === buffer.length - 1) {
+            // A trailing CR may be the first half of a CRLF pair split across
+            // chunks. Hold it in the buffer until the next push or flush().
+            break;
+          }
+          handleLine(buffer.slice(start, i), out);
+          i += buffer[i + 1] === '\n' ? 2 : 1;
+          start = i;
+        } else {
+          i += 1;
+        }
       }
+      buffer = buffer.slice(start);
       return out;
     },
 

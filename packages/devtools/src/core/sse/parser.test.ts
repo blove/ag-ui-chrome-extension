@@ -74,3 +74,61 @@ describe('createSseParser — basic framing', () => {
     expect(parser.push('\n\n\n')).toEqual([]);
   });
 });
+
+describe('createSseParser — chunk boundaries', () => {
+  it('reassembles a frame split mid-line across two pushes', () => {
+    const parser = createSseParser();
+    expect(parser.push('data: {"ty')).toEqual([]);
+    expect(parser.push('pe":"X"}\n\n')).toEqual([{ kind: 'event', data: '{"type":"X"}' }]);
+  });
+
+  it('reassembles a frame split exactly at the blank-line boundary', () => {
+    const parser = createSseParser();
+    expect(parser.push('data: {"type":"RUN_FINISHED"}\n')).toEqual([]);
+    expect(parser.push('\n')).toEqual([{ kind: 'event', data: '{"type":"RUN_FINISHED"}' }]);
+  });
+
+  it('reassembles a frame split one character at a time', () => {
+    const parser = createSseParser();
+    const wire = 'data: abc\n\n';
+    const frames: unknown[] = [];
+    for (const ch of wire) frames.push(...parser.push(ch));
+    expect(frames).toEqual([{ kind: 'event', data: 'abc' }]);
+  });
+
+  it('handles CRLF line endings', () => {
+    const parser = createSseParser();
+    const frames = parser.push('event: message\r\ndata: hi\r\n\r\n');
+    expect(frames).toEqual([{ kind: 'event', data: 'hi', eventName: 'message' }]);
+  });
+
+  it('handles a CRLF pair split across two pushes', () => {
+    const parser = createSseParser();
+    expect(parser.push('data: x\r')).toEqual([]);
+    expect(parser.push('\ndata: y\r\n\r\n')).toEqual([{ kind: 'event', data: 'x\ny' }]);
+  });
+
+  it('handles lone CR line endings', () => {
+    const parser = createSseParser();
+    const frames = parser.push('data: a\r\rdata: b\r\r');
+    // The final CR is held back: it may still turn out to be the CR of a CRLF pair.
+    expect(frames).toEqual([{ kind: 'event', data: 'a' }]);
+    expect(parser.push('data: c\r\r')).toEqual([{ kind: 'event', data: 'b' }]);
+  });
+
+  it('does not split on a CR that is followed by more content', () => {
+    const parser = createSseParser();
+    expect(parser.push('data: one\rdata: two\r\rtail')).toEqual([
+      { kind: 'event', data: 'one\ntwo' },
+    ]);
+  });
+
+  it('mixes CRLF and LF terminators in one stream', () => {
+    const parser = createSseParser();
+    const frames = parser.push('data: a\r\n\ndata: b\n\r\n');
+    expect(frames).toEqual([
+      { kind: 'event', data: 'a' },
+      { kind: 'event', data: 'b' },
+    ]);
+  });
+});
