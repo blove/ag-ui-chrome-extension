@@ -27,6 +27,11 @@ export function createStateTimeline(): StateTimeline {
   let snapshotSeen = false;
 
   return {
+    // The snapshot is stored by reference, not cloned: this is the hot path and the
+    // caller is the run builder, which hands over a freshly decoded payload. A caller
+    // that retains and mutates its own snapshot object would retroactively rewrite
+    // recorded history, so callers must treat what they pass here as owned by the
+    // timeline from that point on.
     applySnapshot(seq, tMs, snapshot) {
       value = snapshot;
       snapshotSeen = true;

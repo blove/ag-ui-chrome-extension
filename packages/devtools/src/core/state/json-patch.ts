@@ -236,6 +236,12 @@ function applyOne(doc: unknown, op: PatchOp): OpOutcome {
     }
 
     case 'copy': {
+      // The copied value is inserted BY REFERENCE, shared with the source subtree.
+      // That is observably safe only because every write path here shallow-copies
+      // before mutating (see `applyAt` / `terminalArray` / `terminalObject`), so a
+      // later write through either path never reaches the other. A future helper
+      // that mutates a node in place would break this silently — the copy-on-write
+      // discipline is load-bearing, not stylistic.
       const fromTokens = parsePointer(op.from);
       if (fromTokens === null) return { ok: false, reason: 'invalid-path' };
       const found = readAt(doc, fromTokens);
