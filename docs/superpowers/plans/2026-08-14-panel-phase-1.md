@@ -2205,6 +2205,57 @@ describe('VirtualList', () => {
     expect(renderedIndices(container)).not.toContain(39);
   });
 
+  /*
+   * `scrollTop` is state but `count` is a prop, so a shrink re-renders with a scroll position
+   * that no longer exists. Every other shrink test here has `follow` on, and the follow effect
+   * re-pins before the render is seen — these three deliberately leave it off, which is the
+   * filter case P7 hits on every keystroke.
+   */
+  it('renders the whole list when it shrinks under a scrolled viewport (follow off)', () => {
+    const props = { rowHeight: ROW_HEIGHT, height: 200, overscan: 2, renderRow };
+    const { container, rerender } = render(<VirtualList {...props} items={rows(1000)} />);
+
+    const { viewport } = parts(container);
+    viewport.scrollTop = 1000 * ROW_HEIGHT - 200;
+    fireEvent.scroll(viewport);
+    expect(renderedIndices(container)).toContain(999);
+
+    rerender(<VirtualList {...props} items={rows(10)} />);
+
+    // All ten rows fit the 200px viewport, so all ten must render.
+    expect(renderedIndices(container)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  it('renders the tail when the list shrinks past the scroll position (follow off)', () => {
+    const props = { rowHeight: ROW_HEIGHT, height: 200, overscan: 2, renderRow };
+    const { container, rerender } = render(<VirtualList {...props} items={rows(1000)} />);
+
+    const { viewport } = parts(container);
+    viewport.scrollTop = 900 * ROW_HEIGHT;
+    fireEvent.scroll(viewport);
+
+    rerender(<VirtualList {...props} items={rows(300)} />);
+
+    // Clamped to maxScrollTop = 300 * 20 - 200 = 5800, so start = 5800/20 - 2 = 288.
+    expect(renderedIndices(container)).toEqual([288, 289, 290, 291, 292, 293, 294, 295, 296, 297, 298, 299]);
+  });
+
+  it('recovers when the list empties and refills while scrolled (follow off)', () => {
+    const props = { rowHeight: ROW_HEIGHT, height: 200, overscan: 2, renderRow };
+    const { container, rerender } = render(<VirtualList {...props} items={rows(1000)} />);
+
+    const { viewport } = parts(container);
+    viewport.scrollTop = 1000 * ROW_HEIGHT - 200;
+    fireEvent.scroll(viewport);
+
+    rerender(<VirtualList {...props} items={rows(0)} />);
+    expect(parts(container).window.children.length).toBe(0);
+
+    rerender(<VirtualList {...props} items={rows(20)} />);
+    expect(renderedIndices(container).length).toBeGreaterThan(0);
+    expect(renderedIndices(container)).toContain(19);
+  });
+
   it('renders nothing but a zero-height spacer for an empty list', () => {
     const { container } = render(
       <VirtualList items={[]} rowHeight={ROW_HEIGHT} height={200} renderRow={renderRow} />,
@@ -2366,7 +2417,15 @@ export function VirtualList<T>(props: VirtualListProps<T>): JSX.Element {
     if (next !== current) scrollTo(next);
   }, [scrollToIndex]);
 
-  const { start, end } = windowRange(scrollTop, height, rowHeight, count, overscan);
+  /*
+   * `scrollTop` is state but `count` is a prop, so a shrink — a filter change, a cleared
+   * capture — renders once with a scroll position the shortened list no longer has. Feeding
+   * that stale value straight to `windowRange` clamps `start` to `count` and yields an empty
+   * range: a list that looks like it lost its data. The browser fixes the element's own
+   * scrollTop a frame later at best (and jsdom never does), so clamp at the point of use.
+   */
+  const effectiveScrollTop = Math.min(scrollTop, maxScrollTop);
+  const { start, end } = windowRange(effectiveScrollTop, height, rowHeight, count, overscan);
   const rows = items.slice(start, end).map((item, offset) => renderRow(item, start + offset));
 
   return (
@@ -2441,7 +2500,7 @@ existing tokens and is legible in both schemes by construction):
 - [ ] **Step 14: Run test to verify it passes**
 
 Run: `pnpm vitest run src/panel/common/virtual-list.test.tsx`
-Expected: PASS, 13 tests.
+Expected: PASS, 16 tests.
 
 - [ ] **Step 15: Commit**
 
@@ -2483,6 +2542,25 @@ function eventRecord(event: AguiEvent | null): CaptureRecord {
 
 function keepaliveRecord(comment: string): CaptureRecord {
   return { kind: 'keepalive', seq: 1, tMs: 0, connId: 'c_1', raw: null, issues: [], comment };
+}
+
+/**
+ * True if any UTF-16 code unit is an unpaired surrogate — the thing that renders as a
+ * replacement box. Checks the whole string, not just the end: a part sliced mid-pair puts one
+ * in the middle of the row, where the trailing-only check would miss it.
+ */
+function hasLoneSurrogate(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      i += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
 }
 
 describe('formatDuration', () => {
@@ -2534,6 +2612,29 @@ describe('formatBytes', () => {
 
   it('promotes to the next unit rather than rendering 1000 of the smaller one', () => {
     expect(formatBytes(999_999)).toBe('1 MB');
+  });
+
+  /*
+   * The byte unit renders with `Math.round`, not `toFixed(1)`, so its promotion threshold is
+   * 999.5 — not the 999.95 the loop uses one unit up. A `bytes < 1000` guard admits 999.5 and
+   * then rounds it to the `1000 B` the loop exists to prevent.
+   */
+  it('promotes at the byte boundary too, where rounding is to whole bytes', () => {
+    expect(formatBytes(999.4)).toBe('999 B');
+    expect(formatBytes(999.5)).toBe('1 kB');
+  });
+
+  it('never renders 1000 of a unit at any scale', () => {
+    const near = [999.4, 999.5, 999.9, 999.94, 999.95, 999.99, 999.999, 1000];
+    const bad: string[] = [];
+    // B through GB: `1000 TB` is the top unit overflowing, which no promotion can fix.
+    for (let exponent = 0; exponent <= 3; exponent += 1) {
+      for (const value of near) {
+        const rendered = formatBytes(value * 1000 ** exponent);
+        if (/^1000\b/.test(rendered)) bad.push(`${value * 1000 ** exponent} -> ${rendered}`);
+      }
+    }
+    expect(bad).toEqual([]);
   });
 
   it('scales through megabytes and gigabytes', () => {
@@ -2641,6 +2742,34 @@ describe('summarizeEvent', () => {
     expect(lastKept >= 0xd800 && lastKept <= 0xdbff).toBe(false);
   });
 
+  /*
+   * `truncate` repairs a split surrogate pair, but it only runs when the text is *over* the
+   * cap. Each branch that pre-slices its own part to exactly 80 units lands on
+   * `text.length <= max` and returns early, so the repair never sees it. Sweeping the emoji
+   * across the cap is what distinguishes "the one branch we thought about" from "every branch".
+   */
+  it('never leaves a lone surrogate at any emoji offset, in any branch', () => {
+    const payload = (n: number): string => `${'a'.repeat(n)}😀😀`;
+    const shapes: Record<string, (text: string) => CaptureRecord> = {
+      string: (text) => eventRecord({ type: 'TEXT_MESSAGE_CONTENT', delta: text }),
+      id: (text) => eventRecord({ type: 'TEXT_MESSAGE_START', messageId: text }),
+      name: (text) => eventRecord({ type: 'TOOL_CALL_START', toolCallName: text }),
+      jsonArray: (text) => eventRecord({ type: 'STATE_DELTA', delta: [{ op: 'add', path: '/a', value: text }] }),
+      jsonObject: (text) => eventRecord({ type: 'STATE_SNAPSHOT', snapshot: { t: text } }),
+      keepalive: (text) => keepaliveRecord(text),
+    };
+
+    const broken: string[] = [];
+    for (const [shape, make] of Object.entries(shapes)) {
+      for (let n = 0; n <= 120; n += 1) {
+        const summary = summarizeEvent(make(payload(n)));
+        if (summary.length > 80) broken.push(`${shape} n=${n}: ${summary.length} chars`);
+        if (hasLoneSurrogate(summary)) broken.push(`${shape} n=${n}: lone surrogate`);
+      }
+    }
+    expect(broken).toEqual([]);
+  });
+
   it('survives a payload that cannot be serialized', () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;
@@ -2695,10 +2824,15 @@ const BYTE_UNITS = ['B', 'kB', 'MB', 'GB', 'TB'] as const;
 /** `12.4 kB`, `840 B`. */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  if (bytes < 1000) return `${Math.round(bytes)} B`;
+  // Round before branching, like formatDuration: bytes render whole, so 999.5 is `1000 B` —
+  // the same "1000 of the smaller unit" the loop below refuses to emit one unit up.
+  if (Math.round(bytes) < 1000) return `${Math.round(bytes)} B`;
 
-  let value = bytes;
-  let unit = 0;
+  // Past the guard the value must promote, so the first division is unconditional. Leaving it
+  // to the loop would strand 999.5 <= bytes < 999.95 in the byte unit as `999.5 B` — a
+  // fractional byte count, which is the other half of the same rounding mismatch.
+  let value = bytes / 1000;
+  let unit = 1;
   // 999.95 rather than 1000: 999999 B rounds to `1000.0 kB` at one decimal, which should
   // have promoted to `1 MB`.
   while (value >= 999.95 && unit < BYTE_UNITS.length - 1) {
@@ -2714,7 +2848,16 @@ const ID_KEYS = ['messageId', 'toolCallId', 'runId', 'threadId'] as const;
 /** A bare name or label that reads better unquoted. */
 const NAME_KEYS = ['toolCallName', 'stepName', 'activityType', 'role'] as const;
 /** The payload itself. Quoted when it is text, compact JSON otherwise. */
-const VALUE_KEYS = ['delta', 'content', 'message', 'reason', 'result', 'value', 'snapshot', 'args'] as const;
+const VALUE_KEYS = [
+  'delta',
+  'content',
+  'message',
+  'reason',
+  'result',
+  'value',
+  'snapshot',
+  'args',
+] as const;
 
 /**
  * One-line summary of an event for a list row, e.g. `m_1 · "Hello"` — never longer than 80
@@ -2733,9 +2876,9 @@ export function summarizeEvent(record: CaptureRecord): string {
 
   const parts: string[] = [];
   const id = pickString(event, ID_KEYS);
-  if (id !== undefined) parts.push(collapse(id).slice(0, MAX_SUMMARY_CHARS));
+  if (id !== undefined) parts.push(sliceUnits(collapse(id), MAX_SUMMARY_CHARS));
   const name = pickString(event, NAME_KEYS);
-  if (name !== undefined) parts.push(collapse(name).slice(0, MAX_SUMMARY_CHARS));
+  if (name !== undefined) parts.push(sliceUnits(collapse(name), MAX_SUMMARY_CHARS));
   const value = pickValue(event, VALUE_KEYS);
   if (value !== undefined) {
     const rendered = renderValue(value);
@@ -2762,14 +2905,19 @@ function pickValue(event: AguiEvent, keys: readonly string[]): unknown {
 }
 
 function renderValue(value: unknown): string {
+  // The quotes push a full-length string part to 82 units, past the cap and into `truncate`'s
+  // own repair, so this is the one pre-slice that cannot strand a surrogate. Verified by the
+  // offset sweep in the tests, which covers this branch too.
   if (typeof value === 'string') return `"${collapse(value).slice(0, MAX_SUMMARY_CHARS)}"`;
-  if (value === null || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
   try {
     // `STATE_DELTA.delta` is an array of patch ops, not text, so the value branch has to
     // cope with structure as well as strings.
     const json = JSON.stringify(value);
     if (json === undefined) return '';
-    return collapse(json).slice(0, MAX_SUMMARY_CHARS);
+    return sliceUnits(collapse(json), MAX_SUMMARY_CHARS);
   } catch {
     // Circular structures reach here; a summary is never worth throwing over.
     return '[unserializable]';
@@ -2779,6 +2927,20 @@ function renderValue(value: unknown): string {
 /** Newlines and runs of whitespace would break the single-line row. */
 function collapse(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * `slice(0, max)` that refuses to cut a surrogate pair in half.
+ *
+ * Every branch that caps its own part before the parts are joined needs this: a part that
+ * lands on exactly `max` units makes the joined text exactly `max` long, `truncate` returns
+ * early on `text.length <= max`, and its repair never runs — so a half emoji reaches the row
+ * and renders as a replacement box.
+ */
+function sliceUnits(text: string, max: number): string {
+  const cut = text.slice(0, max);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
 function truncate(text: string, max: number): string {
@@ -2794,7 +2956,7 @@ function truncate(text: string, max: number): string {
 - [ ] **Step 19: Run test to verify it passes**
 
 Run: `pnpm vitest run src/panel/common/format.test.ts`
-Expected: PASS, 26 tests.
+Expected: PASS, 29 tests.
 
 - [ ] **Step 20: Commit**
 
@@ -8165,6 +8327,29 @@ task text above. Per-section `## Contract gaps` notes are preserved as authored.
 | R10 | `EventList` needs a viewport height `VirtualList` does not derive | Measures its container with `ResizeObserver`, falling back to 480px. jsdom has neither, hence the fallback. |
 | R11 | Reading fixtures in jsdom throws `ENOENT` with the `readFileSync(new URL(...))` pattern `integration.test.ts` uses | Panel tests use Vite's `?raw` import. Any future jsdom test touching fixtures needs the same. |
 | R12 | Compound rows produced accessible names with no separators (`1RUN_STARTEDr_bad`), breaking `getByRole({ name })` | Rows and bars carry an explicit `aria-label`. Applies to `EventList` rows, waterfall bars, and `RunSelector` rows. |
+| R13 | **`VirtualList` rendered zero rows whenever `items` shrank under a scrolled viewport.** `scrollTop` is state and `count` is a prop, so the shrink render used a scroll position the shorter list no longer had; `windowRange` clamped `start` to `count` and returned an empty range. `follow: true` masked it — the follow effect re-pins first — which is why every shrink test in the original suite missed it | `VirtualList` clamps at the point of use: `Math.min(scrollTop, maxScrollTop)` feeds `windowRange`. Three `follow: false` shrink tests pin it. **Task 7 depends on this**: filtering a scrolled 10k list is a shrink, and the pre-fix symptom is an empty event list, which reads as data loss rather than a layout bug. |
+
+## Carried forward from the Task 5 implementation
+
+- **`VirtualList`'s `scrollToIndex` effect keys only on `scrollToIndex`, so requesting the same
+  index twice does not re-scroll.** That is deliberate — appends must not re-trigger a stale scroll
+  request — but it means a user who scrolls away and clicks the *same* row again gets no scroll.
+  **Tasks 7 and 8 need a nonce or an imperative handle** if re-scroll-to-same-index is wanted, which
+  for a click-to-locate interaction it probably is.
+- ~~`summarizeEvent` can end in a lone UTF-16 surrogate when a structured payload's collapsed JSON
+  lands at exactly the 80-char cap.~~ **FIXED, and the original note was under-scoped.** It read as
+  a JSON-branch-only quirk; it was not. `summarizeEvent` pre-sliced at *three* sites — the `id` part,
+  the `name` part, and the JSON value — and each one cuts blind at 80 UTF-16 units. When a part
+  lands on exactly 80, the joined text is exactly 80, `truncate` returns early on
+  `text.length <= max`, and its surrogate repair never runs. A sweep of emoji offsets 0–120 across
+  six payload shapes found 8 failures in those three branches (`id` and `name` at n=77,79; the two
+  JSON shapes at their own offsets) — the `id`/`name` cases being exactly what an
+  "it's just the JSON branch" note would have let someone rediscover as a mystery.
+  All three sites now go through a `sliceUnits` helper that refuses to cut a pair in half.
+  The **string** branch is genuinely safe and deliberately left alone: its quotes push a
+  full-length part to 82 units, past the cap and into `truncate`'s own repair. The offset sweep
+  in `format.test.ts` covers it anyway, and asserts on the whole string rather than just its
+  end, since a part sliced mid-pair strands a surrogate in the *middle* of the row.
 
 ## Carried forward from the Task 1–4 review
 

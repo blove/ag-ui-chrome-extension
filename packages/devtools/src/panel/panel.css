@@ -79,3 +79,41 @@ body {
   max-width: 42ch;
   color: var(--agui-fg-muted);
 }
+
+/**
+ * Virtualized list (design §6). Purely structural: the list paints no colour of its own, so
+ * rows inherit `--agui-fg` / `--agui-bg` from `:root` and work in both schemes unchanged.
+ *
+ * The sizer carries the full scroll height so the scrollbar reflects the whole list rather
+ * than the rendered window, and the window is offset by transform rather than `top` so
+ * scrolling never triggers layout.
+ */
+.agui-vlist {
+  position: relative;
+  /* `height` is set inline from the prop: the viewport height is data, not style. */
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.agui-vlist__sizer {
+  position: relative;
+  width: 100%;
+}
+
+.agui-vlist__window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* `transform` and `--agui-vlist-row-height` are set inline; both are data. */
+}
+
+/*
+ * Rows are the caller's elements — VirtualList never wraps them, so that P7's `seq` keys are
+ * the only keys in play. Fixed height is imposed here instead.
+ */
+.agui-vlist__window > * {
+  box-sizing: border-box;
+  height: var(--agui-vlist-row-height);
+  overflow: hidden;
+}
