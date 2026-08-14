@@ -63,6 +63,7 @@ pnpm test             # Vitest, node environment
 pnpm typecheck        # tsc --noEmit
 pnpm lint             # ESLint
 pnpm verify:build     # assert dist/ is correct (run after pnpm build)
+pnpm screenshot:panel # render dist/ in a real browser and assert it is not blank
 pnpm package          # → packages/devtools/ag-ui-devtools-<version>.zip
 pnpm gen:events       # regenerate the AG-UI event table from @ag-ui/core
 ```
@@ -127,7 +128,9 @@ errors, so a protocol addition degrades gracefully between regenerations.
 
 ## Releases
 
-CI runs typecheck, lint, test, build, and `verify:build` on every push and pull request. Pushing a
+CI runs typecheck, lint, test, build, `verify:build`, and `screenshot:panel` on every push and pull
+request. `screenshot:panel` is the gate that catches an unstyled or blank panel — the whole of the
+rest of that list once passed on a `dist/` whose panel had no stylesheet at all. Pushing a
 `v*` tag runs the same checks and attaches `ag-ui-devtools-<version>.zip` to a GitHub release.
 Chrome Web Store upload is manual.
 

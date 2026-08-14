@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   verify:
-    name: typecheck, lint, test, build
+    name: typecheck, lint, test, build, visual gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -53,6 +53,59 @@ jobs:
       # that no sourcemap did.
       - name: Verify build output
         run: pnpm verify:build
+
+      # Everything below installs the browser the visual gate drives. It sits after the cheap
+      # gates on purpose: a typecheck, lint, test, build or verify failure should not pay for
+      # a Chromium download first.
+      #
+      # `pnpm exec` is filtered to the package because Playwright is a devDependency of
+      # `ag-ui-devtools` and NOT of the workspace root, so a bare `pnpm exec playwright` at the
+      # root fails with "Command 'playwright' not found".
+      - name: Resolve the Playwright version
+        id: playwright
+        run: |
+          version="$(pnpm --filter ag-ui-devtools exec playwright --version | awk '{print $2}')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Keyed on Playwright's own version, not the lockfile hash: Playwright pins the exact
+      # Chromium build it can drive, so a cache entry is only reusable while that version is
+      # unchanged. No `restore-keys` for the same reason — a prefix match here would restore a
+      # Chromium the installed Playwright refuses to launch.
+      - name: Cache the Playwright browser
+        id: playwright-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      # `chromium-headless-shell`, not `chromium`: measured, that is 199 MB / 7.0s instead of
+      # 558 MB / 13.7s, and it is what `chromium.launch()` actually starts — the script never
+      # asks for a headed browser, and Playwright resolves a default headless launch to the
+      # shell. Its `--with-deps` group is `chromium`, so the apt packages installed are the same
+      # ones. If the script ever needs a headed run, this has to go back to `chromium`; the
+      # failure if it does not is Playwright's own "executable doesn't exist" error.
+      - name: Install the Chromium headless shell
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter ag-ui-devtools exec playwright install --with-deps chromium-headless-shell
+
+      # The cache carries the browser but not the apt packages it links against, so a cache hit
+      # still has to install the system libraries — just not re-download the browser.
+      - name: Install Chromium system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm --filter ag-ui-devtools exec playwright install-deps chromium
+
+      # WHY THIS STEP EXISTS. Every gate above it — typecheck, lint, test, build, verify:build —
+      # passed on the previous milestone's `dist/`, whose panel had NO STYLESHEET AT ALL. None of
+      # them renders anything, so none of them could see it: the panel document is isolated and
+      # inherits nothing, and with no CSS it fell back to UA defaults — black text on a
+      # transparent ground, invisible under the DevTools dark theme. A human loading the unpacked
+      # extension was the only thing that caught it. Leaving that set as the whole gate means the
+      # next regression of that class ships. This step is the human, automated: it loads the
+      # built panel in a real browser, asserts it is painted in both colour schemes and that the
+      # two differ, and drives the fixtures through the panel's own file input to prove real data
+      # renders.
+      - name: Visual gate
+        run: pnpm screenshot:panel
 
   release:
     name: package and attach to release

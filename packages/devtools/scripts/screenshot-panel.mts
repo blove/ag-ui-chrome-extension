@@ -23,8 +23,9 @@
  * not painting at all, and the phase-1 output is the diagnosis.
  *
  * Run: `pnpm build && pnpm screenshot:panel` (first run also needs
- * `pnpm exec playwright install chromium`). `PANEL_DIST` points it at a different build, which
- * is how the gate itself is tested against a deliberately unstyled variant.
+ * `pnpm exec playwright install chromium-headless-shell` — the shell is what a default headless
+ * `chromium.launch()` resolves to, and it is what CI installs). `PANEL_DIST` points it at a
+ * different build, which is how the gate itself is tested against a deliberately unstyled variant.
  */
 import { createServer } from 'node:http';
 import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';

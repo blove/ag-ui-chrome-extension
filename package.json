@@ -16,7 +16,8 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "gen:events": "pnpm -r gen:events",
-    "verify:build": "pnpm --filter ag-ui-devtools verify:build"
+    "verify:build": "pnpm --filter ag-ui-devtools verify:build",
+    "screenshot:panel": "pnpm --filter ag-ui-devtools screenshot:panel"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
