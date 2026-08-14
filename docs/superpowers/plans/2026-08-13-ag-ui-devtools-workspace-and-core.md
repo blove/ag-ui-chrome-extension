@@ -97,13 +97,23 @@ consumer of `core/` (a CLI, a VS Code panel) can be added later without restruct
     "dev": "pnpm -r dev",
     "build": "pnpm -r build",
     "package": "pnpm -r package",
-    "test": "pnpm -r test",
+    "test": "pnpm -r run test:ci",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "gen:events": "pnpm -r gen:events"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
   }
 }
 ```
+
+**Note on the `test` script.** pnpm special-cases `test` as a lifecycle script: `pnpm -r test`
+exits **0 with no output** when no package defines a `test` script, whereas every other name
+fails with `ERR_PNPM_RECURSIVE_RUN_NO_SCRIPT`. Since Task 18 wires CI to `run: pnpm test`, the
+lifecycle form would let CI report success having executed zero tests. The root therefore
+delegates to the non-lifecycle name `test:ci`, which Task 2 defines alongside a plain `test`
+for local use.
 
 - [ ] **Step 3: Create `tsconfig.base.json`**
 
@@ -115,7 +125,7 @@ panel package inherits them.
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "moduleDetection": "force",
@@ -165,12 +175,20 @@ SOFTWARE.
 
 `pnpm-lock.yaml` is deliberately absent from this list — the lockfile is committed.
 
+`*.crx` and `*.pem` matter more than they look: Chrome's "Pack extension" writes a `.pem`
+private signing key next to the source directory, and committing it would let anyone forge a
+CRX that Chrome accepts under this extension's ID.
+
 ```
 node_modules/
 dist/
 *.zip
+*.crx
+*.pem
 *.log
 .DS_Store
+.idea/
+*.swp
 .vite/
 coverage/
 .env
@@ -257,6 +275,7 @@ The `package` script is a placeholder here and is replaced in Task 18 by
     "build": "vite build",
     "package": "vite build && cd dist && zip -qr ../ag-ui-devtools-0.1.0.zip .",
     "test": "vitest run",
+    "test:ci": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
     "gen:events": "tsx scripts/gen-event-table.ts"
@@ -10227,6 +10246,21 @@ as authored, except where a note is marked **RESOLVED AT ASSEMBLY**.
 | R6 | `applyPatch` reason for `replace` on a missing final key with an existing parent | `'path-not-found'`. Task 8 and Task 13 agree. |
 | R7 | Task 11's rules run before or after the builder's state transition? | **Before.** Otherwise `event-after-terminal` swallows the terminal event, `unopened-message-id` never fires on `TEXT_MESSAGE_END`, and `concurrent-text-messages` fires on every START. |
 | R8 | `validator/types.ts` is not in the locked contract | Added, holding `RunValidationState` + `ValidatorRule`, re-exported from `index.ts`. Avoids a rules↔index cycle and lets rule tests run before `index.ts` exists. |
+
+## Amendments made during execution
+
+Applied to the plan text above after a code review of the landed work, so later tasks inherit
+them. Each was verified empirically before being adopted.
+
+| # | Amendment | Why |
+|---|---|---|
+| A1 | Root `test` script delegates to `test:ci`, not `test`; Task 2's package defines both | `pnpm -r test` exits **0 with no output** when no package defines `test` — pnpm special-cases lifecycle script names. Task 18's CI runs `pnpm test`, so the lifecycle form could report success having run zero tests across a 16-task TDD plan. Every non-lifecycle name fails loudly with `ERR_PNPM_RECURSIVE_RUN_NO_SCRIPT`. |
+| A2 | `.gitignore` gains `*.crx`, `*.pem`, `.idea/`, `*.swp` | Chrome's "Pack extension" emits a `.pem` **private signing key** beside the source tree. Committing it lets anyone forge a CRX under this extension's ID. `*.zip` was already ignored; the two security-relevant artifacts were not. |
+| A3 | `tsconfig.base.json` `lib` raised to `ES2023` (`target` stays `ES2022`) | Chrome MV3 and Node 22 both support ES2023 built-ins. Task 9 and Task 12 use `findLast` and `toSorted`, which are hard `TS2550` errors under an ES2022 lib. A higher `lib` than `target` is the intended pattern. |
+| A4 | Root `package.json` gains `pnpm.onlyBuiltDependencies: ["esbuild"]` | pnpm 10 blocks dependency postinstall scripts by default; without this every install and CI run prints an "Ignored build scripts: esbuild" warning, training people to scroll past a supply-chain notice. |
+
+Considered and deliberately **not** adopted: a `packageManager` integrity hash (pnpm/action-setup
+reads the version without it), and an upper bound on the `engines.node` range.
 
 ## Spec corrections found while planning
 
