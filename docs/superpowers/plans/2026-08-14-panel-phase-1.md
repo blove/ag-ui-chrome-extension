@@ -4484,11 +4484,30 @@ Append to `src/panel/panel.css`:
   cursor: pointer;
 }
 
+/* Tone is a glyph as well as a hue, so error and warning stay separable without colour vision. */
 .agui-issue-badge__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentcolor;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  font-size: 10px;
+  line-height: 1;
+  color: currentcolor;
+}
+
+.agui-issue-badge__dot::before {
+  content: '•';
+}
+
+.agui-issue-badge[data-tone='error'] .agui-issue-badge__dot::before {
+  content: '×';
+  font-size: 12px;
+}
+
+.agui-issue-badge[data-tone='warning'] .agui-issue-badge__dot::before {
+  content: '▲';
+  font-size: 8px;
 }
 
 .agui-issue-badge[data-tone='error'] {
@@ -4960,17 +4979,21 @@ every pair below: the weakest is muted text on a tinted row at 4.65:1 (light) an
   color: var(--agui-fg-muted);
 }
 
+/* Severity is a hue *and* a border style, so the three ranks survive a colour-blind reading. */
 .agui-event-row[data-severity='error'] {
+  border-left-style: solid;
   border-left-color: var(--agui-severity-error);
   background: var(--agui-severity-error-bg);
 }
 
 .agui-event-row[data-severity='warning'] {
+  border-left-style: dashed;
   border-left-color: var(--agui-severity-warning);
   background: var(--agui-severity-warning-bg);
 }
 
 .agui-event-row[data-severity='info'] {
+  border-left-style: dotted;
   border-left-color: var(--agui-severity-info);
   background: var(--agui-severity-info-bg);
 }
