@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/preact';
+import { act, render, screen, fireEvent } from '@testing-library/preact';
 // `?raw` rather than `readFileSync(new URL(...))`: under the jsdom project `import.meta.url` is
 // not a filesystem URL, so the node-style read resolves to the wrong path.
 import malformedJsonl from '../../../test/fixtures/malformed.agui.jsonl?raw';
@@ -103,6 +103,27 @@ describe('Waterfall', () => {
     expect(screen.getByRole('button', { name: /^tool get_weather/ }).dataset.hovered).toBe('true');
     fireEvent.mouseLeave(bar);
     expect(screen.getByRole('button', { name: /^tool get_weather/ }).dataset.hovered).toBe('false');
+  });
+
+  it('lets a bar take focus and selects it from the keyboard', () => {
+    // Bars are not virtualized, so a real button is all it takes for Tab to reach every one of
+    // them — but they carry no text, which is why the emphasis has to follow focus too.
+    const store = createPanelStore(fixtureState('happy'));
+    render(<Waterfall store={store} collapsed={false} />);
+
+    const bar = screen.getByRole('button', { name: /^tool get_weather/ });
+    // A real `focus()` rather than `fireEvent.focus`, so this also proves the element is
+    // focusable at all — but Preact re-renders off a microtask, so the flush needs `act`.
+    act(() => {
+      bar.focus();
+    });
+    expect(document.activeElement).toBe(bar);
+    expect(screen.getByRole('button', { name: /^tool get_weather/ }).dataset.hovered).toBe('true');
+
+    // Enter on a focused button is a click; the browser synthesizes it, so this is what a
+    // keyboard user's activation reaches.
+    fireEvent.click(bar);
+    expect(store.get().selectedSeq).toBe(7);
   });
 
   it('collapses to one summary line that expands on click', () => {
