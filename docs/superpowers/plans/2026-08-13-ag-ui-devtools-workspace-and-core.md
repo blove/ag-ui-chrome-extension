@@ -471,6 +471,22 @@ export default tseslint.config(
           message:
             'core/ must stay Chrome-free. Move Chrome API usage to sw/, relay/, inject/, or panel/ and pass plain data into core/.',
         },
+        // Amendment A5: tsconfig `lib` includes DOM (the panel needs it) and TypeScript
+        // cannot express a per-directory `lib`, so `document`/`window`/`localStorage`
+        // typecheck inside core/ even though core/ runs under Node in Vitest. ESLint is the
+        // only place this boundary can actually be enforced.
+        {
+          name: 'document',
+          message: 'core/ must run under Node. Keep DOM access in panel/, inject/, or relay/.',
+        },
+        {
+          name: 'window',
+          message: 'core/ must run under Node. Keep DOM access in panel/, inject/, or relay/.',
+        },
+        {
+          name: 'localStorage',
+          message: 'core/ must run under Node and must not persist anything. See requirements §11.',
+        },
       ],
     },
   },
@@ -10258,6 +10274,7 @@ them. Each was verified empirically before being adopted.
 | A2 | `.gitignore` gains `*.crx`, `*.pem`, `.idea/`, `*.swp` | Chrome's "Pack extension" emits a `.pem` **private signing key** beside the source tree. Committing it lets anyone forge a CRX under this extension's ID. `*.zip` was already ignored; the two security-relevant artifacts were not. |
 | A3 | `tsconfig.base.json` `lib` raised to `ES2023` (`target` stays `ES2022`) | Chrome MV3 and Node 22 both support ES2023 built-ins. Task 9 and Task 12 use `findLast` and `toSorted`, which are hard `TS2550` errors under an ES2022 lib. A higher `lib` than `target` is the intended pattern. |
 | A4 | Root `package.json` gains `pnpm.onlyBuiltDependencies: ["esbuild"]` | pnpm 10 blocks dependency postinstall scripts by default; without this every install and CI run prints an "Ignored build scripts: esbuild" warning, training people to scroll past a supply-chain notice. |
+| A5 | Task 2's `no-restricted-globals` on `src/core/**` also bans `document`, `window`, `localStorage` — not just `chrome` | `lib` must include DOM for the Preact panel, and TypeScript cannot scope `lib` per directory, so DOM globals typecheck inside `core/` despite `core/` being required to run under Node in Vitest. ESLint is the only enforcement point. `localStorage` additionally violates requirements §11's no-persistence guarantee. |
 
 Considered and deliberately **not** adopted: a `packageManager` integrity hash (pnpm/action-setup
 reads the version without it), and an upper bound on the `engines.node` range.
