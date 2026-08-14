@@ -27,6 +27,8 @@ is stated.
 | P6 | Live list tails while pinned to the bottom; scrolling up stops the follow | The console/terminal convention. Chosen without debate as the least surprising behaviour. |
 | P7 | The list's left gutter shows `CaptureRecord.seq`, not a row index | Filtering reorders visible rows. `seq` is stable, and it is literally what `Issue.seq` refers to, so an issue and its event stay cross-referenceable under any filter. |
 | P8 | **Build the panel against imported fixtures before the capture layer exists** | See §7. This is the highest-leverage sequencing decision in the document. |
+| P9 | **Eviction is surfaced, never silent.** When the ring buffer drops events, the list shows a truncation marker at the boundary and the toolbar carries a persistent dropped-event count | Sessions are expected to be long and ongoing with multiple runs, so the 5k-event / 8MB default *will* evict in normal use. Requirements §15 asks for a visible "buffer full" state but §9 gives it no home. A panel that silently renders a truncated stream is the same class of trust failure as a hidden validator issue — the user would compute TTFT from a run whose start had been evicted and never know. |
+| P10 | The scope bar's run selector is a **searchable, virtualized list**, not a plain dropdown | Follows from the same answer: with many runs per session, a 4-item dropdown assumption breaks. Runs are labelled by thread, outcome, and issue count so the interesting one is findable without opening Runs. |
 
 ---
 
@@ -52,7 +54,9 @@ The default tab, and the most complex.
 
 **Waterfall strip** sits directly under the toolbar: run bar, message bars, tool bars, step bars,
 with stalls marked. Hovering a bar highlights the corresponding events in the list. All of its
-inputs already exist in `RunMetrics`.
+inputs already exist in `RunMetrics`. It collapses at the same ~600px breakpoint as the detail pane
+(P4) — at that width it is the least load-bearing band on screen, and the alternative is squeezing
+the event list from both ends. Collapsed, it becomes a single-line summary that expands on click.
 
 **Event list** (left, or top when narrow). Virtualized. Each row is `seq`, event type, and a
 one-line summary. Rows carrying issues get a left border and a tinted background in the issue's
@@ -147,14 +151,24 @@ Live replay into a running page stays out; the panel remains read-only, per §2'
 
 ---
 
-## 9. Open questions
+## 9. Questions resolved during review
 
-1. **Does the waterfall earn its vertical space at narrow widths?** It may need to collapse below
-   the same ~600px breakpoint as the detail pane. Decide against a real capture.
-2. **How many runs does a typical session actually have?** If the answer is nearly always one, P3's
-   scope bar is over-engineered and could collapse to a static label. Worth measuring before
-   building the dropdown.
-3. **Passive detection via `chrome.devtools.network` is a second, weaker detection path** than the
+1. **Does the waterfall earn its vertical space at narrow widths?** **Resolved: no.** It collapses
+   at the same ~600px breakpoint as the detail pane, to a single-line summary that expands on click.
+2. **How many runs does a typical session actually have?** **Resolved: sessions are long and
+   ongoing, with more than one run.** This confirms P3's scope bar rather than collapsing it, and
+   drives two additions — P9 (eviction must be visible, because the ring buffer will actually evict
+   in normal use) and P10 (the run selector must be searchable and virtualized, not a plain
+   dropdown). It also raises the stakes on virtualization in §6: the list is a long-session
+   component, not a convenience.
+
+## 10. Open questions
+
+1. **Passive detection via `chrome.devtools.network` is a second, weaker detection path** than the
    content-based classifier in `core/`. It sees completed responses rather than live frames, so it
    can report "AG-UI detected" but never decode. Keeping the two paths from disagreeing is a real
    maintenance cost that P5 accepts.
+2. **What is the right ring-buffer default for a long ongoing session?** 5k events / 8MB comes from
+   requirements §11 and was chosen before "long and ongoing" was established. P9 makes eviction
+   visible rather than silent, which is the safety property; whether the default should be larger is
+   a separate question best answered from a real capture.
