@@ -336,3 +336,207 @@ describe('createRunBuilder — tool calls, state and steps', () => {
     expect(activity.updatedAtMs).toBe(20);
   });
 });
+
+describe('createRunBuilder — chunk expansion and connection close', () => {
+  function rec(seq: number, tMs: number, connId: string, event: AguiEvent): CaptureRecord {
+    return { kind: 'event', seq, tMs, connId, raw: event, event, issues: [] };
+  }
+
+  /** A keepalive frame: the comment arm of the union, carrying no `event` at all. */
+  function keepalive(seq: number, tMs: number, connId: string, comment: string): CaptureRecord {
+    return { kind: 'keepalive', seq, tMs, connId, raw: `:${comment}\n\n`, comment, issues: [] };
+  }
+
+  it('reconstructs the same message content from chunks as from an explicit triad', () => {
+    const chunked = createRunBuilder({ expandChunks: true });
+    chunked.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    chunked.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'm1', role: 'assistant', delta: 'Hel' }));
+    chunked.addRecord(rec(3, 20, 'c1', { type: 'TEXT_MESSAGE_CHUNK', delta: 'lo ' }));
+    chunked.addRecord(rec(4, 30, 'c1', { type: 'TEXT_MESSAGE_CHUNK', delta: 'world' }));
+
+    const explicit = createRunBuilder({ expandChunks: false });
+    explicit.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    explicit.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_START', messageId: 'm1', role: 'assistant' }));
+    explicit.addRecord(rec(3, 10, 'c1', { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'Hel' }));
+    explicit.addRecord(rec(4, 20, 'c1', { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'lo ' }));
+    explicit.addRecord(rec(5, 30, 'c1', { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'world' }));
+
+    const fromChunks = chunked.getRun('r1')!.messages.get('m1')!;
+    const fromTriad = explicit.getRun('r1')!.messages.get('m1')!;
+
+    expect(fromChunks.content).toBe('Hello world');
+    expect(fromChunks.content).toBe(fromTriad.content);
+    expect(fromChunks.kind).toBe(fromTriad.kind);
+
+    // expansion feeds metrics too: the chunk record at tMs 10 became the first content delta
+    expect(chunked.getRun('r1')!.metrics.ttftMs).toBe(10);
+    expect(chunked.getRun('r1')!.metrics.eventCountByType).toEqual({
+      RUN_STARTED: 1,
+      TEXT_MESSAGE_START: 1,
+      TEXT_MESSAGE_CONTENT: 3,
+    });
+  });
+
+  it('does not reconstruct chunked messages when expandChunks is false', () => {
+    const builder = createRunBuilder({ expandChunks: false });
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'm1', role: 'assistant', delta: 'Hel' }));
+    builder.addRecord(rec(3, 20, 'c1', { type: 'TEXT_MESSAGE_CHUNK', delta: 'lo' }));
+
+    const run = builder.getRun('r1')!;
+    expect(run.messages.size).toBe(0);
+    expect(run.recordSeqs).toEqual([1, 2, 3]);
+    expect(run.metrics.eventCountByType).toEqual({ RUN_STARTED: 1, TEXT_MESSAGE_CHUNK: 2 });
+  });
+
+  it('expands TOOL_CALL_CHUNK into a start plus accumulated args', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(
+      rec(2, 10, 'c1', { type: 'TOOL_CALL_CHUNK', toolCallId: 'tc1', toolCallName: 'search', delta: '{"q":' }),
+    );
+    builder.addRecord(rec(3, 20, 'c1', { type: 'TOOL_CALL_CHUNK', delta: '1}' }));
+
+    const call = builder.getRun('r1')!.toolCalls.get('tc1')!;
+    expect(call.toolCallName).toBe('search');
+    expect(call.argsText).toBe('{"q":1}');
+    expect(call.closed).toBe(false);
+  });
+
+  it('attaches chunk-expansion issues to the run even when nothing could be synthesized', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TOOL_CALL_CHUNK', delta: '{}' }));
+
+    const run = builder.getRun('r1')!;
+    expect(run.recordSeqs).toEqual([1, 2]);
+
+    const issue = run.issues.find((candidate) => candidate.code === 'chunk-missing-tool-call-id')!;
+    expect(issue.seq).toBe(2);
+    expect(issue.runId).toBe('r1');
+  });
+
+  it('raises run-never-terminated and aborts the run when the connection closes mid-run', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_START', messageId: 'm1', role: 'assistant' }));
+    builder.addRecord(rec(3, 20, 'c1', { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'hi' }));
+    builder.closeConnection('c1', 100);
+
+    const run = builder.getRun('r1')!;
+    const raised = run.issues.filter((issue) => issue.code === 'run-never-terminated');
+
+    expect(raised).toHaveLength(1);
+    expect(raised[0]!.severity).toBe('error');
+    expect(raised[0]!.runId).toBe('r1');
+    expect(raised[0]!.seq).toBe(3);
+    expect(run.outcome).toBe('aborted');
+    expect(run.endedAtMs).toBe(100);
+    expect(run.metrics.durationMs).toBe(100);
+  });
+
+  it('does not raise run-never-terminated for a run that already finished, and closes once', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' }));
+    builder.closeConnection('c1', 100);
+    builder.closeConnection('c1', 200);
+
+    const run = builder.getRun('r1')!;
+    expect(run.issues.filter((issue) => issue.code === 'run-never-terminated')).toEqual([]);
+    expect(run.outcome).toBe('finished');
+    expect(run.endedAtMs).toBe(10);
+  });
+
+  it('closes only the runs belonging to the connection that closed', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'cA', { type: 'RUN_STARTED', threadId: 'tA', runId: 'rA' }));
+    builder.addRecord(rec(2, 1, 'cB', { type: 'RUN_STARTED', threadId: 'tB', runId: 'rB' }));
+    builder.closeConnection('cA', 50);
+
+    expect(builder.getRun('rA')!.outcome).toBe('aborted');
+    expect(builder.getRun('rB')!.outcome).toBe('running');
+    expect(builder.getRun('rB')!.issues.some((issue) => issue.code === 'run-never-terminated')).toBe(false);
+  });
+
+  it('records keepalives without counting them as events', () => {
+    const builder = createRunBuilder();
+    const started = { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' };
+
+    builder.addRecord(rec(1, 0, 'c1', started));
+    builder.addRecord(keepalive(2, 5_000, 'c1', 'ka'));
+    builder.addRecord(keepalive(3, 10_000, 'c1', ''));
+
+    const run = builder.getRun('r1')!;
+
+    // requirements §5.4: keepalives are recorded but excluded from the event count, while
+    // their bytes still count — diagnosing proxy buffering is the whole point of keeping them.
+    expect(run.recordSeqs).toEqual([1]);
+    expect(run.metrics.eventCountByType).toEqual({ RUN_STARTED: 1 });
+    expect(run.metrics.totalStreamBytes).toBe(
+      JSON.stringify(started).length +
+        JSON.stringify(':ka\n\n').length +
+        JSON.stringify(':\n\n').length,
+    );
+    expect(run.issues.filter((issue) => issue.code === 'keepalive-gap')).toEqual([]);
+  });
+
+  it('raises keepalive-gap on the keepalive that closed a gap longer than 15 s', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(keepalive(2, 1_000, 'c1', 'ka'));
+    builder.addRecord(keepalive(3, 12_000, 'c1', 'ka')); // 11 s — under the threshold
+    builder.addRecord(keepalive(4, 40_000, 'c1', 'ka')); // 28 s — over it
+
+    const run = builder.getRun('r1')!;
+    const gaps = run.issues.filter((issue) => issue.code === 'keepalive-gap');
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.severity).toBe('info');
+    expect(gaps[0]!.runId).toBe('r1');
+    // anchored to the keepalive that CLOSED the gap, not the one that opened it
+    expect(gaps[0]!.seq).toBe(4);
+    expect(gaps[0]!.tMs).toBe(40_000);
+    expect(run.recordSeqs).toEqual([1]);
+  });
+
+  it('attaches a keepalive gap to the orphaned run when the connection has no run', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(keepalive(1, 0, 'c1', 'ka'));
+    builder.addRecord(keepalive(2, 30_000, 'c1', 'ka'));
+
+    const orphan = builder.getRun(ORPHANED_RUN_ID)!;
+    const gaps = orphan.issues.filter((issue) => issue.code === 'keepalive-gap');
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.seq).toBe(2);
+    expect(gaps[0]!.runId).toBe(ORPHANED_RUN_ID);
+    // a keepalive is not a protocol event: it contributes no record seqs, so the orphaned
+    // run is still empty as far as `runs()` is concerned
+    expect(orphan.recordSeqs).toEqual([]);
+    expect(builder.runs()).toEqual([]);
+  });
+
+  it('tracks the keepalive gap per connection, not builder-wide', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'cA', { type: 'RUN_STARTED', threadId: 'tA', runId: 'rA' }));
+    builder.addRecord(rec(2, 0, 'cB', { type: 'RUN_STARTED', threadId: 'tB', runId: 'rB' }));
+    builder.addRecord(keepalive(3, 1_000, 'cA', 'ka'));
+    builder.addRecord(keepalive(4, 2_000, 'cB', 'ka'));
+    builder.addRecord(keepalive(5, 30_000, 'cA', 'ka'));
+    builder.addRecord(keepalive(6, 31_000, 'cB', 'ka'));
+
+    // 29 s on cA and 29 s on cB — one gap each, not one interleaved 1 s gap each
+    expect(builder.getRun('rA')!.issues.filter((issue) => issue.code === 'keepalive-gap')).toHaveLength(1);
+    expect(builder.getRun('rB')!.issues.filter((issue) => issue.code === 'keepalive-gap')).toHaveLength(1);
+  });
+});

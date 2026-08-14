@@ -1,5 +1,6 @@
 import {
   ORPHANED_RUN_ID,
+  makeIssue,
   type AguiEvent,
   type CaptureRecord,
   type Issue,
@@ -12,8 +13,9 @@ import {
 } from '../model/types';
 import { applyPatch } from '../state/json-patch';
 import { createStateTimeline, type StateTimeline } from '../state/timeline';
-import { runRules, type RunValidationState } from '../validator';
+import { runRules, finalizeRules, type RunValidationState } from '../validator';
 import { computeMetrics } from '../metrics/run-metrics';
+import { createChunkExpanderState, expandChunk, type ChunkExpanderState } from './chunk-expander';
 
 /**
  * The `event` arm of the `CaptureRecord` union — the only arm the fold decodes. Naming it
@@ -49,6 +51,15 @@ interface RunEntry {
   metricsDirty: boolean;
 }
 
+/** The `keepalive` arm of the `CaptureRecord` union — no `event`, a `comment` instead. */
+type KeepaliveRecord = Extract<CaptureRecord, { kind: 'keepalive' }>;
+
+/**
+ * requirements §7: a heartbeat gap longer than this is an Info-level hint that something —
+ * usually a proxy — is buffering the stream. Strictly greater, so an exactly-15s gap is fine.
+ */
+const KEEPALIVE_GAP_MS = 15_000;
+
 interface ConnEntry {
   connId: string;
   method?: string;
@@ -57,6 +68,9 @@ interface ConnEntry {
   openRunId?: string;
   runIds: string[];
   closedAtMs?: number;
+  chunkState: ChunkExpanderState;
+  /** Arrival time of the last keepalive on this connection; gaps are measured against it. */
+  lastKeepaliveMs?: number;
 }
 
 function str(value: unknown): string | undefined {
@@ -134,6 +148,7 @@ function createEntry(run: Run): RunEntry {
 }
 
 export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
+  const expandChunks = options.expandChunks ?? true;
   const stallThresholdMs = options.stallThresholdMs ?? 2000;
   const entries = new Map<string, RunEntry>();
   const order: string[] = [];
@@ -142,7 +157,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
   function ensureConn(connId: string): ConnEntry {
     let conn = conns.get(connId);
     if (!conn) {
-      conn = { connId, runIds: [] };
+      conn = { connId, runIds: [], chunkState: createChunkExpanderState() };
       conns.set(connId, conn);
     }
     return conn;
@@ -425,15 +440,54 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     }
   }
 
+  /**
+   * Fold one keepalive frame.
+   *
+   * A keepalive is connection-scoped but every `Issue` is run-scoped, so the gap attaches to
+   * the connection's current run, or to the orphaned run when the connection has none. It is
+   * not a protocol event: it resolves nothing, and it never enters `run.recordSeqs`.
+   */
+  function foldKeepalive(conn: ConnEntry, record: KeepaliveRecord): void {
+    const open = conn.openRunId === undefined ? undefined : entries.get(conn.openRunId);
+    const entry = open ?? ensureOrphanEntry(conn.connId, record.tMs);
+
+    // The bytes are real bytes on the wire, so the record still goes to `computeMetrics`,
+    // which counts them in `totalStreamBytes` while `kind` keeps them out of
+    // `eventCountByType`. `noteRecord` is deliberately not used: it pushes `recordSeqs`.
+    entry.records.push(record);
+    entry.metricsDirty = true;
+
+    const previousMs = conn.lastKeepaliveMs;
+    conn.lastKeepaliveMs = record.tMs;
+    if (previousMs === undefined) return;
+
+    const gapMs = record.tMs - previousMs;
+    if (gapMs <= KEEPALIVE_GAP_MS) return;
+
+    // Anchored to the keepalive that CLOSED the gap — it is a real record with a real seq,
+    // which is why `keepalive-gap` is not one of the codes `finalizeRules` derives a seq for.
+    attachIssues(entry, [
+      makeIssue(
+        'keepalive-gap',
+        `Keepalive gap of ${gapMs}ms on connection ${conn.connId} exceeds ${KEEPALIVE_GAP_MS}ms`,
+        record.seq,
+        { tMs: record.tMs },
+      ),
+    ]);
+  }
+
   function addRecord(record: CaptureRecord): void {
     const conn = ensureConn(record.connId);
 
-    // A keepalive is not a protocol event: it carries a `comment` and no `event` at all,
-    // so it resolves no run and never enters `recordSeqs`. Task 13c folds it for
-    // `keepalive-gap` and for its bytes; here it is simply not part of the event stream.
-    // Narrowing on `kind` first is also what makes `record.event` legal below.
-    if (record.kind === 'keepalive') return;
+    // 1. A keepalive carries no event to fold — only timing and bytes. Splitting the union
+    //    here is also what makes every `record.event` access below legal.
+    if (record.kind === 'keepalive') {
+      foldKeepalive(conn, record);
+      return;
+    }
 
+    // 2. An unparseable frame carries no event to fold; it still belongs to the run's
+    //    record list and its capture-time issues still surface on the run.
     if (record.event === null) {
       const open = conn.openRunId === undefined ? undefined : entries.get(conn.openRunId);
       const entry = open ?? ensureOrphanEntry(conn.connId, record.tMs);
@@ -442,12 +496,37 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
       return;
     }
 
-    const entry = resolveRun(conn, record.event, record);
-    const issues = runRules(record.event, record, entry.validation);
-    applyTransition(entry, record.event, record);
-    noteRecord(entry, record, record.event, true);
-    attachIssues(entry, issues);
-    attachIssues(entry, record.issues);
+    // 3. Chunk expansion, when enabled, turns one *_CHUNK into its triad members.
+    let events: AguiEvent[];
+    let expansionIssues: Issue[];
+    if (expandChunks) {
+      const expansion = expandChunk(record.event, conn.chunkState, record.seq);
+      events = expansion.events;
+      expansionIssues = expansion.issues;
+    } else {
+      events = [record.event];
+      expansionIssues = [];
+    }
+
+    // 4. Resolve, validate (pure), then mutate — the builder owns every state change.
+    let first: RunEntry | undefined;
+    for (let i = 0; i < events.length; i += 1) {
+      const event = events[i]!;
+      const entry = resolveRun(conn, event, record);
+      if (first === undefined) first = entry;
+      const issues = runRules(event, record, entry.validation);
+      applyTransition(entry, event, record);
+      // Only the first expanded event carries the raw frame, so its bytes are counted once.
+      noteRecord(entry, record, event, i === 0);
+      attachIssues(entry, issues);
+    }
+
+    // 5. Record bookkeeping and issue attachment for the record as a whole.
+    const openEntry = conn.openRunId === undefined ? undefined : entries.get(conn.openRunId);
+    const target = first ?? openEntry ?? ensureOrphanEntry(conn.connId, record.tMs);
+    if (events.length === 0) noteRecord(target, record, null, true);
+    attachIssues(target, expansionIssues);
+    attachIssues(target, record.issues);
   }
 
   function syncMetrics(entry: RunEntry): void {
@@ -472,7 +551,18 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
       conn.closedAtMs = tMs;
       for (const runId of conn.runIds) {
         const entry = entries.get(runId);
-        if (entry) syncMetrics(entry);
+        if (entry === undefined) continue;
+        // `finalizeRules` is the SOLE owner of every run-end issue, including
+        // `run-never-terminated`. It derives `seq` from `run.recordSeqs` itself.
+        // The builder must not emit that issue a second time here — doing so
+        // double-counts it and breaks the Task 16 "exactly three issues" test.
+        attachIssues(entry, finalizeRules(entry.validation, tMs));
+        if (entry.run.outcome === 'running') {
+          entry.run.outcome = 'aborted';
+          entry.run.endedAtMs = tMs;
+          entry.metricsDirty = true;
+        }
+        syncMetrics(entry);
       }
     },
 
