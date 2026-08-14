@@ -4,7 +4,20 @@ import type { PanelStore } from '../../model/store';
 import { usePanelState } from '../../model/use-panel-state';
 import { issueCounts } from '../../model/selectors';
 import { DropZone } from '../../import/drop-zone';
+import type { LoadedCapture } from '../../import/load-jsonl';
 import { applyLoaded } from '../../import/apply-loaded';
+
+export interface SessionProps {
+  store: PanelStore;
+  /**
+   * Commit a decoded capture. `App` passes its own so that an import started here is retained
+   * for re-decode exactly like one started from the Timeline empty state — otherwise Expand
+   * chunks would work after one import path and silently do nothing after the other.
+   *
+   * Optional so `Session` stays renderable from a test with nothing but a store.
+   */
+  onLoaded?: (loaded: LoadedCapture, filename: string, text: string) => void;
+}
 
 function describeSource(source: PanelSource): string {
   switch (source.kind) {
@@ -51,7 +64,7 @@ function Row({ label, value }: { label: string; value: string }): JSX.Element {
  * Design §4 also lists export controls. Phase 1 has no export, so this states that plainly
  * instead of shipping a disabled button that looks like a bug.
  */
-export function Session({ store }: { store: PanelStore }): JSX.Element {
+export function Session({ store, onLoaded }: SessionProps): JSX.Element {
   const state: PanelState = usePanelState(store);
   const counts = issueCounts(state);
   const scopeLabel = state.scope === null ? 'all runs' : `run ${state.scope}`;
@@ -112,9 +125,13 @@ export function Session({ store }: { store: PanelStore }): JSX.Element {
       </p>
       <DropZone
         store={store}
-        onLoaded={(loaded, filename) =>
-          store.update((s) => applyLoaded(s, loaded, filename, Date.now()))
-        }
+        onLoaded={(loaded, filename, text) => {
+          if (onLoaded !== undefined) {
+            onLoaded(loaded, filename, text);
+            return;
+          }
+          store.update((s) => applyLoaded(s, loaded, filename, Date.now()));
+        }}
       />
     </section>
   );

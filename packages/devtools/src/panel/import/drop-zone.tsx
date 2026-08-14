@@ -23,8 +23,15 @@ function readText(file: File): Promise<string> {
 
 export interface DropZoneProps {
   store: PanelStore;
-  /** Called with a successfully decoded capture. The caller commits it (see `applyLoaded`). */
-  onLoaded: (loaded: LoadedCapture, filename: string) => void;
+  /**
+   * Called with a successfully decoded capture. The caller commits it (see `applyLoaded`).
+   *
+   * `text` is the raw JSONL the capture was decoded from. It is handed over because
+   * `toggleExpandChunks` only flips a flag — rebuilding the records under the new setting means
+   * re-running `loadJsonl` over these exact bytes, and nothing else in the panel retains them.
+   * Without it the Expand-chunks button would silently do nothing after the first import.
+   */
+  onLoaded: (loaded: LoadedCapture, filename: string, text: string) => void;
 }
 
 /**
@@ -77,7 +84,7 @@ export function DropZone({ store, onLoaded }: DropZoneProps): JSX.Element {
     setFailure(null);
     setDecodeErrors(loaded.decodeErrors);
     setLoadedName(file.name);
-    onLoaded(loaded, file.name);
+    onLoaded(loaded, file.name, text);
   }
 
   function onDrop(event: JSX.TargetedDragEvent<HTMLDivElement>): void {
