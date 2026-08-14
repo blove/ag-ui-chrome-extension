@@ -1006,3 +1006,58 @@ li[data-severity='warning'] .agui-detail__severity {
   color: var(--agui-fg-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+
+/* --- Capture banner (P5, design §5) --------------------------------------
+ * Three honest states plus phase 1's "no capture layer" one. The offer variant
+ * is the only one that carries an action, so it is the only one tinted with the
+ * accent; the quiet variant is deliberately unalarming — "nothing detected yet"
+ * is a normal state, not a fault.
+ */
+
+.agui-banner {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  background: var(--agui-surface);
+  color: var(--agui-fg);
+}
+
+.agui-banner--offer {
+  border-color: var(--agui-accent);
+}
+
+.agui-banner__head {
+  margin: 0;
+  font-weight: 600;
+}
+
+.agui-banner__body {
+  margin: 4px 0 0;
+  max-width: 72ch;
+  color: var(--agui-fg-muted);
+}
+
+.agui-banner code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.agui-banner__action {
+  font: inherit;
+  margin-top: 8px;
+  padding: 3px 12px;
+  border: 1px solid var(--agui-accent);
+  border-radius: 3px;
+  background: var(--agui-surface-raised);
+  color: var(--agui-accent);
+  cursor: pointer;
+}
+
+.agui-banner__action:hover {
+  background: var(--agui-hover);
+}
+
+.agui-banner__action:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
