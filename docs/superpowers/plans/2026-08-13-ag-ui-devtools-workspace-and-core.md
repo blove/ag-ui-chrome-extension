@@ -10808,7 +10808,14 @@ requirements section it will eventually implement. Nothing patches a page API, a
 events yet.
 
 **Files:**
-- Create: `packages/devtools/src/inject/index.ts`
+- Create: `packages/devtools/src/inject/inject.ts` — **not** `index.ts`. A6 already required the two
+  content-script basenames to differ, and named the relay as the one to rename. That was half the
+  rule. CRXJS keys emitted scripts by `basename(file)` across **every** script entry, the service
+  worker included, so `src/inject/index.ts` collides with `src/sw/index.ts` too — and that
+  collision does **not** fail the build. It succeeds, and points the MAIN-world content script at
+  the service worker's chunk: `chrome.runtime` is undefined in MAIN world, so every matched page
+  throws at `document_start` and the marker never installs. Task 18 adds `pnpm verify:build` to
+  catch exactly this. All three entry basenames must be distinct.
 - Create: `packages/devtools/src/relay/relay.ts`
 - Create: `packages/devtools/src/sw/index.ts`
 - Create: `packages/devtools/src/panel/devtools.ts`
@@ -10849,7 +10856,7 @@ missing, fix Task 2 before continuing — these stubs will not typecheck otherwi
 
 - [ ] **Step 2: Create the MAIN-world entry stub**
 
-Create `packages/devtools/src/inject/index.ts`:
+Create `packages/devtools/src/inject/inject.ts` (the basename must differ from `src/sw/index.ts` — see the file list above):
 
 ```ts
 /**
@@ -11101,13 +11108,21 @@ Compile `core/` on its own and grep the emitted JavaScript. This is the "no `chr
 survives into `core/`'s build output" assertion from design doc §3, run against real emitted code
 rather than sources.
 
+`--strict` is **required** and not decorative. Passing file names on the `tsc` command line makes
+tsc ignore `tsconfig.json` entirely, including its `strict: true`, so the compile runs
+non-strict — and `core/` is written against strict semantics. Discriminated unions like
+`PatchResult` and `OpOutcome` do not narrow on a boolean discriminant without `strictNullChecks`,
+so without this flag the command fails with six `TS2339`s ("Property 'reason' does not exist on
+type '{ ok: true; value: unknown; }'") on entirely correct code. The flag must sit on the command
+line because there is no `tsconfig.json` in play to carry it.
+
 Run:
 
 ```bash
 cd packages/devtools && \
   rm -rf .core-build && \
   pnpm exec tsc $(find src/core -name '*.ts' ! -name '*.test.ts') \
-    --target es2022 --module esnext --moduleResolution bundler \
+    --strict --target es2022 --module esnext --moduleResolution bundler \
     --skipLibCheck --outDir .core-build && \
   ! grep -rn 'chrome\.' .core-build && \
   echo "core boundary OK" && \
@@ -11190,7 +11205,7 @@ Expected:
 - [ ] **Step 14: Commit**
 
 ```bash
-git add packages/devtools/src/inject/index.ts \
+git add packages/devtools/src/inject/inject.ts \
         packages/devtools/src/relay/relay.ts \
         packages/devtools/src/sw/index.ts \
         packages/devtools/src/panel/devtools.ts \
@@ -11213,9 +11228,12 @@ static host_permissions (requirements §11)."
 **Files:**
 - Create: `.github/workflows/ci.yml` (repo root)
 - Create: `packages/devtools/scripts/package.ts`
+- Create: `packages/devtools/scripts/verify-build.ts` (added at execution — see A28/A30: it asserts
+  each manifest entry's emitted chunk holds that entry's own code, which is the one thing no other
+  gate looks at)
 - Create: `README.md` (repo root)
-- Modify: `package.json` (repo root — add the `package` script)
-- Modify: `packages/devtools/package.json` (add the `package` script)
+- Modify: `package.json` (repo root — add the `package` and `verify:build` scripts)
+- Modify: `packages/devtools/package.json` (add the `package` and `verify:build` scripts)
 
 Action versions below were checked against their repositories on 2026-08-13:
 `actions/checkout@v7` (v7.0.1), `actions/setup-node@v7` (v7.0.0), `pnpm/action-setup@v6` (v6.0.10),
@@ -11274,6 +11292,10 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # A30: the only gate that reads the built chunks rather than the sources or the manifest.
+      - name: Verify build output
+        run: pnpm verify:build
+
   release:
     name: package and attach to release
     needs: verify
@@ -11299,6 +11321,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Verify build output
+        run: pnpm verify:build
 
       - name: Package
         run: pnpm package
@@ -11411,7 +11436,8 @@ dependency. **RESOLVED AT ASSEMBLY:** this section originally invoked the script
 Run:
 
 ```bash
-cd packages/devtools && npm pkg set scripts.package="tsx scripts/package.ts"
+cd packages/devtools && npm pkg set scripts.package="tsx scripts/package.ts" \
+  scripts."verify:build"="tsx scripts/verify-build.ts"
 ```
 
 Then, from the repo root:
@@ -11419,7 +11445,8 @@ Then, from the repo root:
 Run:
 
 ```bash
-npm pkg set scripts.package="pnpm --filter ag-ui-devtools package"
+npm pkg set scripts.package="pnpm --filter ag-ui-devtools package" \
+  scripts."verify:build"="pnpm --filter ag-ui-devtools verify:build"
 ```
 
 Expected: both commands print nothing and exit 0. Verify:
@@ -11699,6 +11726,10 @@ them. Each was verified empirically before being adopted.
 | A26 | Task 13c pins **both sides** of the 15 s keepalive boundary — 15 000 ms raises nothing, 15 001 ms raises exactly one `keepalive-gap` | The code comment promises "strictly greater, so an exactly-15s gap is fine", but the test reached the threshold with 11 s and 28 s, which cannot distinguish `<=` from `<`. Confirmed by mutation: flipping `gapMs <= KEEPALIVE_GAP_MS` to `<` passed everything. requirements §7's threshold is the kind of constant that gets "tidied" by an off-by-one later, and the only defence is a test at the boundary itself. |
 
 | A27 | A24's flush also fires at a **`RUN_STARTED` that takes the connection over**, attributed to the OUTGOING run, before `resolveRun` switches `conn.openRunId`. A24's `flushChunkStateAtClose` is generalized to `flushChunkStateOntoCurrentRun`. Task 12's `eventCountByType` accumulation site gains a comment fixing the reconstructed-stream-vs-wire-frame distinction (see gap 4) | `conn.chunkState` is connection-scoped and survives a run switch, so an unterminated chunked run followed by a new `RUN_STARTED` on the same connection leaked its open ids into the NEXT run: the next `*_END` — whether from the expander opening a new id or from A24's run-end flush — called `ensureMessage`/`ensureToolCall` on the incoming run and materialized a phantom message or tool call there, while the outgoing run kept an entity that never closed. Multi-run connections are a first-class path, not a curiosity: requirements §4.2's `POST {base}/agent/:agentId/connect` resumes a stream on a connection that may already have carried a run. Ordering is the whole fix — flushing *after* `resolveRun` would move the mis-attribution rather than repair it, so the flush is the first thing the fold loop does for a `RUN_STARTED`. Strictly a no-op when the connection has no current run or the chunk state is empty, which is every ordinary first `RUN_STARTED`. **Residual, deliberately not covered:** chunks that arrive before any `RUN_STARTED` fold into `ORPHANED_RUN_ID`, which is not a connection's current run, so the switch is a no-op for them and their open ids can still leak into the first real run. That path is a protocol violation already flagged `event-before-run-started` on every event, and closing it would mean attributing synthesized ENDs to the orphaned bucket, which gap 8 keeps out of the connection-close machinery on purpose. |
+| A28 | Task 17's MAIN-world entry is `src/inject/inject.ts`, **not** `src/inject/index.ts`; its file list and Step 14 `git add` are corrected accordingly | A6 fixed the relay's basename and stopped there, leaving `src/inject/index.ts` colliding with `src/sw/index.ts`. That collision is worse than the one A6 caught, because it is **silent**: two content scripts sharing a basename fail the build loudly with `Content script fileName is undefined`, but a content script sharing a basename with the service worker builds clean and emits a `dist/manifest.json` whose MAIN-world entry points at the service worker's chunk. Reproduced on this repo at Task 18: renaming `inject.ts` back to `index.ts` produced `"js": ["assets/index.ts-yvScl8KC.js"]` for the MAIN entry — the worker's code, `chrome.runtime.onConnect...`, which throws at `document_start` on every localhost page while the `__AGUI_DEVTOOLS__` marker never installs. `vite build` exited 0 and typecheck, lint, all 355 tests, the `core/` boundary greps, and the manifest privacy audit all passed on that artifact. Keep all three entry basenames distinct. |
+| A29 | Task 17's Step 11 `tsc` invocation gains `--strict` | Passing file names on the `tsc` command line makes tsc **ignore `tsconfig.json`**, `strict: true` included, so the standalone `core/` compile ran non-strict. `core/`'s discriminated unions (`PatchResult`, `OpOutcome`) do not narrow on a boolean discriminant without `strictNullChecks`, so the step as written fails with six `TS2339`s on correct, already-committed code — a verification step that fails on a healthy tree teaches people to skip verification steps. Verified both ways on the landed tree: without the flag, six errors; with it, `core boundary OK`. |
+| A30 | Task 18 adds `packages/devtools/scripts/verify-build.ts` and a `verify:build` script, run in CI after `pnpm build` | Nothing in the plan inspected **which code** landed in the chunks the built manifest points at, which is how A28's regression reached a human. The guard resolves every content script and the service worker through `dist/manifest.json` (never by hashed filename), asserts each emitted bundle contains the distinctive strings of its own source (`__AGUI_DEVTOOLS__`, the relay's `agui-dt` listener, the worker's `onConnect`) and, for the MAIN-world script, no `chrome.runtime`; re-runs the Step 12 privacy invariants; asserts both panel HTML files reached `dist/`; and asserts no `*.map` ships. Proven by deliberately reintroducing the collision: three named failures and exit 1. CRXJS's injected `web_accessible_resources` key is expected and scoped to the localhost matches, so the audit does not flag it. |
+
 
 ### Keepalive attribution — decided here, previously unspecified
 

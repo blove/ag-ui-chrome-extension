@@ -39,15 +39,24 @@ export default defineManifest({
   content_scripts: [
     {
       matches: LOCALHOST_MATCHES,
-      js: ['src/inject/index.ts'],
+      js: ['src/inject/inject.ts'],
       run_at: 'document_start',
       world: 'MAIN',
       all_frames: true,
     },
-    // The two content scripts MUST NOT share a basename. CRXJS 2.7.1 keys emitted
-    // content scripts by basename(file) in build mode, so two files both named
-    // `index.ts` collide and the build fails with "Content script fileName is
-    // undefined". Keep these basenames distinct.
+    // NO two script entries above may share a basename — and that includes the
+    // service worker, not just the two content scripts. CRXJS 2.7.1 keys emitted
+    // scripts by basename(file) in build mode.
+    //
+    // Two content scripts both named `index.ts` collide LOUDLY: the build fails with
+    // "Content script fileName is undefined". That is why this file is `relay.ts`.
+    //
+    // A content script colliding with the service worker fails SILENTLY, which is
+    // worse: the build succeeds, but the emitted manifest points the MAIN-world
+    // content script at the service worker's chunk. `chrome.runtime` is undefined in
+    // MAIN world, so every localhost page throws at document_start and the inject
+    // marker never installs. That is why the inject entry is `inject.ts` and not
+    // `index.ts`. Keep all three basenames distinct.
     {
       matches: LOCALHOST_MATCHES,
       js: ['src/relay/relay.ts'],

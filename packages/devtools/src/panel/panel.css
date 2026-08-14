@@ -1,0 +1,81 @@
+/**
+ * Panel styling.
+ *
+ * Requirements §9 asks the panel to follow the DevTools theme. A DevTools panel is an isolated
+ * document that inherits nothing from the surrounding UI, so with no stylesheet the panel renders
+ * as the UA default — black text on a transparent background. Under the DevTools dark theme that
+ * is black-on-dark and effectively invisible, which is exactly how this shipped before a visual
+ * check caught it.
+ *
+ * Chrome propagates the DevTools theme to panel documents as `prefers-color-scheme`, so keying off
+ * that is what actually tracks the theme. Light is the base and dark is the override, and both are
+ * stated explicitly rather than relying on any inherited default.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --agui-bg: #ffffff;
+  --agui-fg: #1f1f1f;
+  --agui-fg-muted: #5f6368;
+  --agui-border: #e0e0e0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --agui-bg: #1f1f1f;
+    --agui-fg: #e8eaed;
+    --agui-fg-muted: #9aa0a6;
+    --agui-border: #3c4043;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--agui-bg);
+  color: var(--agui-fg);
+}
+
+body {
+  /* Match the DevTools UI font stack so the panel does not read as a foreign document. */
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.agui-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+}
+
+.agui-panel--empty {
+  /* Centre the empty state; the populated panel will scroll from the top instead. */
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  text-align: center;
+}
+
+.agui-panel__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--agui-fg);
+}
+
+.agui-panel__version {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--agui-fg-muted);
+}
+
+.agui-panel__empty-state {
+  margin: 8px 0 0;
+  max-width: 42ch;
+  color: var(--agui-fg-muted);
+}

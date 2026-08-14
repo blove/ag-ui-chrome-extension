@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: typecheck, lint, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # No `version:` input on purpose. pnpm/action-setup reads the pnpm version from the
+      # root package.json `packageManager` field (pinned to pnpm 10), and it fails with
+      # "Multiple versions of pnpm specified" if a `version:` input disagrees with it.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      # `pnpm test` at the root resolves through `pnpm -r run test:ci`, NOT `pnpm -r test`.
+      # pnpm treats `test` as a lifecycle name and `pnpm -r test` exits 0 when no package
+      # defines it, which would let this job report green having run zero tests.
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      # Asserts things no other gate can see: that each manifest entry's emitted chunk holds
+      # the code it should (a basename collision silently swapped two of them once), that the
+      # privacy invariants hold in the built manifest, that the panel HTML reached dist/, and
+      # that no sourcemap did.
+      - name: Verify build output
+        run: pnpm verify:build
+
+  release:
+    name: package and attach to release
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Verify build output
+        run: pnpm verify:build
+
+      - name: Package
+        run: pnpm package
+
+      # Chrome Web Store upload stays manual (decision D8): the first submission has to be
+      # manual anyway, and it keeps CWS API credentials out of the repo.
+      - name: Attach zip to the GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: packages/devtools/ag-ui-devtools-*.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true

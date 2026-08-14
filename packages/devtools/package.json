@@ -8,12 +8,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "package": "vite build && cd dist && zip -qr ../ag-ui-devtools-0.1.0.zip .",
+    "package": "tsx scripts/package.ts",
     "test": "vitest run",
     "test:ci": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
-    "gen:events": "tsx scripts/gen-event-table.ts"
+    "gen:events": "tsx scripts/gen-event-table.ts",
+    "verify:build": "tsx scripts/verify-build.ts"
   },
   "dependencies": {
     "preact": "^10.29.8"
