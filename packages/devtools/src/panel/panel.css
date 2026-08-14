@@ -197,3 +197,118 @@ body {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ── Run selector (P10) ─────────────────────────────────────────────────────────────────────── */
+
+.agui-run-selector {
+  position: relative;
+}
+
+.agui-run-selector__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  color: var(--agui-fg);
+  background: var(--agui-surface);
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agui-run-selector__trigger:hover {
+  background: var(--agui-hover);
+}
+
+.agui-run-selector__caret {
+  color: var(--agui-fg-muted);
+}
+
+.agui-run-selector__popup {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 2px);
+  left: 0;
+  width: 320px;
+  max-width: 90vw;
+  padding: 6px;
+  background: var(--agui-surface-raised);
+  border: 1px solid var(--agui-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 25%);
+}
+
+.agui-run-selector__search {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  color: var(--agui-fg);
+  background: var(--agui-bg);
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  margin-bottom: 4px;
+}
+
+.agui-run-selector__empty {
+  margin: 8px 6px;
+  color: var(--agui-fg-muted);
+}
+
+.agui-run-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0 6px;
+  font: inherit;
+  text-align: left;
+  color: var(--agui-fg);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.agui-run-option:hover {
+  background: var(--agui-hover);
+}
+
+/* Selection is marked by a rule as well as a tint, so it survives a colour-blind reading. */
+.agui-run-option[aria-selected='true'] {
+  background: var(--agui-hover);
+  box-shadow: inset 2px 0 0 var(--agui-accent);
+}
+
+.agui-run-option__id {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.agui-run-option__meta {
+  color: var(--agui-fg-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.agui-run-option__issues {
+  margin-left: auto;
+  white-space: nowrap;
+  color: var(--agui-fg-muted);
+}
+
+.agui-run-option__issues[data-tone='error'] {
+  color: var(--agui-danger);
+}
+
+.agui-run-option__issues[data-tone='warning'] {
+  color: var(--agui-warning);
+}
