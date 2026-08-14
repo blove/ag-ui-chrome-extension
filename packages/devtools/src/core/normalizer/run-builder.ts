@@ -462,6 +462,8 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     if (previousMs === undefined) return;
 
     const gapMs = record.tMs - previousMs;
+    // Strictly greater: requirements §7 flags a gap LONGER than 15 s, so exactly 15 000 ms
+    // is clean. Both sides of that boundary are pinned by tests — 15 000 and 15 001.
     if (gapMs <= KEEPALIVE_GAP_MS) return;
 
     // Anchored to the keepalive that CLOSED the gap — it is a real record with a real seq,

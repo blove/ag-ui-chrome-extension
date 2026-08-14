@@ -649,6 +649,32 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(run.recordSeqs).toEqual([1]);
   });
 
+  it('treats an exactly-15 s keepalive gap as no gap at all', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(keepalive(2, 1_000, 'c1', 'ka'));
+    builder.addRecord(keepalive(3, 16_000, 'c1', 'ka')); // exactly 15 000 ms
+
+    // requirements §7 flags a gap LONGER than 15 s, so the comparison is strictly greater
+    // and the boundary itself is clean. 11 s and 28 s cannot tell `<=` from `<`; this can.
+    expect(builder.getRun('r1')!.issues.filter((issue) => issue.code === 'keepalive-gap')).toEqual([]);
+  });
+
+  it('raises keepalive-gap one millisecond past the 15 s threshold', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(keepalive(2, 1_000, 'c1', 'ka'));
+    builder.addRecord(keepalive(3, 16_001, 'c1', 'ka')); // 15 001 ms — the first gap there is
+
+    const gaps = builder.getRun('r1')!.issues.filter((issue) => issue.code === 'keepalive-gap');
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.seq).toBe(3);
+    expect(gaps[0]!.message).toContain('15001ms');
+  });
+
   it('attaches a keepalive gap to the orphaned run when the connection has no run', () => {
     const builder = createRunBuilder();
 

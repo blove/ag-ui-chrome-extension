@@ -8799,6 +8799,32 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(run.recordSeqs).toEqual([1]);
   });
 
+  it('treats an exactly-15 s keepalive gap as no gap at all', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(keepalive(2, 1_000, 'c1', 'ka'));
+    builder.addRecord(keepalive(3, 16_000, 'c1', 'ka')); // exactly 15 000 ms
+
+    // requirements §7 flags a gap LONGER than 15 s, so the comparison is strictly greater
+    // and the boundary itself is clean. 11 s and 28 s cannot tell `<=` from `<`; this can.
+    expect(builder.getRun('r1')!.issues.filter((issue) => issue.code === 'keepalive-gap')).toEqual([]);
+  });
+
+  it('raises keepalive-gap one millisecond past the 15 s threshold', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(keepalive(2, 1_000, 'c1', 'ka'));
+    builder.addRecord(keepalive(3, 16_001, 'c1', 'ka')); // 15 001 ms — the first gap there is
+
+    const gaps = builder.getRun('r1')!.issues.filter((issue) => issue.code === 'keepalive-gap');
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.seq).toBe(3);
+    expect(gaps[0]!.message).toContain('15001ms');
+  });
+
   it('attaches a keepalive gap to the orphaned run when the connection has no run', () => {
     const builder = createRunBuilder();
 
@@ -8954,6 +8980,8 @@ flush (`takeChunkFlushEvents` / `foldEvent` / `flushChunkStateAtClose` — see A
     if (previousMs === undefined) return;
 
     const gapMs = record.tMs - previousMs;
+    // Strictly greater: requirements §7 flags a gap LONGER than 15 s, so exactly 15 000 ms
+    // is clean. Both sides of that boundary are pinned by tests — 15 000 and 15 001.
     if (gapMs <= KEEPALIVE_GAP_MS) return;
 
     // Anchored to the keepalive that CLOSED the gap — it is a real record with a real seq,
@@ -9136,7 +9164,7 @@ flush (`takeChunkFlushEvents` / `foldEvent` / `flushChunkStateAtClose` — see A
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run src/core/normalizer/run-builder.test.ts`
-Expected: 29 passing.
+Expected: 31 passing.
 
 - [ ] **Step 5: Commit**
 
@@ -11529,6 +11557,8 @@ them. Each was verified empirically before being adopted.
 | A24 | Task 13c gains an **end-of-stream chunk flush**: the builder synthesizes the outstanding `TEXT_MESSAGE_END` / `REASONING_MESSAGE_END` / `TOOL_CALL_END` for whatever `conn.chunkState` still holds open, at `RUN_FINISHED` / `RUN_ERROR` and at `closeConnection` | **A gap in the plan's own design, not a deviation from it** — the plan never said who closes the *last* chunked entity, and neither Task 10 nor Task 13c did. `expandChunk` emits a trailing END only when a NEW id opens, and it is per-event with no run-end hook; nothing else flushed the state. Confirmed on a cleanly-finished chunked run: `issues: ['unclosed-message@4/warning', 'unclosed-tool-call@4/warning']`, `m1.closed === false`, `tc.closed === false`, `tc.args === undefined`. This is the **default path** — chunked streaming is what CopilotKit emits — so every healthy chunked run carried two spurious warnings and the panel showed no structured tool arguments, since `args` is parsed only in the builder's `TOOL_CALL_END` case (`argsText` was a perfectly valid `{}`). Ordering is load-bearing: the flush runs **before** the terminal event is validated and applied, because `applyTransition` sets `validation.terminated` and every event after that — synthesized ones included — trips `event-after-terminal`. The synthesized ENDs go through the same `foldEvent` as real events (`runRules` → `applyTransition` → `noteRecord` → `attachIssues`), so closing, `endedAtMs`, tool-args parsing and `tool-args-not-json` on genuinely malformed args all behave identically to the explicit triad. Consequence: with `expandChunks` true, `eventCountByType` counts the synthesized ENDs, exactly as gap 4 already documents for the rest of expansion; the close-time flush carries `raw: undefined` and the run's last real seq, so it adds no bytes and no `recordSeqs` entry. |
 
 | A25 | Task 13c's double-close test uses an **unterminated** run, and the already-finished one is renamed to say what it actually covers | R1 makes `conn.closedAtMs` the guard that keeps `finalizeRules` from running twice, but the test that claimed to cover it closed an **already-finished** run — for which `finalizeRules` emits nothing however many times it is called. Confirmed by mutation: deleting `|| conn.closedAtMs !== undefined` left all 25 tests green, so the one line R1 identifies as load-bearing ("would have broken Task 16's exactly three issues assertion") was unpinned. The replacement closes an unterminated run twice and asserts exactly one `run-never-terminated` and exactly one `unclosed-message`, plus that the FIRST close's `tMs` wins for `endedAtMs` — a second close must not re-date the run. |
+
+| A26 | Task 13c pins **both sides** of the 15 s keepalive boundary — 15 000 ms raises nothing, 15 001 ms raises exactly one `keepalive-gap` | The code comment promises "strictly greater, so an exactly-15s gap is fine", but the test reached the threshold with 11 s and 28 s, which cannot distinguish `<=` from `<`. Confirmed by mutation: flipping `gapMs <= KEEPALIVE_GAP_MS` to `<` passed everything. requirements §7's threshold is the kind of constant that gets "tidied" by an off-by-one later, and the only defence is a test at the boundary itself. |
 
 ### Keepalive attribution — decided here, previously unspecified
 
