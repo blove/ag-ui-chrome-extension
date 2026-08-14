@@ -350,6 +350,7 @@ git commit -m "test: split vitest into core (node) and panel (jsdom) projects"
 `packages/devtools/src/panel/model/store.test.ts`:
 
 ```ts
+// @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
 import type { CaptureRecord, Run } from '../../core/model/types';
 import { initialPanelState, type PanelState } from './panel-types';
@@ -6683,9 +6684,10 @@ Expected: FAIL with `Error: Failed to resolve import "./capture-status" from "sr
 
 - [ ] **Step 13: Write the implementation**
 
-`packages/devtools/src/panel/model/use-panel-state.ts` — the subscription hook every store-reading
-component needs. It is not in the locked contract; see `## Contract gaps`. If another section has
-already created this file, keep one copy.
+`packages/devtools/src/panel/model/use-panel-state.ts` — **already created in Task 2** (appendix
+R1). Four sections independently invented this hook because the contract forgot it; it is
+consolidated into Task 2 and imported here. Do NOT recreate it — this block is reproduced only so
+the file's contents are visible in context.
 
 ```ts
 import { useEffect, useState } from 'preact/hooks';
@@ -8163,6 +8165,24 @@ task text above. Per-section `## Contract gaps` notes are preserved as authored.
 | R10 | `EventList` needs a viewport height `VirtualList` does not derive | Measures its container with `ResizeObserver`, falling back to 480px. jsdom has neither, hence the fallback. |
 | R11 | Reading fixtures in jsdom throws `ENOENT` with the `readFileSync(new URL(...))` pattern `integration.test.ts` uses | Panel tests use Vite's `?raw` import. Any future jsdom test touching fixtures needs the same. |
 | R12 | Compound rows produced accessible names with no separators (`1RUN_STARTEDr_bad`), breaking `getByRole({ name })` | Rows and bars carry an explicit `aria-label`. Applies to `EventList` rows, waterfall bars, and `RunSelector` rows. |
+
+## Carried forward from the Task 1–4 review
+
+Both confirmed empirically against real fixtures. Neither is a defect; both will be visible in
+tasks that have not been built yet, so they are recorded where those tasks will find them.
+
+- **Filter changes deliberately do NOT clear `selectedSeq`.** `selectScope` guards the selection
+  against falling outside the new scope, but `setTextFilter` and `toggleIssuesOnly` do not — so
+  `selectedRecord()` can return a record that `visibleRecords()` no longer contains. That is the
+  right trade (losing your selection mid-keystroke is worse than a stale detail pane), but **Task 7's
+  detail pane must tolerate a selected-but-filtered-out record** rather than assuming the selection
+  is always visible in the list.
+- **The issue badge and the event list can legitimately disagree, by exactly the keepalive count.**
+  A `keepalive-gap` issue carries a `runId`, so under a run scope it counts toward
+  `issueCounts().total`, while `visibleRecords()` can never show its row — keepalives never enter
+  `Run.recordSeqs`. Measured: with a >15s gap and `issuesOnly` on, the badge reads 2 and the list
+  shows 1. **Task 6 must not present the badge as a count of visible rows.** This is plan open item
+  4 surfacing early; it becomes common once capture lands.
 
 ## Deferred deliberately, with reasons
 
