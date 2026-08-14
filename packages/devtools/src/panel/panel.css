@@ -46,40 +46,6 @@ body {
   line-height: 1.5;
 }
 
-.agui-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 16px;
-}
-
-.agui-panel--empty {
-  /* Centre the empty state; the populated panel will scroll from the top instead. */
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-  text-align: center;
-}
-
-.agui-panel__title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--agui-fg);
-}
-
-.agui-panel__version {
-  margin: 0;
-  font-variant-numeric: tabular-nums;
-  color: var(--agui-fg-muted);
-}
-
-.agui-panel__empty-state {
-  margin: 8px 0 0;
-  max-width: 42ch;
-  color: var(--agui-fg-muted);
-}
-
 /**
  * Virtualized list (design §6). Purely structural: the list paints no colour of its own, so
  * rows inherit `--agui-fg` / `--agui-bg` from `:root` and work in both schemes unchanged.
@@ -1123,4 +1089,114 @@ li[data-severity='warning'] .agui-detail__severity {
 
 .agui-session__note code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* --- App shell -----------------------------------------------------------
+ * The outermost frame: three fixed bands (design §2), then any shell-level
+ * notices, then the scrolling tab body. Every colour is a token already
+ * declared in both schemes above — nothing here hard-codes one.
+ * ----------------------------------------------------------------------- */
+
+.agui-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+}
+
+/* The shell bands are `flex: 0 0 auto`; the body takes what is left and scrolls. */
+.agui-app > .agui-shell,
+.agui-app > .agui-app__load-error,
+.agui-app > .agui-app__note,
+.agui-app > .agui-banner {
+  flex: 0 0 auto;
+}
+
+/*
+ * The capture banner is a shell-level notice, so the shell owns its inset. The banner
+ * declares its own `margin: 8px 0`; sitting directly in `.agui-app` that would put it
+ * flush against the panel's left edge, out of line with every other band.
+ */
+.agui-app > .agui-banner {
+  margin: 8px 12px;
+}
+
+.agui-app__body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/*
+ * The tab panel. `min-height: 0` on both this and `.agui-app__body` is what lets Timeline's
+ * `height: 100%` resolve to the remaining space instead of to its own content height, which is
+ * what makes the event list scroll rather than the whole document.
+ */
+.agui-app__tabpanel {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.agui-app__tabpanel:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
+}
+
+/*
+ * The partial-decode summary. Loud on purpose: a capture that half decoded must not be
+ * mistakable for a clean one from any tab, which is the whole reason this lives in the shell
+ * rather than inside the drop zone that unmounts when the user leaves the tab.
+ */
+.agui-app__load-error {
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--agui-danger-border);
+  background: var(--agui-danger-bg);
+  color: var(--agui-danger);
+  font-weight: 600;
+}
+
+/* The "Enable cannot do anything in this build" note. An explanation, not a fault. */
+.agui-app__note {
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--agui-border);
+  background: var(--agui-surface);
+  color: var(--agui-fg-muted);
+}
+
+/* --- Empty and not-yet-built states -------------------------------------- */
+
+.agui-empty,
+.agui-coming {
+  max-width: 78ch;
+  padding: 12px 16px;
+}
+
+.agui-empty__title,
+.agui-coming__title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--agui-fg);
+}
+
+.agui-empty__detail,
+.agui-coming__detail {
+  margin: 0 0 8px;
+  color: var(--agui-fg-muted);
+}
+
+/*
+ * `.agui-banner code` and `.agui-session__note code` predate this rule and restate the same
+ * family; this one covers the shell's own prose (the empty state, the enable note), which is
+ * the only place `<code>` appears with no ancestor of its own.
+ */
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95em;
 }
