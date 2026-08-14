@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { observeNetwork } from './detect';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { observeNetwork, probePageMarkers } from './detect';
 
 type Listener = (request: chrome.devtools.network.Request) => void;
 
@@ -94,5 +94,134 @@ describe('observeNetwork', () => {
     const onDetected = vi.fn();
     expect(() => observeNetwork(onDetected)()).not.toThrow();
     expect(onDetected).not.toHaveBeenCalled();
+  });
+});
+
+type EvalCallback = (result: unknown, exceptionInfo?: unknown) => void;
+
+function installEval(fn: (expression: string, callback?: EvalCallback) => void): void {
+  Object.defineProperty(globalThis, 'chrome', {
+    value: { devtools: { inspectedWindow: { eval: fn } } },
+    writable: true,
+    configurable: true,
+  });
+}
+
+/**
+ * Install an `inspectedWindow.eval` that REALLY evaluates the expression, against this file's
+ * jsdom document.
+ *
+ * The expression is the half of `probePageMarkers` that runs inside the inspected page, so a stub
+ * handing back canned objects would exercise the ranking and leave the DOM query — the part that
+ * has to find `ag-ui-shell` and `ng-version` on a real page — completely untested. The JSON round
+ * trip stands in for the real API's serialization boundary: whatever the page computes reaches the
+ * panel as plain data.
+ */
+function installLiveEval(): void {
+  installEval((expression, callback) => {
+    const value: unknown = new Function(`return (${expression});`)();
+    callback?.(JSON.parse(JSON.stringify(value)) as unknown);
+  });
+}
+
+/** Install one that resolves with a fixed value, for the paths a real page cannot produce. */
+function installCannedEval(result: unknown, exceptionInfo?: unknown): void {
+  installEval((_expression, callback) => callback?.(result, exceptionInfo));
+}
+
+interface WeakMarkers {
+  ng?: unknown;
+  getAllAngularRootElements?: unknown;
+  __REACT_DEVTOOLS_GLOBAL_HOOK__?: unknown;
+}
+
+describe('probePageMarkers', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    const weak = globalThis as WeakMarkers;
+    delete weak.ng;
+    delete weak.getAllAngularRootElements;
+    delete weak.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+  });
+
+  it('reports the ag-ui custom element ahead of the Angular version', async () => {
+    installLiveEval();
+    document.body.innerHTML =
+      '<app-root ng-version="21.1.6"><ag-ui-shell></ag-ui-shell></app-root>';
+
+    await expect(probePageMarkers()).resolves.toEqual({
+      level: 'markers',
+      detail: 'ag-ui-shell element · Angular 21.1.6',
+    });
+  });
+
+  it('names whichever ag-ui element it actually found', async () => {
+    installLiveEval();
+    document.body.innerHTML = '<div><ag-ui-thread-view></ag-ui-thread-view></div>';
+
+    await expect(probePageMarkers()).resolves.toEqual({
+      level: 'markers',
+      detail: 'ag-ui-thread-view element',
+    });
+  });
+
+  it('reports Angular alone when no ag-ui element is on the page', async () => {
+    installLiveEval();
+    document.body.innerHTML = '<app-root ng-version="21.1.6"></app-root>';
+
+    await expect(probePageMarkers()).resolves.toEqual({
+      level: 'markers',
+      detail: 'Angular 21.1.6',
+    });
+  });
+
+  // Design §4a, measured: the React DevTools hook was present on a production ANGULAR app, and
+  // `window.ng` / `getAllAngularRootElements` are stripped from production builds. Neither may
+  // stand alone, and nothing ranks below them, so alone is all they can ever be — hence null.
+  it('resolves null when the only markers are the React hook and the Angular globals', async () => {
+    installLiveEval();
+    const weak = globalThis as WeakMarkers;
+    weak.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { renderers: new Map() };
+    weak.ng = { probe: () => undefined };
+    weak.getAllAngularRootElements = () => [];
+    document.body.innerHTML = '<div id="root"></div>';
+
+    await expect(probePageMarkers()).resolves.toBeNull();
+  });
+
+  it('resolves null on a page with no markers at all', async () => {
+    installLiveEval();
+    document.body.innerHTML = '<main><p>hello</p></main>';
+
+    await expect(probePageMarkers()).resolves.toBeNull();
+  });
+
+  it('resolves null when the DevTools APIs are absent', async () => {
+    Object.defineProperty(globalThis, 'chrome', {
+      value: {},
+      writable: true,
+      configurable: true,
+    });
+
+    await expect(probePageMarkers()).resolves.toBeNull();
+  });
+
+  it('resolves null when the page threw', async () => {
+    installCannedEval(undefined, { isError: true, code: 'E_PROTOCOLERROR' });
+
+    await expect(probePageMarkers()).resolves.toBeNull();
+  });
+
+  it('resolves null when the page answers with something that is not the probe shape', async () => {
+    installCannedEval('nope');
+
+    await expect(probePageMarkers()).resolves.toBeNull();
+  });
+
+  // The inspected page controls these strings and is not trusted: `detail` goes on screen.
+  it('ignores forged marker values that no real page element could produce', async () => {
+    installCannedEval({ agui: 'not-an-ag-ui-tag', ngVersion: `${'x'.repeat(400)}` });
+
+    await expect(probePageMarkers()).resolves.toBeNull();
   });
 });

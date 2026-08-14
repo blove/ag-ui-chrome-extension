@@ -13,6 +13,20 @@ export type PanelSource =
   | { kind: 'imported'; filename: string; importedAtMs: number }
   | { kind: 'live'; origin: string };
 
+/**
+ * How confident we are that this origin speaks AG-UI. Never gates the offer — only the wording.
+ *
+ * Design decision P11 replaces P5's detect-then-offer with always-offer: measured against a real
+ * deployment, a production AG-UI app emits no AG-UI traffic at all until the user sends a message,
+ * so at the moment the panel first opens there is nothing on the wire to see. A detector that
+ * gated the Enable button would therefore hide it exactly when it is most needed. These three
+ * levels only ever change what the banner SAYS.
+ */
+export type DetectionSignal =
+  | { level: 'none' }
+  | { level: 'markers'; detail: string }
+  | { level: 'stream' };
+
 /** Capture availability for the inspected origin. Phase 1 never reaches 'on'. */
 export type CaptureStatus =
   | { kind: 'unsupported' }

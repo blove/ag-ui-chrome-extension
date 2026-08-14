@@ -60,3 +60,91 @@ export function observeNetwork(onDetected: () => void): () => void {
     event.removeListener(listener);
   };
 }
+
+/** What `PROBE_EXPRESSION` computes inside the inspected page. Both fields may be absent. */
+type ProbeResult = { agui?: unknown; ngVersion?: unknown };
+
+/**
+ * The page-load fingerprint, evaluated in the inspected page by `probePageMarkers`.
+ *
+ * Written as a string because that is what `inspectedWindow.eval` takes, and in ES5 style because
+ * it runs in whatever the page's context is rather than in the panel's bundle. It reads the DOM
+ * and returns plain data; it calls nothing, touches no page state, and makes no request.
+ *
+ * The two things it looks for are the two that design §4a MEASURED on a production Angular AG-UI
+ * app. `window.ng`, `window.getAllAngularRootElements` and the React DevTools hook are deliberately
+ * not collected — see `probePageMarkers`.
+ */
+const PROBE_EXPRESSION = `(function () {
+  var agui = null;
+  var all = document.getElementsByTagName('*');
+  for (var i = 0; i < all.length; i++) {
+    var tag = all[i].tagName.toLowerCase();
+    if (tag.indexOf('ag-ui-') === 0) { agui = tag; break; }
+  }
+  var ngEl = document.querySelector('[ng-version]');
+  return { agui: agui, ngVersion: ngEl ? ngEl.getAttribute('ng-version') : null };
+})()`;
+
+/**
+ * A custom element name, and short enough to sit in a sentence.
+ *
+ * The inspected page controls every byte of what the probe returns and is not trusted, so both
+ * fields are re-checked here rather than at the point they were read: `detail` goes on screen.
+ */
+const AG_UI_TAG = /^ag-ui-[a-z0-9-]{1,40}$/;
+const NG_VERSION = /^[0-9][0-9a-z.+-]{0,20}$/i;
+
+function matched(value: unknown, pattern: RegExp): string | null {
+  return typeof value === 'string' && pattern.test(value) ? value : null;
+}
+
+/**
+ * Probe the inspected page for AG-UI and framework markers. Resolves to null when unavailable.
+ *
+ * This is the signal that makes P11 work. The network watcher above sees nothing until traffic
+ * flows, and a production AG-UI app sends none until the user types — but its markup is on screen
+ * from the first paint, so a page-load fingerprint IS available. Design §4a is the measured
+ * ranking, and it is not the one requirements §4.3 predicted:
+ *
+ * - An `ag-ui-*` custom element is the strongest pre-traffic evidence there is, and unlike every
+ *   framework signal it is AG-UI-specific rather than a statement about how the app was built.
+ * - The `ng-version` attribute is reliable — present in the DOM of a production build.
+ * - `window.ng` and `getAllAngularRootElements` are STRIPPED from production builds, so they fail
+ *   on exactly the deployments that matter, and the React DevTools hook was measured present on an
+ *   Angular app, which would label it React. All three rank below everything above and none may
+ *   stand alone; since nothing ranks below THEM, alone is the only thing they could ever be. They
+ *   are therefore never collected and never quoted, which is also why `detail` stays short enough
+ *   to read.
+ *
+ * Never resolves to `{ level: 'none' }`: absence of markers is not evidence of absence of AG-UI —
+ * that is the whole finding behind P11 — so "no markers" is `null`, a probe that added nothing,
+ * and the caller's existing signal stands.
+ */
+export function probePageMarkers(): Promise<{ level: 'markers'; detail: string } | null> {
+  const evalFn = chrome.devtools?.inspectedWindow?.eval;
+  if (typeof evalFn !== 'function') return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    chrome.devtools.inspectedWindow.eval(
+      PROBE_EXPRESSION,
+      (result: unknown, exceptionInfo?: unknown) => {
+        resolve(exceptionInfo === undefined ? readMarkers(result) : null);
+      },
+    );
+  });
+}
+
+function readMarkers(result: unknown): { level: 'markers'; detail: string } | null {
+  if (typeof result !== 'object' || result === null) return null;
+  const probe = result as ProbeResult;
+
+  const parts: string[] = [];
+  const agui = matched(probe.agui, AG_UI_TAG);
+  if (agui !== null) parts.push(`${agui} element`);
+  const ngVersion = matched(probe.ngVersion, NG_VERSION);
+  if (ngVersion !== null) parts.push(`Angular ${ngVersion}`);
+
+  // `·` rather than a comma: `detail` is quoted mid-sentence in the banner.
+  return parts.length === 0 ? null : { level: 'markers', detail: parts.join(' · ') };
+}
