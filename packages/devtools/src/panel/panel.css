@@ -615,8 +615,8 @@ body {
 }
 
 /* Selection outranks the issue tint; the left border keeps the severity visible. */
-.agui-event-row[aria-pressed='true'],
-.agui-event-row[data-severity][aria-pressed='true'] {
+.agui-event-row[aria-selected='true'],
+.agui-event-row[data-severity][aria-selected='true'] {
   background: var(--agui-row-selected);
 }
 

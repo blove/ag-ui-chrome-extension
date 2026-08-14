@@ -1,5 +1,5 @@
 import type { JSX, RefObject } from 'preact';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { CaptureRecord, Issue, IssueSeverity } from '../../../core/model/types';
 import { VirtualList } from '../../common/virtual-list';
 import { summarizeEvent } from '../../common/format';
@@ -59,6 +59,77 @@ function useMeasuredHeight(ref: RefObject<HTMLDivElement>): number {
   return height;
 }
 
+interface EventRowProps {
+  record: CaptureRecord;
+  issues: Issue[];
+  selected: boolean;
+  /** True for the one row in the tab order (the roving tabindex). */
+  tabbable: boolean;
+  /** Shared standing request: the seq that should take DOM focus as soon as its row exists. */
+  focusSeqRef: { current: number | null };
+  onSelect: (seq: number) => void;
+}
+
+/**
+ * One row, and the owner of its own focus.
+ *
+ * Focus is claimed by the row rather than handed to it by the list, because a row navigated to
+ * may not exist yet. `VirtualList` scrolls in its own layout effect, and the setState it makes
+ * there re-renders `VirtualList` alone — `EventList` does not re-render, so an effect there
+ * cannot see the window that finally contains the target row and cannot retry. Every row instead
+ * checks the standing request whenever it renders, including the render in which it first
+ * appears, so the row that eventually mounts is the one that takes focus. That covers both the
+ * near case (the row was already in the window and re-rendered in place) and the far case (End
+ * from row 1 of 5002) with the same three lines.
+ */
+function EventRow({
+  record,
+  issues,
+  selected,
+  tabbable,
+  focusSeqRef,
+  onSelect,
+}: EventRowProps): JSX.Element {
+  const ref = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (focusSeqRef.current !== record.seq) return;
+    focusSeqRef.current = null;
+    ref.current?.focus();
+  });
+
+  const severity = worstSeverity(issues);
+  const summary = summarizeEvent(record);
+  // The tint carries no accessible information on its own, so the severity and the codes go into
+  // the row's name. An explicit label rather than the concatenated spans: adjacent inline spans
+  // produce a name with no separators.
+  const label =
+    severity === undefined
+      ? `seq ${record.seq} ${typeLabel(record)} ${summary}`
+      : `seq ${record.seq} ${typeLabel(record)} ${summary} — ${severity}: ${issues
+          .map((issue) => issue.code)
+          .join(', ')}`;
+
+  return (
+    <button
+      ref={ref}
+      type="button"
+      role="option"
+      class="agui-event-row"
+      style={{ height: `${ROW_HEIGHT_PX}px` }}
+      data-seq={record.seq}
+      data-severity={severity}
+      aria-label={label}
+      aria-selected={selected}
+      tabIndex={tabbable ? 0 : -1}
+      onClick={() => onSelect(record.seq)}
+    >
+      <span class="agui-event-row__seq">{record.seq}</span>
+      <span class="agui-event-row__type">{typeLabel(record)}</span>
+      <span class="agui-event-row__summary">{summary}</span>
+    </button>
+  );
+}
+
 export function EventList({ store }: EventListProps): JSX.Element {
   const state = usePanelState(store);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -71,16 +142,75 @@ export function EventList({ store }: EventListProps): JSX.Element {
   const bySeq = issuesBySeq(state);
   /*
    * `scrollToIndex` is a value, not a command: `VirtualList` will not re-scroll for the same
-   * index twice, deliberately, so an append cannot re-trigger a stale request. That is
-   * sufficient here because the only writer of `selectedSeq` in this component is a click on a
-   * row, and a row has to be on screen to be clicked — the "same index again" case can never
-   * need a scroll. A cross-pane locate (waterfall → list, P7) would need a nonce; it does not
-   * exist yet, so none is invented here.
+   * index twice, deliberately, so an append cannot re-trigger a stale request. That remains
+   * sufficient with keyboard navigation added, because every writer of `selectedSeq` here moves
+   * it to a *different* index — a click lands on a row that is by definition already on screen,
+   * and an arrow key by definition moves. A cross-pane locate (waterfall → list, P7) would need
+   * a nonce; it does not exist yet, so none is invented here.
    */
   const selectedIndex = records.findIndex((record) => record.seq === state.selectedSeq);
+  /*
+   * Roving tabindex: exactly one row is in the tab order, and it is the selected one. Falling
+   * back to row 0 matters — a `selectedSeq` filtered out of view would otherwise leave no
+   * tabbable row at all and strand the whole list outside the tab order.
+   */
+  const rovingIndex = selectedIndex === -1 ? 0 : selectedIndex;
+
+  /** A standing request for DOM focus, claimed by whichever row turns out to carry that seq. */
+  const focusSeqRef = useRef<number | null>(null);
+
+  /**
+   * Arrow / Home / End move the selection, and the selection is what the window follows.
+   *
+   * Selection *is* navigation in this listbox: `scrollToIndex` already tracks `selectedSeq`, so
+   * writing the store is the whole of "scroll the new row into view". `preventDefault` stops the
+   * arrows from scrolling the viewport out from under the row that is about to be focused.
+   */
+  function onKeyDown(event: KeyboardEvent): void {
+    const last = records.length - 1;
+    if (last < 0) return;
+
+    let next: number;
+    switch (event.key) {
+      // With nothing selected, the first arrow press lands on the first row rather than the
+      // second — otherwise row 0 is unreachable by keyboard from a cold start.
+      case 'ArrowDown':
+        next = selectedIndex === -1 ? 0 : Math.min(selectedIndex + 1, last);
+        break;
+      case 'ArrowUp':
+        next = selectedIndex === -1 ? 0 : Math.max(selectedIndex - 1, 0);
+        break;
+      case 'Home':
+        next = 0;
+        break;
+      case 'End':
+        next = last;
+        break;
+      default:
+        return;
+    }
+
+    const seq = records[next]?.seq;
+    if (seq === undefined) return;
+    event.preventDefault();
+    focusSeqRef.current = seq;
+    store.update((prev) => selectSeq(prev, seq));
+  }
 
   return (
-    <div ref={containerRef} class="agui-event-list" aria-label="Event list" role="group">
+    /*
+     * A real listbox, not a `group` of buttons. Virtualization means Tab can only ever reach the
+     * ~26 rows of 5002 that are mounted, so the tab-stop-per-row model cannot express this list
+     * at all; a listbox has one tab stop and arrow keys for the rest, which is exactly the shape
+     * a window can serve.
+     */
+    <div
+      ref={containerRef}
+      class="agui-event-list"
+      aria-label="Event list"
+      role="listbox"
+      onKeyDown={onKeyDown}
+    >
       {records.length === 0 ? (
         <p class="agui-event-list__empty">No events match the current filter.</p>
       ) : (
@@ -89,40 +219,21 @@ export function EventList({ store }: EventListProps): JSX.Element {
           rowHeight={ROW_HEIGHT_PX}
           height={height}
           scrollToIndex={selectedIndex === -1 ? undefined : selectedIndex}
-          renderRow={(record) => {
-            const issues = bySeq.get(record.seq) ?? [];
-            const severity = worstSeverity(issues);
-            const summary = summarizeEvent(record);
-            // The tint carries no accessible information on its own, so the severity and the
-            // codes go into the row's name. An explicit label rather than the concatenated
-            // spans: adjacent inline spans produce a name with no separators.
-            const label =
-              severity === undefined
-                ? `seq ${record.seq} ${typeLabel(record)} ${summary}`
-                : `seq ${record.seq} ${typeLabel(record)} ${summary} — ${severity}: ${issues
-                    .map((issue) => issue.code)
-                    .join(', ')}`;
-            return (
-              // P7: keyed and gutter-labelled by `seq`, never by the array index — filtering
-              // reorders visible rows and `Issue.seq` refers to this number.
-              <button
-                key={record.seq}
-                type="button"
-                class="agui-event-row"
-                style={{ height: `${ROW_HEIGHT_PX}px` }}
-                data-severity={severity}
-                aria-label={label}
-                aria-pressed={record.seq === state.selectedSeq}
-                onClick={() => {
-                  store.update((prev) => selectSeq(prev, record.seq));
-                }}
-              >
-                <span class="agui-event-row__seq">{record.seq}</span>
-                <span class="agui-event-row__type">{typeLabel(record)}</span>
-                <span class="agui-event-row__summary">{summary}</span>
-              </button>
-            );
-          }}
+          renderRow={(record, index) => (
+            // P7: keyed by `seq`, never by the array index — filtering reorders visible rows
+            // and `Issue.seq` refers to this number.
+            <EventRow
+              key={record.seq}
+              record={record}
+              issues={bySeq.get(record.seq) ?? []}
+              selected={record.seq === state.selectedSeq}
+              tabbable={index === rovingIndex}
+              focusSeqRef={focusSeqRef}
+              onSelect={(seq) => {
+                store.update((prev) => selectSeq(prev, seq));
+              }}
+            />
+          )}
         />
       )}
     </div>
