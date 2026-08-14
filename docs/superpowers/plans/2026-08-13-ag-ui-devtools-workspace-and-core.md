@@ -35,7 +35,7 @@ Paths under `packages/devtools/` unless marked *(root)*.
 | `src/core/jsonl/codec.ts` | `.agui.jsonl` encode + tolerant streaming decode | 14 |
 | `src/core/jsonl/redact.ts` | Redaction groups, `«redacted: N chars»` | 15 |
 | `src/test/fixtures/*.agui.jsonl`, `src/test/integration.test.ts` | Golden streams; the three Done-when proofs | 16 |
-| `src/inject/index.ts`, `src/relay/index.ts`, `src/sw/index.ts`, `src/panel/devtools.ts`, `src/panel/panel.tsx` | Typed stubs so the extension loads; capture lands next milestone | 17 |
+| `src/inject/index.ts`, `src/relay/relay.ts`, `src/sw/index.ts`, `src/panel/devtools.ts`, `src/panel/panel.tsx` | Typed stubs so the extension loads; capture lands next milestone | 17 |
 | `.github/workflows/ci.yml` *(root)*, `README.md` *(root)*, `scripts/package.ts` | CI, docs, versioned zip artifact | 18 |
 
 Every `src/core/**` module has a sibling `*.test.ts` written **before** the implementation.
@@ -377,7 +377,7 @@ export default defineManifest({
     },
     {
       matches: LOCALHOST_MATCHES,
-      js: ['src/relay/index.ts'],
+      js: ['src/relay/relay.ts'],
       run_at: 'document_start',
       world: 'ISOLATED',
       all_frames: true,
@@ -630,7 +630,7 @@ git commit -m "chore: scaffold ag-ui-devtools package with CRXJS, Vitest, and co
    The spec's JSON literally reads `"service_worker": "sw.js"`, `"js": ["inject.js"]`,
    `"js": ["relay.js"]`, `"devtools_page": "devtools.html"`. CRXJS requires source paths at
    config time and emits the built names into `dist/manifest.json`, so `manifest.config.ts`
-   uses `src/sw/index.ts`, `src/inject/index.ts`, `src/relay/index.ts`, and
+   uses `src/sw/index.ts`, `src/inject/index.ts`, `src/relay/relay.ts`, and
    `src/panel/devtools.html`. Everything security-relevant (permissions, optional host
    permissions, match patterns, `world`, `run_at`, `all_frames`, absence of `debugger` and
    `webRequest`) is verbatim. The stub task must create files at exactly those four source
@@ -646,12 +646,12 @@ git commit -m "chore: scaffold ag-ui-devtools package with CRXJS, Vitest, and co
    `typescript-eslint@8.67.0`'s peer range is `eslint ^8.57.0 || ^9.0.0 || ^10.0.0` and
    `typescript >=4.8.4 <6.1.0`, both satisfied.
 
-3. **`gen:events` runner is unspecified by the contract.** This section wires it as
-   `node --experimental-strip-types scripts/gen-event-table.ts`, verified working on Node
-   22.14.0 (it prints an `ExperimentalWarning` on stderr, which is noise, not failure). If
-   Task 3's generator needs multi-file TS imports or non-erasable syntax, that task must
-   either keep the script single-file or add `tsx` as a devDependency and change this one
-   script line.
+3. ~~**`gen:events` runner is unspecified by the contract.**~~ **SUPERSEDED — see resolution R3
+   and the "RESOLVED AT ASSEMBLY" note earlier in this task.** This note originally proposed
+   `node --experimental-strip-types scripts/gen-event-table.ts`. The plan standardizes on
+   **`tsx`** for every `.ts` script entry point, and the authoritative `package.json` block in
+   this task's Step 1 already reads `"gen:events": "tsx scripts/gen-event-table.ts"`. Task 4
+   must use `tsx`. Do not reintroduce the experimental flag.
 
 4. **`pnpm test` and `pnpm build` fail at the end of Task 2**, by construction: no test
    files exist yet, and the manifest names four entry-point source files that the stub task
@@ -9414,7 +9414,7 @@ events yet.
 
 **Files:**
 - Create: `packages/devtools/src/inject/index.ts`
-- Create: `packages/devtools/src/relay/index.ts`
+- Create: `packages/devtools/src/relay/relay.ts`
 - Create: `packages/devtools/src/sw/index.ts`
 - Create: `packages/devtools/src/panel/devtools.ts`
 - Create: `packages/devtools/src/panel/panel.tsx`
@@ -9504,7 +9504,7 @@ installMarker();
 
 - [ ] **Step 3: Create the ISOLATED-world relay stub**
 
-Create `packages/devtools/src/relay/index.ts`:
+Create `packages/devtools/src/relay/relay.ts`:
 
 ```ts
 /**
@@ -9796,7 +9796,7 @@ Expected:
 
 ```bash
 git add packages/devtools/src/inject/index.ts \
-        packages/devtools/src/relay/index.ts \
+        packages/devtools/src/relay/relay.ts \
         packages/devtools/src/sw/index.ts \
         packages/devtools/src/panel/devtools.ts \
         packages/devtools/src/panel/panel.tsx
@@ -10275,9 +10275,27 @@ them. Each was verified empirically before being adopted.
 | A3 | `tsconfig.base.json` `lib` raised to `ES2023` (`target` stays `ES2022`) | Chrome MV3 and Node 22 both support ES2023 built-ins. Task 9 and Task 12 use `findLast` and `toSorted`, which are hard `TS2550` errors under an ES2022 lib. A higher `lib` than `target` is the intended pattern. |
 | A4 | Root `package.json` gains `pnpm.onlyBuiltDependencies: ["esbuild"]` | pnpm 10 blocks dependency postinstall scripts by default; without this every install and CI run prints an "Ignored build scripts: esbuild" warning, training people to scroll past a supply-chain notice. |
 | A5 | Task 2's `no-restricted-globals` on `src/core/**` also bans `document`, `window`, `localStorage` — not just `chrome` | `lib` must include DOM for the Preact panel, and TypeScript cannot scope `lib` per directory, so DOM globals typecheck inside `core/` despite `core/` being required to run under Node in Vitest. ESLint is the only enforcement point. `localStorage` additionally violates requirements §11's no-persistence guarantee. |
+| A6 | The relay content script is `src/relay/relay.ts`, **not** `src/relay/index.ts` | **Build blocker.** CRXJS 2.7.1 keys emitted content scripts by `basename(file)` in build mode, so `src/inject/index.ts` and `src/relay/index.ts` both become `index.ts`, collide, and `pnpm build` dies with `Content script fileName is undefined`. Reproduced in isolation: same basenames fail on Vite 8, distinct basenames succeed, Vite 7 works either way. `pnpm dev` is unaffected, so this would only have surfaced at Task 17. The two content-script basenames must stay distinct. |
+| A7 | `vite.config.ts` names `src/panel/panel.html` as an explicit `rollupOptions.input` | **Build blocker.** CRXJS only collects HTML reachable from manifest keys (`devtools_page`, `action.default_popup`, `options_page`, …). `panel.html` is opened at runtime by `chrome.devtools.panels.create`, so nothing referenced it as an input and it was never emitted into `dist/` — the panel would have 404'd. Task 17's `devtools.ts` resolves it as a sibling of `devtools.html`, which is correct under the resulting layout. |
+| A8 | `vite.config.ts` sourcemaps are mode-conditional (`sourcemap: mode !== 'production'`) | Task 18 zips all of `dist/`, so an unconditional `sourcemap: true` would publish full TypeScript source to the Chrome Web Store and roughly double the archive. |
+| A9 | Task 2's core boundary also bans `self`, `navigator`, `fetch`, `sessionStorage`, `location`; adds `no-restricted-imports` against `sw`/`relay`/`inject`/`panel`; adds `no-restricted-syntax` against `globalThis.*`; and widens `files` to `*.{ts,tsx}` | `no-restricted-globals` only matches bare identifiers. Verified holes: `globalThis.chrome.runtime.id`, `(self as any).chrome`, a type-only `chrome.runtime.Port`, bare `fetch`, and — most likely in practice — a plain `import` from a Chrome-facing sibling directory. Closing these before `core/` code lands is far cheaper than after. |
+| A10 | The generated event table gets a targeted rule override instead of a global `ignores` entry | A global ignore disabled *every* rule on the file. The override exempts it only from the boundary rules. |
+| A11 | Vitest `include` is `src/**/*.test.{ts,tsx}` | A `.tsx` component test would otherwise be silently skipped rather than failing. |
 
 Considered and deliberately **not** adopted: a `packageManager` integrity hash (pnpm/action-setup
 reads the version without it), and an upper bound on the `engines.node` range.
+
+**Further notes for Task 18**, surfaced by the Task 2 review:
+
+- `scripts/package.ts` must `rm -f` the target archive before writing it. The `zip` CLI *updates*
+  an existing archive rather than replacing it, so files deleted from `dist/` between builds
+  would silently persist in the zip.
+- Build the release with `mode=production` so A8's conditional sourcemaps are actually off, or
+  have `scripts/package.ts` exclude `*.map` explicitly. Verify no `.map` file is in the archive.
+- The built `dist/manifest.json` will contain a `web_accessible_resources` key that is **absent**
+  from `manifest.config.ts` — CRXJS injects it for the MAIN-world script. Task 18's "no
+  `debugger`, no `webRequest`, no static remote host permissions" audit must expect that key and
+  not treat it as an unexpected addition.
 
 **Residual caveat for Task 18.** `pnpm -r run test:ci` still exits 0 when *zero* packages match
 the workspace glob (pnpm prints `No projects matched the filters`). A1 closes the
