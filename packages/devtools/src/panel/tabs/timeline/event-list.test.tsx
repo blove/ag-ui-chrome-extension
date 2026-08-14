@@ -56,6 +56,14 @@ describe('EventList', () => {
     expect(severityOf(/state-patch-failed/)).toBe('error');
     expect(severityOf(/run-never-terminated/)).toBe('error');
     expect(severityOf(/^seq 1 RUN_STARTED/)).toBeNull();
+
+    // Exactly three of the ten rows are annotated, and at the seqs the fixture's issues name.
+    // Asserted against the unfiltered list so a stray tint on a clean row cannot hide behind
+    // the issues-only filter, which would drop that row before it could be counted.
+    const annotated = screen
+      .getAllByRole('button')
+      .filter((row) => row.getAttribute('data-severity') !== null);
+    expect(annotated.map((row) => row.textContent?.match(/^\d+/)?.[0])).toEqual(['5', '9', '10']);
   });
 
   it('shows the worst severity when a seq carries more than one issue', () => {
