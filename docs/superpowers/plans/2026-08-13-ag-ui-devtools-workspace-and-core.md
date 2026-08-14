@@ -3454,9 +3454,16 @@ function hasOwn(obj: Record<string, unknown>, key: string): boolean {
  * Narrow one untrusted wire operation to a `PatchOp`.
  *
  * A patch arrives as `unknown[]`, so an entry may be a bare string, an object with no `op`
- * key, or a `move` with no `from`. Each is rejected here and reported as `invalid-op` with
- * the raw value carried through untouched. `value` is deliberately not checked: it is
- * typed `unknown`, so an `add` that omits it simply adds `undefined`.
+ * key, a `move` with no `from`, or an `add` with no `value`. Each is rejected here and
+ * reported as `invalid-op` with the raw value carried through untouched.
+ *
+ * The `value` check is an OWN-PROPERTY test, not `op.value !== undefined`. RFC 6902 §4.1 /
+ * §4.3 / §4.6 require the member on `add`/`replace`/`test`, and `{"value": null}` is a
+ * perfectly legal patch that must still apply; `{"value": undefined}` cannot come off the
+ * wire at all, since JSON has no `undefined`. Accepting a missing `value` used to add the
+ * key with an `undefined` value, producing a document that no longer round-trips through
+ * JSON: `JSON.stringify` drops the key, so the State tab would render `{"a":1}` while the
+ * in-memory model held a `b`.
  */
 function isPatchOp(op: unknown): op is PatchOp {
   if (!isRecord(op)) return false;
@@ -3464,6 +3471,7 @@ function isPatchOp(op: unknown): op is PatchOp {
   if (typeof name !== 'string' || !KNOWN_OPS.has(name)) return false;
   if (typeof op.path !== 'string') return false;
   if (name === 'move' || name === 'copy') return typeof op.from === 'string';
+  if (name === 'add' || name === 'replace' || name === 'test') return hasOwn(op, 'value');
   return true;
 }
 
@@ -3849,6 +3857,75 @@ describe('applyPatch — invalid-op', () => {
     if (result.ok) throw new Error('expected failure');
     expect(result.reason).toBe('invalid-op');
   });
+
+  it('fails with invalid-op for an add with no value member', () => {
+    // RFC 6902 §4.1 requires `value`. Accepting it would set the key to `undefined`, and the
+    // resulting document no longer round-trips through JSON — `JSON.stringify` drops the key,
+    // so the State tab would render `{"a":1}` while the model held a `b`.
+    const result = applyPatch({ a: 1 }, [{ op: 'add', path: '/b' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'add', path: '/b' },
+      reason: 'invalid-op',
+    });
+  });
+
+  it('fails with invalid-op for a replace with no value member', () => {
+    // RFC 6902 §4.3.
+    const result = applyPatch({ a: 1 }, [{ op: 'replace', path: '/a' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'replace', path: '/a' },
+      reason: 'invalid-op',
+    });
+  });
+
+  it('fails with invalid-op for a test with no value member', () => {
+    // RFC 6902 §4.6. Without the check this compares the document against `undefined` and
+    // reports `test-failed`, blaming the server's state for a malformed operation.
+    const result = applyPatch({ a: 1 }, [{ op: 'test', path: '/a' }]);
+    expect(result).toEqual({
+      ok: false,
+      opIndex: 0,
+      op: { op: 'test', path: '/a' },
+      reason: 'invalid-op',
+    });
+  });
+
+  it('accepts an explicit null value — the check is own-property, not !== undefined', () => {
+    // `{"value": null}` is legal RFC 6902 and the commonest way a server clears a field.
+    // A `value !== undefined` guard would have rejected it.
+    expect(applyPatch({ a: 1 }, [{ op: 'add', path: '/b', value: null }])).toEqual({
+      ok: true,
+      value: { a: 1, b: null },
+    });
+    expect(applyPatch({ a: 1 }, [{ op: 'replace', path: '/a', value: null }])).toEqual({
+      ok: true,
+      value: { a: null },
+    });
+    expect(applyPatch({ a: null }, [{ op: 'test', path: '/a', value: null }])).toEqual({
+      ok: true,
+      value: { a: null },
+    });
+  });
+
+  it('still accepts remove, move and copy without a value member', () => {
+    // The requirement is per-op: only add/replace/test carry `value`.
+    expect(applyPatch({ a: 1, b: 2 }, [{ op: 'remove', path: '/b' }])).toEqual({
+      ok: true,
+      value: { a: 1 },
+    });
+    expect(applyPatch({ a: 1, b: {} }, [{ op: 'move', path: '/b/a', from: '/a' }])).toEqual({
+      ok: true,
+      value: { b: { a: 1 } },
+    });
+    expect(applyPatch({ a: 1, b: {} }, [{ op: 'copy', path: '/b/a', from: '/a' }])).toEqual({
+      ok: true,
+      value: { a: 1, b: { a: 1 } },
+    });
+  });
 });
 
 describe('applyPatch — failure positioning', () => {
@@ -3968,9 +4045,16 @@ function hasOwn(obj: Record<string, unknown>, key: string): boolean {
  * Narrow one untrusted wire operation to a `PatchOp`.
  *
  * A patch arrives as `unknown[]`, so an entry may be a bare string, an object with no `op`
- * key, or a `move` with no `from`. Each is rejected here and reported as `invalid-op` with
- * the raw value carried through untouched. `value` is deliberately not checked: it is
- * typed `unknown`, so an `add` that omits it simply adds `undefined`.
+ * key, a `move` with no `from`, or an `add` with no `value`. Each is rejected here and
+ * reported as `invalid-op` with the raw value carried through untouched.
+ *
+ * The `value` check is an OWN-PROPERTY test, not `op.value !== undefined`. RFC 6902 §4.1 /
+ * §4.3 / §4.6 require the member on `add`/`replace`/`test`, and `{"value": null}` is a
+ * perfectly legal patch that must still apply; `{"value": undefined}` cannot come off the
+ * wire at all, since JSON has no `undefined`. Accepting a missing `value` used to add the
+ * key with an `undefined` value, producing a document that no longer round-trips through
+ * JSON: `JSON.stringify` drops the key, so the State tab would render `{"a":1}` while the
+ * in-memory model held a `b`.
  */
 function isPatchOp(op: unknown): op is PatchOp {
   if (!isRecord(op)) return false;
@@ -3978,6 +4062,7 @@ function isPatchOp(op: unknown): op is PatchOp {
   if (typeof name !== 'string' || !KNOWN_OPS.has(name)) return false;
   if (typeof op.path !== 'string') return false;
   if (name === 'move' || name === 'copy') return typeof op.from === 'string';
+  if (name === 'add' || name === 'replace' || name === 'test') return hasOwn(op, 'value');
   return true;
 }
 
@@ -4212,7 +4297,7 @@ export function applyPatch(doc: unknown, ops: readonly unknown[]): PatchResult {
 
 Run: `pnpm vitest run src/core/state/json-patch.test.ts`
 
-Expected: PASS, 67 tests.
+Expected: PASS, 72 tests.
 
 - [ ] **Step 15: Commit**
 
@@ -4606,8 +4691,8 @@ Run: `git add src/core/state/timeline.ts src/core/state/timeline.test.ts && git 
    narrow is reported verbatim in `op`. The tests pass plain array literals. Still decided
    here, and not by the contract: `isPatchOp` also requires a string `path`, and a string
    `from` on `move`/`copy`, since neither is representable as a `PatchOp` otherwise and
-   `parsePointer` would throw on a missing one. `value` is not checked — it is typed
-   `unknown`, so an `add` that omits it adds `undefined`.
+   `parsePointer` would throw on a missing one. **Amended (A23):** `value` is also
+   required — by own-property check — on `add`/`replace`/`test`, per RFC 6902 §4.1/§4.3/§4.6.
 
 6. **`frames()` copy semantics.** The contract types `frames(): StateFrame[]` without
    saying whether the array is live. Decided here: it returns a fresh array each call
@@ -7153,7 +7238,11 @@ describe('computeMetrics', () => {
     const metrics = computeMetrics(makeRun(), records, 2000);
 
     expect(metrics.statePatchCount).toBe(2);
-    expect(metrics.statePatchBytes).toBe(JSON.stringify(d1).length + JSON.stringify(d2).length);
+    // Byte counts are UTF-8, spelled out rather than recomputed with the implementation's own
+    // expression. Both deltas are pure ASCII, so each JSON character is exactly one byte:
+    //   d1 -> `[{"op":"replace","path":"/count","value":2}]`                        = 44
+    //   d2 -> `[{"op":"add","path":"/items/-","value":"x"},{"op":"remove",...}]`     = 74
+    expect(metrics.statePatchBytes).toBe(44 + 74);
   });
 
   it('counts events by type and sums raw bytes, skipping unparseable and raw-less records', () => {
@@ -7197,9 +7286,12 @@ describe('computeMetrics', () => {
     const metrics = computeMetrics(makeRun(), records, 2000);
 
     expect(metrics.eventCountByType).toEqual({ TEXT_MESSAGE_CONTENT: 2, RUN_FINISHED: 1 });
-    expect(metrics.totalStreamBytes).toBe(
-      JSON.stringify(raw1).length + JSON.stringify('garbage').length + JSON.stringify({ type: 'RUN_FINISHED' }).length,
-    );
+    // UTF-8 bytes of each `raw`, ASCII throughout so one JSON character is one byte:
+    //   raw1                        = 97
+    //   `"garbage"` (quotes count)  =  9
+    //   `{"type":"RUN_FINISHED"}`   = 23
+    // The seq-3 record has `raw: undefined` and contributes 0 — the don't-double-count guard.
+    expect(metrics.totalStreamBytes).toBe(97 + 9 + 23);
   });
 
   it('excludes keepalives from eventCountByType but still counts their bytes in totalStreamBytes', () => {
@@ -7215,9 +7307,38 @@ describe('computeMetrics', () => {
     const metrics = computeMetrics(makeRun(), records, 2000);
 
     expect(metrics.eventCountByType).toEqual({ TEXT_MESSAGE_START: 1, TEXT_MESSAGE_CONTENT: 1 });
-    expect(metrics.totalStreamBytes).toBe(
-      records.reduce((sum, r) => sum + JSON.stringify(r.raw).length, 0),
-    );
+    // UTF-8 bytes: 65 (START) + 7 (`":\n\n"`) + 60 (CONTENT) + 11 (`":ping\n\n"`). All ASCII.
+    expect(metrics.totalStreamBytes).toBe(65 + 7 + 60 + 11);
+  });
+
+  it('counts UTF-8 bytes, not UTF-16 code units, for non-ASCII payloads', () => {
+    // `日本語🎉` is 5 UTF-16 code units but 13 UTF-8 bytes: each CJK codepoint is 1 unit /
+    // 3 bytes, and the emoji is a surrogate pair — 2 units / 4 bytes. Counting `.length`
+    // would under-report a Japanese conversation by ~2.5x, which defeats the whole point of
+    // these numbers (requirements §5: diagnosing payload size and proxy buffering).
+    const delta = [{ op: 'replace', path: '/greeting', value: '日本語🎉' }];
+    const raw = { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: '日本語🎉' };
+    const records: CaptureRecord[] = [
+      {
+        kind: 'event',
+        seq: 1,
+        tMs: 10,
+        connId: 'c1',
+        raw,
+        event: { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: '日本語🎉' },
+        issues: [],
+      },
+      rec(2, 20, { type: 'STATE_DELTA', delta }),
+    ];
+
+    const metrics = computeMetrics(makeRun(), records, 2000);
+
+    // `JSON.stringify(raw)` is 64 code units but 72 bytes; the STATE_DELTA record's raw is
+    // the whole event, 84 code units but 92 bytes; the delta alone is 53 units but 61 bytes.
+    expect(JSON.stringify(raw).length).toBe(64);
+    expect(metrics.totalStreamBytes).toBe(72 + 92);
+    expect(JSON.stringify(delta).length).toBe(53);
+    expect(metrics.statePatchBytes).toBe(61);
   });
 });
 ```
@@ -7250,13 +7371,20 @@ function nearestRankPercentile(sorted: number[], p: number): number | undefined 
 }
 
 /**
- * JSON byte length, treating non-serializable values as zero bytes. `record.raw` is
- * `undefined` when the bytes were already counted against a sibling record produced by
- * chunk expansion, so this doubles as the "don't double-count" guard for that contract.
+ * UTF-8 byte length of the JSON encoding, counting a value `JSON.stringify` drops
+ * (`undefined`, a function, a symbol) as zero bytes. `record.raw` is `undefined` when the
+ * bytes were already counted against a sibling record produced by chunk expansion, so this
+ * doubles as the "don't double-count" guard for that contract. A value `JSON.stringify`
+ * *throws* on — a circular `raw`, a BigInt — propagates; it is not silently zero.
+ *
+ * `TextEncoder` rather than `json.length`: `String.length` counts UTF-16 code units, so a
+ * CJK codepoint would report 1 for 3 bytes on the wire and an emoji 2 for 4. These numbers
+ * exist to diagnose payload size and proxy buffering, and a Japanese conversation
+ * under-reporting its transfer by ~2.5x would make them worse than no number at all.
  */
 function byteLength(value: unknown): number {
   const json = JSON.stringify(value);
-  return json === undefined ? 0 : json.length;
+  return json === undefined ? 0 : new TextEncoder().encode(json).length;
 }
 
 function pushTime(map: Map<string, number[]>, key: string, tMs: number): void {
@@ -7377,7 +7505,7 @@ export function computeMetrics(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run src/core/metrics/run-metrics.test.ts`
-Expected: 12 passing.
+Expected: 13 passing.
 
 - [ ] **Step 5: Commit**
 
@@ -11157,6 +11285,8 @@ them. Each was verified empirically before being adopted.
 | A19 | `CaptureRecord` is a discriminated union on `kind`, not a flag plus optionals | As first landed, a keepalive could carry a decoded `event`, an event record could carry a `comment`, and `r.comment` read without any narrowing — all compiled. The union makes the invariants structural, which is what stops Task 12 counting a keepalive as an event; requirements §5.4 requires keepalives be recorded but **excluded from the event count**. Verified: all three incoherent literals are now compile errors. |
 | A20 | `makeIssue(code, message, seq, extra?)` is the only sanctioned `Issue` constructor | A14's table was advisory — `{code:'empty-text-delta', severity:'info'}` still compiled, which is the exact hole A14 was created to close. Correlating `severity` to `code` at the type level rejects the misgrade but breaks the generic factory every emitter needs (a known correlated-union limitation). The factory upholds the guarantee instead. |
 | A21 | `ReconstructedMessage.role: MessageRole` → `kind: MessageKind` (`'text' \| 'reasoning'`) | The protocol carries its own `role` on `TEXT_MESSAGE_START` and `TOOL_CALL_RESULT` with different semantics, so the old name invited `role: event.role` in Task 13a — where the fold constructs the message directly from event data. Renamed while there are zero consumers; after 13a it would cost edits across 13a–13c and 16. |
+| A22 | Task 12's `byteLength` encodes with `TextEncoder` instead of returning `json.length` | `String.length` counts UTF-16 code units, not bytes: a CJK codepoint is 1 unit / 3 UTF-8 bytes and an emoji is 2 units / 4 bytes, so a Japanese conversation reporting "1,200 bytes" actually put ~3,000 on the wire. `totalStreamBytes`/`statePatchBytes` exist to diagnose payload size and proxy buffering, which an under-count of ~2.5x defeats. `TextEncoder` is a standard global in Node 22 and in browsers and is not on the `core/` lint fence — verified `pnpm lint` stays clean. Task 12 gains a non-ASCII regression test asserting the count exceeds `JSON.stringify(...).length`, and its three ASCII byte assertions are restated as literal totals so they no longer restate the implementation's own expression. The docstring was narrowed at the same time: it claimed to treat "non-serializable values as zero bytes", but a circular `raw` **throws** out of `JSON.stringify` rather than counting zero. |
+| A23 | Task 8's `isPatchOp` requires an own `value` property on `add`/`replace`/`test` | RFC 6902 §4.1/§4.3/§4.6 make the member mandatory, and requirements §7 lists a bad `op` as an error condition, but the predicate checked only `op`, `path`, and `from`. Confirmed: `applyPatch({a:1}, [{op:'add', path:'/b'}])` returned `{ok:true}` with `value.b === undefined` — a document that no longer round-trips through JSON, since `JSON.stringify` drops the key. The State tab would have shown `{"a":1}` while the in-memory model held a `b`, and a `test` with no `value` reported `test-failed`, blaming the server's state for a malformed operation. The failure is `invalid-op`, matching every other malformed op. The check is `Object.prototype.hasOwnProperty.call`, **not** `op.value !== undefined`: `{"value": null}` is legal RFC 6902 and the commonest way a server clears a field, while `{"value": undefined}` cannot arrive from JSON at all. Verified no previously-passing test asserted the old behavior. |
 
 ### Keepalive attribution — decided here, previously unspecified
 
