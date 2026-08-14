@@ -527,14 +527,19 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
   }
 
   /**
-   * Flush the connection's chunk state onto a run that never reached a terminal event.
+   * Flush the connection's chunk state onto its CURRENT run — the one that owns whatever the
+   * state still holds open — for the two exits that are not a terminal event: the connection
+   * closing, and a new `RUN_STARTED` taking the connection over.
    *
-   * There is no frame to carry these: the stream simply stopped. They anchor to the run's
-   * last real seq — the same anchor `finalizeRules` uses for the run-end codes — so anything
-   * they raise still points at a record the user can select, and `raw: undefined` keeps them
-   * out of `totalStreamBytes` because nothing was ever on the wire.
+   * No frame carries these: the stream stopped, or moved on. They anchor to the run's last
+   * real seq — the same anchor `finalizeRules` uses for the run-end codes — so anything they
+   * raise still points at a record the user can select, and `raw: undefined` keeps them out
+   * of `totalStreamBytes` because nothing was ever on the wire. `tMs` is the moment the run
+   * demonstrably ended: the close, or the incoming `RUN_STARTED`.
+   *
+   * A no-op when the connection has no current run or the chunk state is empty.
    */
-  function flushChunkStateAtClose(conn: ConnEntry, tMs: number): void {
+  function flushChunkStateOntoCurrentRun(conn: ConnEntry, tMs: number): void {
     if (conn.openRunId === undefined) return;
     const entry = entries.get(conn.openRunId);
     if (entry === undefined) return;
@@ -589,6 +594,14 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     let first: RunEntry | undefined;
     for (let i = 0; i < events.length; i += 1) {
       const event = events[i]!;
+      // A RUN_STARTED hands the connection to a new run, and `resolveRun` is what performs
+      // that switch — so the flush goes BEFORE it. The chunk state is connection-scoped, so
+      // whatever it still holds open belongs to the OUTGOING run; flushing after the switch
+      // would only move the mis-attribution, materializing a phantom message or tool call on
+      // the incoming run. Not theoretical: requirements §4.2's
+      // `POST {base}/agent/:agentId/connect` resumes a stream on a connection that may
+      // already have carried a run.
+      if (event.type === 'RUN_STARTED') flushChunkStateOntoCurrentRun(conn, record.tMs);
       const entry = resolveRun(conn, event, record);
       if (first === undefined) first = entry;
       // The terminal event is the last moment at which the chunk state's outstanding ENDs
@@ -636,7 +649,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
       conn.closedAtMs = tMs;
       // A run that never terminated got no flush from `addRecord`, so it happens here —
       // and BEFORE `finalizeRules`, which reads the very sets the synthesized ENDs clear.
-      flushChunkStateAtClose(conn, tMs);
+      flushChunkStateOntoCurrentRun(conn, tMs);
       for (const runId of conn.runIds) {
         const entry = entries.get(runId);
         if (entry === undefined) continue;

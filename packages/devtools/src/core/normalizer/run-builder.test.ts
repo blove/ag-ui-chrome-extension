@@ -407,14 +407,15 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
 
   it('closes the trailing chunked message, reasoning and tool call at RUN_FINISHED', () => {
     const builder = createRunBuilder();
+    const frames: AguiEvent[] = [
+      { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' },
+      { type: 'TEXT_MESSAGE_CHUNK', messageId: 'm1', role: 'assistant', delta: 'Hi' },
+      { type: 'REASONING_MESSAGE_CHUNK', messageId: 'rm1', delta: 'hmm' },
+      { type: 'TOOL_CALL_CHUNK', toolCallId: 'tc1', toolCallName: 'search', delta: '{"q":"cats"}' },
+      { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' },
+    ];
 
-    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
-    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'm1', role: 'assistant', delta: 'Hi' }));
-    builder.addRecord(rec(3, 20, 'c1', { type: 'REASONING_MESSAGE_CHUNK', messageId: 'rm1', delta: 'hmm' }));
-    builder.addRecord(
-      rec(4, 30, 'c1', { type: 'TOOL_CALL_CHUNK', toolCallId: 'tc1', toolCallName: 'search', delta: '{"q":"cats"}' }),
-    );
-    builder.addRecord(rec(5, 40, 'c1', { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' }));
+    frames.forEach((frame, index) => builder.addRecord(rec(index + 1, index * 10, 'c1', frame)));
     builder.closeConnection('c1', 50);
 
     const run = builder.getRun('r1')!;
@@ -443,6 +444,28 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(call.argsParseError).toBeUndefined();
     expect(run.outcome).toBe('finished');
     expect(run.endedAtMs).toBe(40);
+
+    // `eventCountByType` counts the RECONSTRUCTED stream, so the flushed ENDs count exactly
+    // as the expander's synthesized STARTs always have. Five frames arrived; eleven events
+    // were reconstructed.
+    expect(run.metrics.eventCountByType).toEqual({
+      RUN_STARTED: 1,
+      TEXT_MESSAGE_START: 1,
+      TEXT_MESSAGE_CONTENT: 1,
+      TEXT_MESSAGE_END: 1,
+      REASONING_MESSAGE_START: 1,
+      REASONING_MESSAGE_CONTENT: 1,
+      REASONING_MESSAGE_END: 1,
+      TOOL_CALL_START: 1,
+      TOOL_CALL_ARGS: 1,
+      TOOL_CALL_END: 1,
+      RUN_FINISHED: 1,
+    });
+    // `totalStreamBytes` is the WIRE-FRAME measure and does not move: every synthesized
+    // event's record carries `raw: undefined`. The two numbers answer different questions.
+    expect(run.metrics.totalStreamBytes).toBe(
+      frames.reduce((total, frame) => total + JSON.stringify(frame).length, 0),
+    );
   });
 
   it('closes the trailing chunked message and tool call when the connection closes mid-run', () => {
@@ -474,6 +497,87 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     expect(run.outcome).toBe('aborted');
     // the flush is not a frame off the wire: it contributes no seq of its own
     expect(run.recordSeqs).toEqual([1, 2, 3]);
+  });
+
+  it('closes an unterminated run chunk state against that run when the next run starts', () => {
+    const builder = createRunBuilder();
+
+    // requirements §4.2: `POST {base}/agent/:agentId/connect` resumes a stream on a
+    // connection that may already have carried a run, so two runs on one connection —
+    // the first of them never terminated — is a first-class path, not a curiosity.
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rA' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'mA', role: 'assistant', delta: 'A' }));
+    builder.addRecord(
+      rec(3, 20, 'c1', { type: 'TOOL_CALL_CHUNK', toolCallId: 'tcA', toolCallName: 'search', delta: '{"q":"a"}' }),
+    );
+    builder.addRecord(rec(4, 30, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rB' }));
+
+    const runA = builder.getRun('rA')!;
+    const runB = builder.getRun('rB')!;
+
+    // the chunk state is connection-scoped, so it has to be flushed against the OUTGOING run
+    const message = runA.messages.get('mA')!;
+    expect(message.closed).toBe(true);
+    expect(message.endedAtMs).toBe(30);
+
+    const call = runA.toolCalls.get('tcA')!;
+    expect(call.closed).toBe(true);
+    expect(call.endedAtMs).toBe(30);
+    expect(call.args).toEqual({ q: 'a' });
+
+    // run B emitted nothing of its own yet, and must not inherit run A's leftovers
+    expect([...runB.messages.keys()]).toEqual([]);
+    expect([...runB.toolCalls.keys()]).toEqual([]);
+    expect(runB.recordSeqs).toEqual([4]);
+    // the flush is not a frame off the wire: run A's record list is unchanged
+    expect(runA.recordSeqs).toEqual([1, 2, 3]);
+  });
+
+  it('attaches any unclosed-* warning from a run switch to the outgoing run, never the incoming one', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rA' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_CHUNK', messageId: 'mA', role: 'assistant', delta: 'A' }));
+    builder.addRecord(
+      rec(3, 20, 'c1', { type: 'TOOL_CALL_CHUNK', toolCallId: 'tcA', toolCallName: 'search', delta: '{"q":"a"}' }),
+    );
+    builder.addRecord(rec(4, 30, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rB' }));
+    builder.closeConnection('c1', 100);
+
+    const runA = builder.getRun('rA')!;
+    const runB = builder.getRun('rB')!;
+
+    // run A's entities were closed by the switch, so neither run reports them as unclosed
+    expect(runA.issues.filter((issue) => issue.code === 'unclosed-message')).toEqual([]);
+    expect(runA.issues.filter((issue) => issue.code === 'unclosed-tool-call')).toEqual([]);
+    expect(runB.issues.filter((issue) => issue.code === 'unclosed-message')).toEqual([]);
+    expect(runB.issues.filter((issue) => issue.code === 'unclosed-tool-call')).toEqual([]);
+    // both runs really did end without a terminal event, and each says so once
+    expect(runA.issues.filter((issue) => issue.code === 'run-never-terminated')).toHaveLength(1);
+    expect(runB.issues.filter((issue) => issue.code === 'run-never-terminated')).toHaveLength(1);
+  });
+
+  it('changes nothing when a RUN_STARTED arrives with an empty chunk state', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rA' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TEXT_MESSAGE_START', messageId: 'mA', role: 'assistant' }));
+    builder.addRecord(rec(3, 20, 'c1', { type: 'TEXT_MESSAGE_END', messageId: 'mA' }));
+    builder.addRecord(rec(4, 30, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'rB' }));
+
+    const runA = builder.getRun('rA')!;
+
+    // an explicit triad never touches the chunk state, and the first RUN_STARTED on a
+    // connection has no outgoing run at all — both must be pure no-ops
+    expect(runA.messages.get('mA')!.endedAtMs).toBe(20);
+    expect(runA.recordSeqs).toEqual([1, 2, 3]);
+    expect(runA.metrics.eventCountByType).toEqual({
+      RUN_STARTED: 1,
+      TEXT_MESSAGE_START: 1,
+      TEXT_MESSAGE_END: 1,
+    });
+    expect(builder.getRun('rB')!.messages.size).toBe(0);
+    expect(builder.runs().map((run) => run.runId)).toEqual(['rA', 'rB']);
   });
 
   it('gives a chunked run the same closure and parsed args as the equivalent explicit triad', () => {
