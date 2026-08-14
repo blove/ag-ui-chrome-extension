@@ -4297,15 +4297,18 @@ export function issueBadgeText(total: number): string {
  * The visible text is a prefix of the accessible name, and the name states the filter state in
  * words — a filtered list must never be mistakable for a clean one, for a screen reader either.
  */
-export function issueBadgeLabel(counts: Counts, issuesOnly: boolean): string {
+export function issueBadgeLabel(counts: Counts, issuesOnly: boolean, scope: RunScope): string {
   const head =
     counts.total === 0
       ? '0 issues'
       : `${issueBadgeText(counts.total)}: ${counts.error} error, ${counts.warning} warning, ${counts.info} info`;
+  // "in the current run scope" is a lie when the scope is every run — the count is the whole
+  // capture's, and calling it scoped invites a reader to under-read a total.
+  const where = scope === null ? 'across all runs' : 'in the current run scope';
   const action = issuesOnly
     ? 'filtered to events with issues; activate to show all events'
     : 'activate to show only events with issues';
-  return `${head}. Currently ${action}`;
+  return `${head} detected ${where}. Currently ${action}`;
 }
 
 /**
@@ -4398,7 +4401,7 @@ export function Toolbar({ store, onImport }: ToolbarProps): JSX.Element {
         class="agui-issue-badge"
         data-tone={tone}
         aria-pressed={state.filter.issuesOnly}
-        aria-label={issueBadgeLabel(counts, state.filter.issuesOnly)}
+        aria-label={issueBadgeLabel(counts, state.filter.issuesOnly, state.scope)}
         onClick={() => store.update(toggleIssuesOnly)}
       >
         <span aria-hidden="true" class="agui-issue-badge__dot" />

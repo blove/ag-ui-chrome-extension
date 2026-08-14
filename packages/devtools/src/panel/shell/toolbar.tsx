@@ -1,6 +1,7 @@
 import type { JSX } from 'preact';
 import { issueCounts } from '../model/selectors';
 import { initialPanelState } from '../model/panel-types';
+import type { RunScope } from '../model/panel-types';
 import type { PanelStore } from '../model/store';
 import { setTextFilter, toggleExpandChunks, toggleIssuesOnly } from '../model/store';
 import { usePanelState } from '../model/use-panel-state';
@@ -42,16 +43,22 @@ export function issueBadgeText(total: number): string {
  * never enters `Run.recordSeqs`, so under a run scope its row can never be shown. Measured with a
  * >15s gap and issues-only on, the badge reads 2 while the list holds 1. Promising "2 events" would
  * send the reader hunting for a row that does not exist.
+ *
+ * The scope phrase branches on `scope`, because "in the current run scope" is a lie when the scope
+ * is every run: the count really is the whole capture's, and a reader told it was scoped would
+ * under-read a number that is in fact the total. `scope` is passed rather than derived from
+ * `counts`, since a single-run capture makes the two counts identical and indistinguishable.
  */
-export function issueBadgeLabel(counts: Counts, issuesOnly: boolean): string {
+export function issueBadgeLabel(counts: Counts, issuesOnly: boolean, scope: RunScope): string {
   const head =
     counts.total === 0
       ? '0 issues'
       : `${issueBadgeText(counts.total)}: ${counts.error} error, ${counts.warning} warning, ${counts.info} info`;
+  const where = scope === null ? 'across all runs' : 'in the current run scope';
   const action = issuesOnly
     ? 'Currently filtered to events with issues; activate to show every event.'
     : 'Activate to filter the event list to events with issues.';
-  return `${head} detected in the current run scope. ${action}`;
+  return `${head} detected ${where}. ${action}`;
 }
 
 /**
@@ -143,7 +150,7 @@ export function Toolbar({ store, onImport }: ToolbarProps): JSX.Element {
         class="agui-issue-badge"
         data-tone={tone}
         aria-pressed={state.filter.issuesOnly}
-        aria-label={issueBadgeLabel(counts, state.filter.issuesOnly)}
+        aria-label={issueBadgeLabel(counts, state.filter.issuesOnly, state.scope)}
         onClick={() => store.update(toggleIssuesOnly)}
       >
         <span aria-hidden="true" class="agui-issue-badge__dot" />

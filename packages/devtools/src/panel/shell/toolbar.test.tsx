@@ -121,6 +121,30 @@ describe('Toolbar issue badge', () => {
     expect(label).not.toMatch(/\d+ (rows|events) shown/);
   });
 
+  it('says the count is scoped to the run only when a run is actually scoped', () => {
+    const store = createPanelStore(
+      stateWith({ issues: [ERROR_ISSUE, WARNING_ISSUE, INFO_ISSUE], scope: 'r_1' }),
+    );
+    render(<Toolbar store={store} onImport={() => undefined} />);
+
+    const label = badge().getAttribute('aria-label') ?? '';
+    expect(label).toContain('2 issues: 1 error, 1 warning, 0 info detected in the current run scope');
+    expect(label).not.toContain('across all runs');
+  });
+
+  it('says the count spans every run when the scope is all runs', () => {
+    // The all-runs count is the whole capture's. Calling it "the current run scope" would read as
+    // a subset and let someone under-read a total.
+    const store = createPanelStore(
+      stateWith({ issues: [ERROR_ISSUE, WARNING_ISSUE, INFO_ISSUE], scope: null }),
+    );
+    render(<Toolbar store={store} onImport={() => undefined} />);
+
+    const label = badge().getAttribute('aria-label') ?? '';
+    expect(label).toContain('3 issues: 1 error, 1 warning, 1 info detected across all runs');
+    expect(label).not.toContain('in the current run scope');
+  });
+
   it('reflects the filter being toggled from elsewhere', () => {
     const store = createPanelStore(stateWith({ issues: [ERROR_ISSUE] }));
     render(<Toolbar store={store} onImport={() => undefined} />);
