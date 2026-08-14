@@ -10262,6 +10262,14 @@ them. Each was verified empirically before being adopted.
 Considered and deliberately **not** adopted: a `packageManager` integrity hash (pnpm/action-setup
 reads the version without it), and an upper bound on the `engines.node` range.
 
+**Residual caveat for Task 18.** `pnpm -r run test:ci` still exits 0 when *zero* packages match
+the workspace glob (pnpm prints `No projects matched the filters`). A1 closes the
+"package exists but defines no test script" hole, not the "no packages at all" one. That state
+disappears once Task 2 lands `packages/devtools`, but Task 18's CI should assert the test run
+actually reported a scope rather than trusting a bare exit 0. Relatedly, `pnpm -r run test:ci`
+errors only when *no* selected package has the script — packages lacking it alongside one that
+has it are skipped silently. Harmless at one package; worth remembering if a second is added.
+
 ## Spec corrections found while planning
 
 - **Requirements §6 says "26 types"; the real count is 33.** Verified against `@ag-ui/core@0.0.57`: 34 exports match `/(.+)EventSchema$/`, minus `BaseEventSchema`, whose `type` is a `ZodNativeEnum` rather than a `ZodLiteral`. The spec's own prose list also omits `TOOL_CALL_RESULT` and `TEXT_MESSAGE_CHUNK`. Task 4's test pins the count at 33, so a protocol bump fails loudly.
