@@ -4,10 +4,13 @@ import {
   type CaptureRecord,
   type Issue,
   type MessageKind,
+  type PatchOp,
   type ReconstructedMessage,
   type Run,
   type RunMetrics,
+  type ToolCallRecord,
 } from '../model/types';
+import { applyPatch } from '../state/json-patch';
 import { createStateTimeline, type StateTimeline } from '../state/timeline';
 import { runRules, type RunValidationState } from '../validator';
 import { computeMetrics } from '../metrics/run-metrics';
@@ -58,6 +61,28 @@ interface ConnEntry {
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * An activity is identified by the message it belongs to plus its `activityType`; the
+ * normalized model carries a single string id, so the two are joined with '#'.
+ */
+function activityIdOf(event: AguiEvent): string | undefined {
+  const messageId = str(event.messageId);
+  const activityType = str(event.activityType);
+  if (messageId === undefined && activityType === undefined) return undefined;
+  return `${messageId ?? ''}#${activityType ?? ''}`;
+}
+
+/**
+ * A patch off the wire is `unknown`. `applyPatch` takes `readonly unknown[]` and validates
+ * each op itself, but `StateFrame`'s delta arm types `patch` as `PatchOp[]` so the frame can
+ * be replayed, so the array is asserted here — once, at the boundary — rather than at every
+ * call site. A malformed op survives the assertion and is reported as `invalid-op` by
+ * `applyPatch`, which is where the failure belongs.
+ */
+function asPatchOps(value: unknown): PatchOp[] {
+  return Array.isArray(value) ? (value as PatchOp[]) : [];
 }
 
 function emptyMetrics(): RunMetrics {
@@ -211,6 +236,18 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     return message;
   }
 
+  function ensureToolCall(entry: RunEntry, toolCallId: string, tMs: number): ToolCallRecord {
+    let call = entry.run.toolCalls.get(toolCallId);
+    if (!call) {
+      // As with messages, a never-opened toolCallId is still materialized so its args are
+      // visible; the validator has already flagged the missing TOOL_CALL_START.
+      call = { toolCallId, argsText: '', startedAtMs: tMs, closed: false };
+      entry.run.toolCalls.set(toolCallId, call);
+      entry.validation.openToolCalls.add(toolCallId);
+    }
+    return call;
+  }
+
   function applyTransition(entry: RunEntry, event: AguiEvent, record: CaptureRecord): void {
     const run = entry.run;
     const validation = entry.validation;
@@ -270,6 +307,116 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
           message.closed = true;
           message.endedAtMs = record.tMs;
           validation.openReasoningMessages.delete(messageId);
+        }
+        break;
+      }
+      case 'STEP_STARTED': {
+        const stepName = str(event.stepName);
+        if (stepName !== undefined) {
+          run.steps.push({ stepName, startedAtMs: record.tMs, closed: false });
+          validation.openSteps.push(stepName);
+        }
+        break;
+      }
+      case 'STEP_FINISHED': {
+        const stepName = str(event.stepName);
+        if (stepName !== undefined) {
+          for (let i = run.steps.length - 1; i >= 0; i -= 1) {
+            const step = run.steps[i]!;
+            if (step.stepName === stepName && !step.closed) {
+              step.closed = true;
+              step.endedAtMs = record.tMs;
+              break;
+            }
+          }
+          const openIndex = validation.openSteps.lastIndexOf(stepName);
+          if (openIndex >= 0) validation.openSteps.splice(openIndex, 1);
+        }
+        break;
+      }
+      case 'TOOL_CALL_START': {
+        const toolCallId = str(event.toolCallId);
+        if (toolCallId !== undefined) {
+          const call = ensureToolCall(entry, toolCallId, record.tMs);
+          call.toolCallName = str(event.toolCallName) ?? call.toolCallName;
+          call.parentMessageId = str(event.parentMessageId) ?? call.parentMessageId;
+        }
+        break;
+      }
+      case 'TOOL_CALL_ARGS': {
+        const toolCallId = str(event.toolCallId);
+        if (toolCallId !== undefined) {
+          const call = ensureToolCall(entry, toolCallId, record.tMs);
+          call.argsText += str(event.delta) ?? '';
+        }
+        break;
+      }
+      case 'TOOL_CALL_END': {
+        const toolCallId = str(event.toolCallId);
+        if (toolCallId !== undefined) {
+          const call = ensureToolCall(entry, toolCallId, record.tMs);
+          call.closed = true;
+          call.endedAtMs = record.tMs;
+          if (call.argsText.trim() === '') {
+            // A tool call that streamed no args at all is not a parse failure.
+            call.args = undefined;
+            call.argsParseError = undefined;
+          } else {
+            try {
+              call.args = JSON.parse(call.argsText) as unknown;
+              call.argsParseError = undefined;
+            } catch (error) {
+              call.args = undefined;
+              call.argsParseError = error instanceof Error ? error.message : String(error);
+            }
+          }
+          validation.openToolCalls.delete(toolCallId);
+          validation.endedToolCalls.add(toolCallId);
+        }
+        break;
+      }
+      case 'TOOL_CALL_RESULT': {
+        const toolCallId = str(event.toolCallId);
+        if (toolCallId !== undefined) {
+          const call = ensureToolCall(entry, toolCallId, record.tMs);
+          call.result = event.content;
+          call.resultAtMs = record.tMs;
+        }
+        break;
+      }
+      case 'STATE_SNAPSHOT': {
+        entry.timeline.applySnapshot(record.seq, record.tMs, event.snapshot);
+        run.stateTimeline = entry.timeline.frames();
+        validation.sawSnapshot = true;
+        break;
+      }
+      case 'STATE_DELTA': {
+        entry.timeline.applyDelta(record.seq, record.tMs, asPatchOps(event.delta));
+        run.stateTimeline = entry.timeline.frames();
+        break;
+      }
+      case 'ACTIVITY_SNAPSHOT': {
+        const activityId = activityIdOf(event);
+        if (activityId !== undefined) {
+          run.activities.set(activityId, {
+            activityId,
+            value: event.content,
+            updatedAtMs: record.tMs,
+          });
+        }
+        break;
+      }
+      case 'ACTIVITY_DELTA': {
+        const activityId = activityIdOf(event);
+        if (activityId !== undefined) {
+          const previous = run.activities.get(activityId);
+          const result = applyPatch(previous?.value, asPatchOps(event.patch));
+          run.activities.set(activityId, {
+            activityId,
+            // A failed activity patch keeps the last good value, mirroring the state timeline.
+            value: result.ok ? result.value : previous?.value,
+            updatedAtMs: record.tMs,
+          });
         }
         break;
       }

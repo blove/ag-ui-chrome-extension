@@ -178,3 +178,161 @@ describe('createRunBuilder — lifecycle and text messages', () => {
     expect(seqs).toContain(3);
   });
 });
+
+describe('createRunBuilder — tool calls, state and steps', () => {
+  function rec(seq: number, tMs: number, connId: string, event: AguiEvent): CaptureRecord {
+    return { kind: 'event', seq, tMs, connId, raw: event, event, issues: [] };
+  }
+
+  it('accumulates TOOL_CALL_ARGS across deltas and parses them at TOOL_CALL_END', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(
+      rec(2, 10, 'c1', {
+        type: 'TOOL_CALL_START',
+        toolCallId: 'tc1',
+        toolCallName: 'search',
+        parentMessageId: 'm1',
+      }),
+    );
+    builder.addRecord(rec(3, 20, 'c1', { type: 'TOOL_CALL_ARGS', toolCallId: 'tc1', delta: '{"q":' }));
+    builder.addRecord(rec(4, 30, 'c1', { type: 'TOOL_CALL_ARGS', toolCallId: 'tc1', delta: '"cats"' }));
+    builder.addRecord(rec(5, 35, 'c1', { type: 'TOOL_CALL_ARGS', toolCallId: 'tc1', delta: '}' }));
+    builder.addRecord(rec(6, 40, 'c1', { type: 'TOOL_CALL_END', toolCallId: 'tc1' }));
+    builder.addRecord(
+      rec(7, 60, 'c1', { type: 'TOOL_CALL_RESULT', messageId: 'm2', toolCallId: 'tc1', content: '12 results' }),
+    );
+    builder.addRecord(rec(8, 70, 'c1', { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' }));
+
+    const run = builder.getRun('r1')!;
+    const call = run.toolCalls.get('tc1')!;
+
+    expect(call.argsText).toBe('{"q":"cats"}');
+    expect(call.args).toEqual({ q: 'cats' });
+    expect(call.argsParseError).toBeUndefined();
+    expect(call.toolCallName).toBe('search');
+    expect(call.parentMessageId).toBe('m1');
+    expect(call.startedAtMs).toBe(10);
+    expect(call.endedAtMs).toBe(40);
+    expect(call.resultAtMs).toBe(60);
+    expect(call.result).toBe('12 results');
+    expect(call.closed).toBe(true);
+    expect(run.metrics.toolLatencyMs).toEqual({ tc1: 50 });
+    expect(run.issues.some((issue) => issue.code === 'tool-args-not-json')).toBe(false);
+  });
+
+  it('records argsParseError and raises tool-args-not-json when the accumulated args are invalid', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TOOL_CALL_START', toolCallId: 'tc1', toolCallName: 'search' }));
+    builder.addRecord(rec(3, 20, 'c1', { type: 'TOOL_CALL_ARGS', toolCallId: 'tc1', delta: '{"q":' }));
+    builder.addRecord(rec(4, 30, 'c1', { type: 'TOOL_CALL_ARGS', toolCallId: 'tc1', delta: 'cats' }));
+    builder.addRecord(rec(5, 40, 'c1', { type: 'TOOL_CALL_END', toolCallId: 'tc1' }));
+
+    const run = builder.getRun('r1')!;
+    const call = run.toolCalls.get('tc1')!;
+
+    expect(call.argsText).toBe('{"q":cats');
+    expect(call.args).toBeUndefined();
+    expect(typeof call.argsParseError).toBe('string');
+    expect(call.argsParseError!.length).toBeGreaterThan(0);
+
+    const issue = run.issues.find((candidate) => candidate.code === 'tool-args-not-json')!;
+    expect(issue.severity).toBe('error');
+    expect(issue.runId).toBe('r1');
+  });
+
+  it('leaves args and argsParseError unset for a tool call that carried no args at all', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TOOL_CALL_START', toolCallId: 'tc1', toolCallName: 'ping' }));
+    builder.addRecord(rec(3, 20, 'c1', { type: 'TOOL_CALL_END', toolCallId: 'tc1' }));
+
+    const call = builder.getRun('r1')!.toolCalls.get('tc1')!;
+    expect(call.argsText).toBe('');
+    expect(call.args).toBeUndefined();
+    expect(call.argsParseError).toBeUndefined();
+  });
+
+  it('builds a state timeline of snapshot, applied delta, and failed delta', () => {
+    const builder = createRunBuilder();
+    const good = [{ op: 'replace', path: '/count', value: 2 }];
+    const bad = [{ op: 'replace', path: '/nope', value: 9 }];
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'STATE_SNAPSHOT', snapshot: { count: 1, items: ['a'] } }));
+    builder.addRecord(rec(3, 20, 'c1', { type: 'STATE_DELTA', delta: good }));
+    builder.addRecord(rec(4, 30, 'c1', { type: 'STATE_DELTA', delta: bad }));
+
+    const run = builder.getRun('r1')!;
+    expect(run.stateTimeline).toHaveLength(3);
+
+    // `StateFrame` is a discriminated union: `patch` and `failure` exist only on the
+    // `delta` arm, so the test has to narrow on `kind` before reading them.
+    const [snapshot, applied, failed] = run.stateTimeline;
+
+    expect(snapshot?.kind).toBe('snapshot');
+    expect(snapshot?.value).toEqual({ count: 1, items: ['a'] });
+
+    expect(applied?.kind).toBe('delta');
+    if (applied?.kind !== 'delta') throw new Error('expected frame 1 to be a delta');
+    expect(applied.value).toEqual({ count: 2, items: ['a'] });
+    expect(applied.patch).toEqual(good);
+    expect(applied.failure).toBeUndefined();
+
+    expect(failed?.kind).toBe('delta');
+    if (failed?.kind !== 'delta') throw new Error('expected frame 2 to be a delta');
+    expect(failed.failure?.opIndex).toBe(0);
+    expect(failed.failure?.reason).toBe('path-not-found');
+    // a failed patch leaves the value at the previous frame
+    expect(failed.value).toEqual({ count: 2, items: ['a'] });
+
+    expect(run.issues.some((issue) => issue.code === 'state-patch-failed')).toBe(true);
+    expect(run.metrics.statePatchCount).toBe(2);
+    expect(run.metrics.statePatchBytes).toBe(JSON.stringify(good).length + JSON.stringify(bad).length);
+  });
+
+  it('tracks steps, closing the most recent open step of the same name', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'STEP_STARTED', stepName: 'plan' }));
+    builder.addRecord(rec(3, 20, 'c1', { type: 'STEP_FINISHED', stepName: 'plan' }));
+    builder.addRecord(rec(4, 30, 'c1', { type: 'STEP_STARTED', stepName: 'act' }));
+
+    expect(builder.getRun('r1')!.steps).toEqual([
+      { stepName: 'plan', startedAtMs: 10, endedAtMs: 20, closed: true },
+      { stepName: 'act', startedAtMs: 30, closed: false },
+    ]);
+  });
+
+  it('folds activity snapshots and patches them with activity deltas', () => {
+    const builder = createRunBuilder();
+
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(
+      rec(2, 10, 'c1', {
+        type: 'ACTIVITY_SNAPSHOT',
+        activityType: 'progress',
+        messageId: 'm1',
+        content: { pct: 10, label: 'starting' },
+      }),
+    );
+    builder.addRecord(
+      rec(3, 20, 'c1', {
+        type: 'ACTIVITY_DELTA',
+        activityType: 'progress',
+        messageId: 'm1',
+        patch: [{ op: 'replace', path: '/pct', value: 60 }],
+      }),
+    );
+
+    const activity = builder.getRun('r1')!.activities.get('m1#progress')!;
+    expect(activity.activityId).toBe('m1#progress');
+    expect(activity.value).toEqual({ pct: 60, label: 'starting' });
+    expect(activity.updatedAtMs).toBe(20);
+  });
+});
