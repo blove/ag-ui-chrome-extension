@@ -398,8 +398,14 @@ async function capture(browser: Browser, session: Session, spec: CaptureSpec): P
   // come first in `shoot`, and a panel that logged an error then left its PNG in `listing/out/`
   // while the run exited 1 — a rejected shot masquerading as a delivered asset, which is the
   // exact failure this script is supposed to make impossible.
+  //
+  // No `${spec.file}:` prefix here — `main`'s catch already prefixes every failure with the
+  // asset's file name, and it is the only place that knows which asset was being attempted when
+  // this throws. Prefixing here too used to print `promo-small-440x280.png: promo-small-440x280.
+  // png: the panel logged errors: …`, a message that stutters in the one script whose entire job
+  // is saying precisely why an asset was refused.
   if (session.errors.length > 0) {
-    throw new Error(`${spec.file}: the panel logged errors: ${session.errors.join(' | ')}`);
+    throw new Error(`the panel logged errors: ${session.errors.join(' | ')}`);
   }
   writeFileSync(join(outDir, spec.file), png);
 }
