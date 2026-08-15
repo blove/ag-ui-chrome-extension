@@ -169,7 +169,15 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
 export interface SettleOptions {
   /** How many connections the run just driven is expected to have opened. Default 1. */
   connections?: number;
-  /** Upper bound on the wait. Ten seconds, matching the other polls in this suite. */
+  /**
+   * Upper bound on the wait.
+   *
+   * Fifteen seconds, which is arithmetic rather than taste: a `beforeAll` gets 60 s, spends up to
+   * 30 s waiting for the page's own `#status`, and a few more starting servers and a browser, so
+   * this is what is left over. It is also more than twenty times the worst delay measured on an
+   * unloaded machine (627 ms), and the value only matters at all when something is genuinely
+   * broken — the wait ends on a message, not on the clock.
+   */
   timeoutMs?: number;
 }
 
@@ -186,9 +194,11 @@ export interface SettleOptions {
  *
  * Measured on `a54a54c`, unmodified: `e2e/capture.spec.ts`'s happy run failed 2 of 25 full
  * `pnpm test` runs with an EMPTY buffer, and instrumenting the page showed why — at `done` the
- * MAIN world had already posted `conn-open`, `frames` and `conn-close`, the worker had recorded
- * the document's announcement, and the run itself arrived 627 ms later, whole and in order.
- * Nothing was ever lost; the assertion simply ran first.
+ * MAIN world had already posted `conn-open`, `frames` and `conn-close`, and the run arrived
+ * afterwards, whole and in order. Nothing was ever lost; the assertion simply ran first. On an
+ * idle machine that delay is 18-70 ms and was seen as high as 627 ms; on a machine with no spare
+ * cores it was seen at 3 s, 14 s, 19 s and 29 s, which is the other half of this fix — the root
+ * `test` script no longer runs the devtools unit suite alongside this one.
  *
  * WHAT IS WAITED ON. `conn-close` is posted by the MAIN world when its own drain of the stream
  * ends, so a connection the worker has seen close is a connection whose capture is over — and
@@ -205,7 +215,7 @@ export async function readSettledCapture(
   options: SettleOptions = {},
 ): Promise<CaptureSnapshot> {
   const wanted = options.connections ?? 1;
-  const timeoutMs = options.timeoutMs ?? 10_000;
+  const timeoutMs = options.timeoutMs ?? 15_000;
   const deadline = Date.now() + timeoutMs;
   let latest = await readCapture(ctx);
   for (;;) {

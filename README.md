@@ -121,6 +121,13 @@ pnpm test                                  # run once, whole workspace
 pnpm --filter ag-ui-devtools exec vitest   # watch mode
 ```
 
+`pnpm test` runs the two packages **one after the other** (`--workspace-concurrency=1`), not at
+once. The harness package drives a real browser and asserts on wall-clock arrival times, and
+running it alongside the devtools unit suite made it measure a machine with no spare cores: the
+capture path was observed lagging by tens of seconds, and the capture e2e failed intermittently
+because of it. The serial run costs about ten seconds and buys a gate whose failures mean
+something.
+
 Tests live next to their sources as `*.test.ts` and run under Node — `src/core/` contains no Chrome
 APIs, which is enforced by an ESLint rule and by a check that no `chrome.` reference survives into
 `core/`'s build output. That boundary is also what lets `core/` be lifted into a CLI or a VS Code

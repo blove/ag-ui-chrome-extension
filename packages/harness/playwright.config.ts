@@ -14,6 +14,15 @@ export default defineConfig({
   // arrival times, which parallel workers on a loaded machine would distort. The e2e adds a
   // second reason: parallel files would race for the extension profile directory and multiply
   // Chromium launches for no benefit.
+  //
+  // The same argument crosses the package boundary, which is why the root `test` script pins
+  // `--workspace-concurrency=1`. `pnpm -r run test:ci` used to start this suite and the devtools
+  // Vitest suite AT THE SAME TIME — there is no dependency edge between the two packages — so the
+  // one gate in this repo that measures a real browser did its measuring while 1346 unit tests
+  // had every core. Measured under exactly that overlap: the extension's service worker took
+  // 3 s, 14 s, 19 s, 29 s and once over 52 s to be handed messages the page had already posted,
+  // and the `beforeAll` of `e2e/capture.spec.ts` blew its 60 s budget outright. A browser gate
+  // starved by its own repo's unit tests is measuring the machine, not the code.
   fullyParallel: false,
   workers: 1,
   // `keepalive-gap` sleeps 15.5 s on the wire on purpose. The 30 s default would leave almost no

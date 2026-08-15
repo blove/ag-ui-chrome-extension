@@ -49,6 +49,20 @@ test('the root delegates to test:ci, which this package defines', () => {
   expect((scripts as Record<string, unknown>)['test:ci']).toBe('playwright test');
 });
 
+test('the root runs the two suites one after the other, not at once', () => {
+  // This suite is the only gate that measures a real browser and real wall-clock arrival times,
+  // and `pnpm -r run` has no dependency edge between the two packages to order them by — so
+  // without this flag the capture e2e ran while 1346 Vitest tests held every core. Measured under
+  // that overlap: the service worker was handed messages the page had already posted 3 s, 14 s,
+  // 19 s and 29 s late, and `e2e/capture.spec.ts` failed intermittently on an empty ring buffer.
+  //
+  // Asserted here rather than left to a comment because it reads like a pointless slowdown to
+  // anyone who has not seen the flake, and deleting it puts the flake back.
+  const root = readManifest('../../../package.json');
+  const scripts = root.scripts as Record<string, unknown>;
+  expect(scripts['test']).toBe('pnpm -r --workspace-concurrency=1 run test:ci');
+});
+
 test('the harness stays out of the extension package', () => {
   const devtools = readManifest('../../devtools/package.json');
   const runtime = Object.keys((devtools.dependencies ?? {}) as Record<string, unknown>);
