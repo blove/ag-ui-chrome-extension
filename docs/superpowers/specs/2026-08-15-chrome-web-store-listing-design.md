@@ -41,15 +41,25 @@ packages/devtools/
       tile.html                 # 440×280 small promo tile
       marquee.html              # 1400×560 marquee
     fixtures/
-      build-demo.ts             # generator
-      demo.agui.jsonl           # committed output
+      demo.agui.jsonl           # committed output of scripts/build-demo-fixture.ts
     out/                        # generated and committed: the exact PNGs uploaded to CWS
   scripts/
     panel-harness.ts            # EXTRACTED from screenshot-panel.mts
     screenshot-panel.mts        # unchanged contract: the visual gate
-    listing-assets.mts          # new: writes listing/out/*.png
-    verify-listing-copy.ts      # new: asserts every CWS field limit
+    render-icons.mts            # icon.svg -> public/icons/*.png; runs BEFORE the build
+    build-demo-fixture.ts       # generator for the demo capture
+    listing-assets.mts          # writes listing/out/*.png; runs AFTER the build
+    verify-listing-copy.ts      # asserts every CWS field limit
 ```
+
+**All TypeScript lives in `scripts/`**, not in `listing/`: `tsconfig.json` includes only `src`,
+`scripts`, and the config files, and the Vitest projects only cover `src/**` and `scripts/**`. A
+generator under `listing/` would be neither typechecked nor testable. `listing/` holds data and
+assets only.
+
+**Icons and screenshots are separate scripts** because they sit on opposite sides of `pnpm build`:
+icons are *source* that Vite copies out of `public/`, so they must exist before it; screenshots read
+`dist/`, so they must run after it.
 
 **`panel-harness.ts`** is a pure extraction — no behaviour change. It takes the three pieces
 `screenshot-panel.mts` already has and that the asset generator needs verbatim:
@@ -57,8 +67,10 @@ packages/devtools/
 - `startServer(root)` — a local static server over `dist/`, because ES modules will not load over
   `file://`.
 - `CHROME_SHIM` — enough of `chrome` for the panel bundle to boot outside DevTools.
-- `openPanel(browser, origin, scheme)` and `importFixture(page, file)` — open the panel at a colour
-  scheme and load a capture through the panel's own file input, exactly as a user would.
+- `openPanel(browser, origin, options)` and `importFixture(scope, file)` — open the panel at a colour
+  scheme and load a capture through the panel's own file input, exactly as a user would. `options`
+  defaults to the gate's historical values, and `scope` is a `Page` **or** a `FrameLocator`, so the
+  same helper drives a panel embedded in a composing frame.
 
 The gate keeps its own assertions, its own failure list, and its own `main()`. The extraction is
 verified by the gate continuing to pass unchanged, including against a deliberately unstyled build
@@ -82,9 +94,15 @@ CWS accepts 1280×800 or 640×400 for screenshots; the pipeline emits 1280×800 
 
 ## 3. The mark
 
-A rounded-square tile filled `--agui-accent` (`#1a73e8`), carrying six white vertical rounded ticks
-of varying height that read left-to-right as a stream. The fifth tick is `--agui-severity-error`
-(`#b3261e`) and slightly taller than its neighbours.
+A rounded-square tile filled `--agui-accent` (`#1a73e8`), carrying **four** white vertical rounded
+ticks of varying height that read left-to-right as a stream. The third tick is the tallest and is
+rendered in `--agui-severity-error`'s **dark-scheme** value (`#f28b82`).
+
+Two corrections against the first draft of this section, both found by rendering rather than by
+reasoning. *Four* ticks, not six: at 16px a tick is `width/128*16` px wide, so six render as ~1.2px
+bars with sub-pixel gaps and turn to mush; four render ~1.9px with ~1.1px gaps and survive. And the
+dark-scheme red, not the light-scheme `#b3261e`, which is near-unreadable against this blue at
+16px.
 
 Authored once as `listing/icon.svg` on a 128×128 viewBox with no rasterisation-dependent detail:
 stroke widths, corner radii, and tick spacing are chosen so the 16px render is a legible silhouette
