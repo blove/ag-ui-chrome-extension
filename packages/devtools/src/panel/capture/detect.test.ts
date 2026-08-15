@@ -212,6 +212,28 @@ describe('probePageMarkers', () => {
     await expect(probePageMarkers()).resolves.toBeNull();
   });
 
+  it('resolves null when the expression itself raised inside the page', async () => {
+    installCannedEval(undefined, { isException: true, value: 'ReferenceError: document' });
+
+    await expect(probePageMarkers()).resolves.toBeNull();
+  });
+
+  /*
+   * The second callback argument is documented as "details IF an exception occurred", and DevTools
+   * passes `undefined` when none did. Reading its mere PRESENCE as failure would therefore make
+   * the whole probe silently dead if a Chrome release ever passed a cleared object instead — a
+   * regression no test here could catch, because the stub would be the thing defining the
+   * contract. The flags are what is checked.
+   */
+  it('accepts a result carrying a cleared exception object', async () => {
+    installCannedEval({ agui: 'ag-ui-shell', ngVersion: null }, { isError: false });
+
+    await expect(probePageMarkers()).resolves.toEqual({
+      level: 'markers',
+      detail: 'ag-ui-shell element',
+    });
+  });
+
   it('resolves null when the page answers with something that is not the probe shape', async () => {
     installCannedEval('nope');
 

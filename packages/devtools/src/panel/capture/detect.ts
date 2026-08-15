@@ -134,10 +134,24 @@ export function probePageMarkers(): Promise<{ level: 'markers'; detail: string }
     chrome.devtools.inspectedWindow.eval(
       PROBE_EXPRESSION,
       (result: unknown, exceptionInfo?: unknown) => {
-        resolve(exceptionInfo === undefined ? readMarkers(result) : null);
+        resolve(threw(exceptionInfo) ? null : readMarkers(result));
       },
     );
   });
+}
+
+/**
+ * Did the eval fail?
+ *
+ * `exceptionInfo` is documented as details IF an exception occurred, and DevTools passes nothing
+ * when none did — but reading its mere presence as failure would leave the probe silently dead if
+ * a Chrome release ever passed a cleared object instead. The flags decide, not the argument count.
+ */
+function threw(exceptionInfo: unknown): boolean {
+  if (exceptionInfo === undefined || exceptionInfo === null) return false;
+  if (typeof exceptionInfo !== 'object') return true;
+  const info = exceptionInfo as { isError?: unknown; isException?: unknown };
+  return Boolean(info.isError) || Boolean(info.isException);
 }
 
 function readMarkers(result: unknown): { level: 'markers'; detail: string } | null {
