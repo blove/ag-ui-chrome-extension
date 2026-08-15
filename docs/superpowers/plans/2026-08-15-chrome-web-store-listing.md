@@ -342,9 +342,12 @@ Create `packages/devtools/listing/icon.svg`:
     The tile is filled rather than transparent because Chrome renders toolbar icons over both
     light and dark chrome, and a bare glyph disappears in one of them.
 
-    Colours are the panel's own tokens: --agui-accent, and --agui-severity-error's DARK-scheme
+    Colours are the panel's own tokens: agui-accent, and agui-severity-error's DARK-scheme
     value for the flagged tick. The light-scheme error red (#b3261e) is near-unreadable on this
-    blue at 16px.
+    blue at 16px. (Those token names are written without their leading double hyphen on purpose:
+    XML forbids `--` anywhere inside a comment body, and Chrome responds by silently refusing to
+    parse the whole SVG — which still rasterises to a PNG of exactly the right dimensions, so
+    `file` reports success on a broken-image placeholder.)
 
     Every tick shares the baseline y=100 (y + height === 100).
   -->
