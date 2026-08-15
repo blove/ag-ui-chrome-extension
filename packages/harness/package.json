@@ -7,6 +7,7 @@
   "license": "MIT",
   "scripts": {
     "build:page": "tsx page/build.ts",
+    "record": "tsx record.ts",
     "test": "playwright test",
     "test:ci": "playwright test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
