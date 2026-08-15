@@ -46,6 +46,16 @@ export default defineConfig({
           include: ['src/{inject,relay,sw}/**/*.test.ts'],
         },
       },
+      {
+        test: {
+          // The listing generators live in `scripts/` because that is what tsconfig.json
+          // includes; `listing/` holds only data and assets. They are plain Node — no DOM, no
+          // `chrome` — so they belong beside `core` rather than in either jsdom project.
+          name: 'listing',
+          environment: 'node',
+          include: ['scripts/**/*.test.ts'],
+        },
+      },
     ],
   },
 });
