@@ -1361,6 +1361,21 @@ async function checkRuns(browser: Browser, origin: string): Promise<void> {
     await session.page.screenshot({ path: join(outDir, 'runs-redacted.png'), fullPage: true });
 
     const rows = await runTable(session.page);
+    /*
+     * Count first, and count for real.
+     *
+     * Every assertion below this line is over `rows`, and `[].every(...)` is `true` — so a
+     * selector that stopped matching would let the whole redaction phase pass having examined
+     * nothing at all. That is the exact way a gate stops being a gate.
+     */
+    if (rows.length !== 4) {
+      fail(
+        `the redacted capture drew ${String(rows.length)} Runs rows, expected 4. Nothing below ` +
+          'this line asserts anything about a table that is not there.',
+      );
+      await session.close();
+      return;
+    }
     if (!rows.every((row) => row.redacted)) {
       fail(
         `only [${rows.filter((row) => row.redacted).map((row) => row.runId).join(', ')}] of the ` +
