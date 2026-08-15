@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>small promo tile</title>
+    <link rel="stylesheet" href="./frame.css" />
+    <style>
+      .tile {
+        width: 440px;
+        height: 280px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 18px;
+        padding: 0 34px;
+      }
+      .tile__mark { width: 64px; height: 64px; }
+      .tile__name { margin: 0; font-size: 30px; font-weight: 680; letter-spacing: -0.02em; }
+      .tile__sub { margin: 0; font-size: 15px; line-height: 1.4; color: var(--ink-muted); }
+    </style>
+  </head>
+  <body>
+    <div class="tile">
+      <img class="tile__mark" src="../icon.svg" alt="" />
+      <h1 class="tile__name">AG-UI DevTools</h1>
+      <p class="tile__sub">Capture, decode and validate AG-UI agent streams — on any page.</p>
+    </div>
+  </body>
+</html>

@@ -379,6 +379,36 @@ async function shoot(browser: Browser, origin: string, shot: Shot): Promise<void
   }
 }
 
+interface Tile {
+  file: string;
+  doc: string;
+  selector: string;
+  width: number;
+  height: number;
+}
+
+/** Marquee is only used if the store features the item, but it costs nothing to emit. */
+const TILES: Tile[] = [
+  { file: 'promo-small-440x280.png', doc: 'tile.html', selector: '.tile', width: 440, height: 280 },
+  { file: 'marquee-1400x560.png', doc: 'marquee.html', selector: '.marquee', width: 1400, height: 560 },
+];
+
+async function shootTile(browser: Browser, origin: string, tile: Tile): Promise<void> {
+  const session = await openPanel(browser, origin, {
+    viewport: { width: tile.width, height: tile.height },
+    deviceScaleFactor: 2,
+    url: `${origin}/listing/frames/${tile.doc}`,
+  });
+  try {
+    const raw = await session.page.locator(tile.selector).screenshot();
+    const png = await downsample(browser, raw, tile.width, tile.height);
+    writeFileSync(join(outDir, tile.file), png);
+    console.log(`  ${tile.file}`);
+  } finally {
+    await session.close();
+  }
+}
+
 async function main(): Promise<void> {
   if (!existsSync(join(distDir, PANEL_PATH))) {
     console.error(`FAIL: ${join(distDir, PANEL_PATH)} does not exist. Run \`pnpm build\` first.`);
@@ -410,6 +440,14 @@ async function main(): Promise<void> {
          */
         rmSync(join(outDir, shot.file), { force: true });
         failures.push(`${shot.file}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    for (const tile of TILES) {
+      try {
+        await shootTile(browser, server.origin, tile);
+      } catch (error) {
+        failures.push(`${tile.file}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   } finally {
