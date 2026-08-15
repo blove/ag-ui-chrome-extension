@@ -71,19 +71,25 @@ export function startServer(root: string): Promise<StaticServer> {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const rel = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
     const file = join(root, rel);
+    // `url.pathname` is always absolute (it starts with `/`), and `normalize` treats a leading
+    // `/` as unclimbable — `normalize('/../x')` is `/x`, not `/x` escaped one level up — so `rel`
+    // is already confined under `root` by the time it reaches here. That makes `startsWith(root)`
+    // unreachable defence-in-depth as this code stands: no traversal payload can make it fail
+    // while `normalize` runs first. It stays because `normalize` running first is an invariant of
+    // this function, not of the type system — nothing stops a future edit from reordering these
+    // two lines, and the day that happens this is the check that saves it.
     if (!file.startsWith(root) || !isFile(file)) {
       res.writeHead(404).end('not found');
       return;
     }
     res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' });
     const stream = createReadStream(file);
-    // Belt-and-suspenders for what `isFile` above cannot see coming — e.g. the file is removed
-    // between the stat and the read. Without this handler the stream's error is unhandled and
-    // takes the process down exactly like the EISDIR case this guard exists to prevent.
-    stream.on('error', () => {
-      if (!res.headersSent) res.writeHead(500);
-      res.end('internal error');
-    });
+    // `res.writeHead(200, ...)` above has already run by the time an fs error (e.g. the file is
+    // removed between the `isFile` check and this read) can reach this handler, so the status is
+    // already committed — there is no 500 left to send. The only job left for this handler is to
+    // end the response instead of letting the stream's unhandled `'error'` crash the process,
+    // which is the same failure mode `isFile` above exists to prevent.
+    stream.on('error', () => res.end());
     stream.pipe(res);
   });
   return new Promise((ready) => {
