@@ -7,7 +7,10 @@ import { initialPanelState } from '../model/panel-types';
 import type { CaptureStatus, PanelSource } from '../model/panel-types';
 
 function storeWith(capture: CaptureStatus, source: PanelSource = { kind: 'empty' }): PanelStore {
-  return createPanelStore({ ...initialPanelState(), capture, source });
+  // `instrumented: true` unless a test says otherwise: these are the states of a page that has
+  // reported its capture hooks, which is the ordinary case. The tri-state is exercised on its own
+  // below.
+  return createPanelStore({ ...initialPanelState(), capture, source, instrumented: true });
 }
 
 describe('CaptureBanner', () => {
@@ -137,6 +140,83 @@ describe('CaptureBanner', () => {
     render(<CaptureBanner store={store} onEnable={vi.fn()} />);
 
     expect(screen.getByRole('status').textContent).not.toMatch(/angular/i);
+  });
+});
+
+/**
+ * Granted is not instrumented, and the banner is where the difference becomes visible.
+ *
+ * `chrome.scripting.registerContentScripts` affects only FUTURE navigations, so an origin granted
+ * in a previous session — or an extension reloaded with the page open — leaves a document with no
+ * capture hooks in it while the permission says capture is available. The panel used to read the
+ * permission and announce "Capture is on", which is the project's recurring failure class:
+ * something that looks like success.
+ */
+describe('CaptureBanner — granted, instrumented, or neither', () => {
+  function onOrigin(instrumented: boolean | null): PanelStore {
+    return createPanelStore({
+      ...initialPanelState(),
+      capture: { kind: 'on', origin: 'http://localhost:3000' },
+      source: { kind: 'live', origin: 'http://localhost:3000' },
+      instrumented,
+    });
+  }
+
+  it('warns that the page has no capture hooks, and states the reload requirement once', () => {
+    render(<CaptureBanner store={onOrigin(false)} onEnable={vi.fn()} />);
+
+    const banner = screen.getByRole('status');
+    expect(banner.textContent).toMatch(/no capture hooks/i);
+    // The wording lives in `ReloadNote`, shared with the two capture-off states, so the reload
+    // requirement is explained one way everywhere.
+    expect(banner.textContent).toMatch(/requires a reload of the inspected page/i);
+    expect(banner.textContent).not.toMatch(/waiting for a run/i);
+  });
+
+  /*
+   * The grace period, seen from the banner.
+   *
+   * A panel that rendered the warning before the page has had a chance to report would flash a
+   * false warning on EVERY open, and a warning that is usually wrong is worse than none: it
+   * teaches the user to ignore the one that matters.
+   */
+  it('says it is still checking rather than warning, while nothing has been reported yet', () => {
+    render(<CaptureBanner store={onOrigin(null)} onEnable={vi.fn()} />);
+
+    const banner = screen.getByRole('status');
+    expect(banner.textContent).toMatch(/checking/i);
+    expect(banner.textContent).not.toMatch(/no capture hooks/i);
+    expect(banner.textContent).not.toMatch(/waiting for a run/i);
+  });
+
+  it('warns even with records on screen, because the warning is about THIS document', () => {
+    const store = onOrigin(false);
+    store.update((s) => ({
+      ...s,
+      records: [
+        { kind: 'keepalive', seq: 1, tMs: 0, connId: 'c1', raw: '', comment: '', issues: [] },
+      ],
+    }));
+    render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+
+    // Records from a previous document do not make the current one instrumented, and a panel
+    // that went quiet here would be back to implying capture it does not have.
+    expect(screen.getByRole('status').textContent).toMatch(/no capture hooks/i);
+  });
+
+  it('stays quiet over records while the check is still outstanding', () => {
+    const store = onOrigin(null);
+    store.update((s) => ({
+      ...s,
+      records: [
+        { kind: 'keepalive', seq: 1, tMs: 0, connId: 'c1', raw: '', comment: '', issues: [] },
+      ],
+    }));
+    const { container } = render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+
+    // A "checking…" note thrown over a full timeline on every navigation is noise. Absence of a
+    // report is only worth saying once it has become a finding.
+    expect(container.textContent).toBe('');
   });
 });
 

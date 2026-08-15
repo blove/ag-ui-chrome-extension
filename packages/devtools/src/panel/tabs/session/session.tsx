@@ -37,11 +37,24 @@ function describeSource(source: PanelSource): string {
  * on the page. A production AG-UI app sends nothing until the user types, so "nothing detected"
  * would read as a finding when it is only an absence of evidence.
  */
-function describeCapture(capture: CaptureStatus): string {
+function describeCapture(capture: CaptureStatus, instrumented: boolean | null): string {
   switch (capture.kind) {
     case 'unsupported':
       return 'unavailable in this build';
     case 'on':
+      /*
+       * `on for <origin>` alone would be the panel's original false claim in its second home.
+       * The origin being granted says capture is AVAILABLE here; whether this DOCUMENT has the
+       * hooks in it is a separate fact that only the page can report, and one that
+       * `registerContentScripts` — which affects future navigations only — routinely leaves
+       * false on a page that was already open.
+       */
+      if (instrumented === false) {
+        return `on for ${capture.origin} — but this page has no capture hooks in it, so nothing is being captured until you reload it`;
+      }
+      if (instrumented === null) {
+        return `on for ${capture.origin} — this page has not reported its capture hooks yet`;
+      }
       return `on for ${capture.origin}`;
     case 'off':
       switch (capture.signal.level) {
@@ -141,7 +154,7 @@ export function Session({ store, onLoaded }: SessionProps): JSX.Element {
 
       <h3 class="agui-session__heading">Capture</h3>
       <dl class="agui-session__grid">
-        <Row label="Status" value={describeCapture(state.capture)} />
+        <Row label="Status" value={describeCapture(state.capture, state.instrumented)} />
         <Row label="Expand chunks" value={state.expandChunks ? 'on' : 'off'} />
         <Row label="Export" value="not available in phase 1" />
       </dl>

@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/preact';
 import { App } from '../app';
+import { INSTRUMENTATION_GRACE_MS } from './use-live-capture';
 import type { AguiEvent, CaptureRecord } from '../../core/model/types';
 import type { PanelCommand, RequestLine, SwMessage } from '../../sw/protocol';
 import { createPanelStore } from '../model/store';
@@ -165,6 +166,14 @@ describe('panel live wiring', () => {
     });
     expect(port.posted[0]).toEqual({ kind: 'subscribe', tabId: 1 });
     expect(store.get().capture).toEqual({ kind: 'on', origin: 'http://localhost:5173' });
+    // Not "Capture is on" yet: the origin is auto-enabled (D3), which says capture is AVAILABLE
+    // here and nothing about whether the open document has any hooks in it. The panel waits to
+    // be told rather than inferring — that inference is the defect this suite now covers.
+    expect(await screen.findByText(/checking whether this page is instrumented/i)).toBeTruthy();
+
+    act(() => {
+      port.emit({ kind: 'capture-installed' });
+    });
     expect(await screen.findByText('Capture is on for http://localhost:5173.')).toBeTruthy();
   });
 
@@ -184,6 +193,7 @@ describe('panel live wiring', () => {
         records: [RUN_STARTED, TEXT_START],
         requests: [REQUEST],
         droppedBefore: 0,
+        instrumented: true,
       });
     });
 
@@ -213,6 +223,7 @@ describe('panel live wiring', () => {
         records: [RUN_STARTED],
         requests: [REQUEST],
         droppedBefore: 12,
+        instrumented: true,
       });
     });
 
@@ -231,7 +242,13 @@ describe('panel live wiring', () => {
     });
 
     act(() => {
-      port.emit({ kind: 'snapshot', records: [RUN_STARTED], requests: [REQUEST], droppedBefore: 0 });
+      port.emit({
+        kind: 'snapshot',
+        records: [RUN_STARTED],
+        requests: [REQUEST],
+        droppedBefore: 0,
+        instrumented: true,
+      });
     });
     expect(screen.queryByText(/dropped/)).toBeNull();
 
@@ -379,6 +396,176 @@ describe('panel live wiring', () => {
     });
   });
 
+  /**
+   * The defect this whole change exists for, at the level the panel can see it.
+   *
+   * The panel used to flip capture to `on` purely because the ORIGIN was granted, and then say
+   * "Capture is on" — while `chrome.scripting.registerContentScripts` had installed nothing in
+   * the document that was already open. Instrumentation is now a fact the page REPORTS, and its
+   * absence is the finding.
+   */
+  describe('granted is not instrumented', () => {
+    /*
+     * Fake timers, scoped to this block, so the grace period is exercised at its real length
+     * without spending it. `shouldAdvanceTime` keeps the clock moving underneath, which is what
+     * lets `waitFor` and the permission promises above still resolve.
+     */
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function elapseGrace(): Promise<void> {
+      await act(async () => {
+        vi.advanceTimersByTime(INSTRUMENTATION_GRACE_MS + 50);
+        await Promise.resolve();
+      });
+    }
+
+    it('does not flash a warning before the page has had a chance to report', async () => {
+      stubOrigin('http://localhost:5173');
+      const { port } = stubPort();
+      const store = createPanelStore();
+
+      render(<App store={store} />);
+      await waitFor(() => {
+        expect(port.posted).toHaveLength(1);
+      });
+
+      // The worker answers immediately, and on a page that is still loading its answer is
+      // "nothing reported yet". Rendering the warning on that would put a false alarm on screen
+      // on EVERY panel open, which teaches the user to ignore the one that is real.
+      act(() => {
+        port.emit({
+          kind: 'snapshot',
+          records: [],
+          requests: [],
+          droppedBefore: 0,
+          instrumented: false,
+        });
+      });
+
+      expect(screen.queryByText(/no capture hooks/i)).toBeNull();
+      expect(store.get().instrumented).toBeNull();
+      expect(await screen.findByText(/checking/i)).toBeTruthy();
+    });
+
+    it('warns once the grace period passes with nothing reported', async () => {
+      stubOrigin('http://localhost:5173');
+      const { port } = stubPort();
+      const store = createPanelStore();
+
+      render(<App store={store} />);
+      await waitFor(() => {
+        expect(port.posted).toHaveLength(1);
+      });
+      act(() => {
+        port.emit({
+          kind: 'snapshot',
+          records: [],
+          requests: [],
+          droppedBefore: 0,
+          instrumented: false,
+        });
+      });
+
+      await elapseGrace();
+
+      expect(store.get().instrumented).toBe(false);
+      expect(await screen.findByText(/no capture hooks/i)).toBeTruthy();
+      // And the reload is offered, because a reload is the only honest fix: injecting into the
+      // open document now would leave it PARTIALLY instrumented — a bundler hoists
+      // `const f = window.fetch` at module load, and an already-constructed EventSource is
+      // unreachable — while reporting itself fully instrumented.
+      expect(await screen.findByRole('button', { name: 'Reload the inspected page' })).toBeTruthy();
+    });
+
+    it('never warns when the page reports its hooks inside the grace period', async () => {
+      stubOrigin('http://localhost:5173');
+      const { port } = stubPort();
+      const store = createPanelStore();
+
+      render(<App store={store} />);
+      await waitFor(() => {
+        expect(port.posted).toHaveLength(1);
+      });
+
+      act(() => {
+        port.emit({ kind: 'capture-installed' });
+      });
+      await elapseGrace();
+
+      expect(store.get().instrumented).toBe(true);
+      expect(screen.queryByText(/no capture hooks/i)).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Reload the inspected page' })).toBeNull();
+      expect(await screen.findByText(/waiting for a run/i)).toBeTruthy();
+      // Nothing about it is data: no row, no run, no seq spent.
+      expect(store.get().records).toEqual([]);
+      expect(store.get().runs).toEqual([]);
+    });
+
+    it('clears the warning when the reloaded page reports its hooks', async () => {
+      stubOrigin('http://localhost:5173');
+      const { port } = stubPort();
+      const store = createPanelStore();
+
+      render(<App store={store} />);
+      await waitFor(() => {
+        expect(port.posted).toHaveLength(1);
+      });
+      await elapseGrace();
+      expect(await screen.findByText(/no capture hooks/i)).toBeTruthy();
+
+      // What the user does next: press Reload, the new document installs the hooks and says so.
+      // A panel that only ever learned this from its own `subscribe` would keep warning forever
+      // and the reload button would look broken.
+      // In this order, and the order is the real one: `onNavigated` fires when the new document
+      // commits, and the announcement is posted by that document's `document_start` script and
+      // then crosses two more hops (page → relay → worker → panel) before it lands here.
+      act(() => {
+        navigated().emit('http://localhost:5173/');
+      });
+      expect(store.get().instrumented).toBeNull();
+      act(() => {
+        port.emit({ kind: 'capture-installed' });
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByText(/no capture hooks/i)).toBeNull();
+      });
+      expect(store.get().instrumented).toBe(true);
+    });
+
+    it('goes back to checking on a navigation, and warns if the new document is silent', async () => {
+      stubOrigin('http://localhost:5173');
+      const { port } = stubPort();
+      const store = createPanelStore();
+
+      render(<App store={store} />);
+      await waitFor(() => {
+        expect(port.posted).toHaveLength(1);
+      });
+      act(() => {
+        port.emit({ kind: 'capture-installed' });
+      });
+      await elapseGrace();
+      expect(store.get().instrumented).toBe(true);
+
+      // A navigation is a NEW document, and it inherits nothing: the previous document's hooks
+      // say nothing about this one, which may be on an origin that was never granted.
+      act(() => {
+        navigated().emit('https://elsewhere.example/');
+      });
+      expect(store.get().instrumented).toBeNull();
+
+      await elapseGrace();
+      expect(store.get().instrumented).toBe(false);
+    });
+  });
+
   it('drops a malformed port message instead of folding it', async () => {
     stubOrigin('http://localhost:5173');
     const { port } = stubPort();
@@ -459,6 +646,7 @@ describe('panel live wiring', () => {
         ],
         requests: [REQUEST],
         droppedBefore: 0,
+        instrumented: true,
       });
       port.emit({ kind: 'closed', connId: 'c1', tMs: 40 });
     });
@@ -492,7 +680,7 @@ describe('panel live wiring', () => {
       eventRecord(i, { type: 'CUSTOM', name: 'n', value: i }),
     );
     act(() => {
-      port.emit({ kind: 'snapshot', records, requests: [REQUEST], droppedBefore: 0 });
+      port.emit({ kind: 'snapshot', records, requests: [REQUEST], droppedBefore: 0, instrumented: true });
     });
 
     // Following means the window has moved to the tail: the last row is rendered, the first is

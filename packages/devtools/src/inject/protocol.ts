@@ -34,6 +34,22 @@ export type WireFrame =
   | { kind: 'keepalive'; tMs: number; raw: string; comment: string };
 
 export type InjectMessage =
+  /**
+   * The hooks are installed in THIS document. Posted once at install time, before any traffic.
+   *
+   * The only message here that is about the capture layer rather than about the page, and the
+   * only one whose value is in NOT arriving. The panel used to infer "capturing" from the origin
+   * being granted, but a grant registers content scripts for FUTURE navigations only: a document
+   * already open when the grant landed — or when the extension was reloaded — has no hooks in it,
+   * and the panel said it was capturing while nothing was. Absence of this message is what tells
+   * the panel the document is not instrumented, which is why it cannot be folded into the first
+   * real request: a page that never makes one is exactly the case being distinguished.
+   *
+   * It carries no `connId` because there is no connection, and it never becomes a
+   * `CaptureRecord`: it is extension-internal state about our own capture layer, and putting it
+   * in the Timeline would make the panel assert something false about the user's application.
+   */
+  | { source: 'agui-dt'; v: 1; kind: 'capture-installed'; tMs: number }
   | {
       source: 'agui-dt';
       v: 1;
@@ -63,6 +79,15 @@ export type InjectMessage =
       contentType: string;
       bytes: number;
     };
+
+/**
+ * Every message that belongs to a connection — i.e. everything except the announcement.
+ *
+ * The three transport patches are typed on this rather than on `InjectMessage`, so a transport
+ * structurally cannot claim the hooks are installed: that claim is `install.ts`'s alone, made
+ * once, before any transport has had anything to say.
+ */
+export type ConnectionMessage = Exclude<InjectMessage, { kind: 'capture-installed' }>;
 
 const CLOSE_REASONS: ReadonlySet<string> = new Set(['complete', 'error', 'aborted']);
 
@@ -98,10 +123,20 @@ function check(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (!hasOwn(value, 'source') || value.source !== AGUI_DT_SOURCE) return false;
   if (!hasOwn(value, 'v') || value.v !== PROTOCOL_VERSION) return false;
+  if (!hasOwn(value, 'kind')) return false;
+
+  // The one arm with no connection. It is checked before the `connId` requirement rather than
+  // exempted from it: every other check — own-property strictness, the source tag, the version —
+  // applies to it unchanged, because a page that forges this message makes the panel claim
+  // capture is live on a document with no hooks in it. That is the exact false-success state the
+  // message exists to abolish, so it gets no easier a path across the boundary than any other.
+  if (value.kind === 'capture-installed') {
+    return hasOwn(value, 'tMs') && isTime(value.tMs);
+  }
+
   if (!hasOwn(value, 'connId') || typeof value.connId !== 'string' || value.connId === '') {
     return false;
   }
-  if (!hasOwn(value, 'kind')) return false;
 
   switch (value.kind) {
     case 'conn-open':

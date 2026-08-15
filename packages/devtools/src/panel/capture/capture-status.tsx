@@ -99,9 +99,60 @@ export function CaptureBanner({ store, onEnable }: CaptureBannerProps): JSX.Elem
       );
     }
 
+    /*
+     * Granted is not instrumented, and this is where the difference stops being invisible.
+     *
+     * The origin being granted says capture is AVAILABLE here.
+     * `chrome.scripting.registerContentScripts` only affects FUTURE navigations, so a document
+     * that was already open when the grant landed — or when the extension was last reloaded — has
+     * no capture hooks in it and nothing is being captured from it. The panel used to read the
+     * permission and announce "Capture is on", which is this project's recurring failure class:
+     * something that looks like success.
+     *
+     * Checked BEFORE the records test, because the warning is about THIS document. Records left
+     * over from the previous one do not make the current page instrumented, and going quiet over
+     * them would put the panel straight back to implying capture it does not have.
+     */
+    if (state.instrumented === false) {
+      return (
+        <div class="agui-banner agui-banner--offer" role="status">
+          <p class="agui-banner__head">
+            Capture is on for {capture.origin}, but this page has no capture hooks in it.
+          </p>
+          <p class="agui-banner__body">
+            Granting an origin registers the capture scripts for its <em>next</em> page load, so a
+            document that was already open when capture was enabled reports nothing and nothing is
+            being captured from it. Capture here <ReloadNote />
+          </p>
+        </div>
+      );
+    }
+
     if (state.records.length > 0) {
       return null;
     }
+
+    /*
+     * The grace period, on screen.
+     *
+     * The page reports its hooks at `document_start`, and that report crosses two hops before it
+     * reaches here. Saying "not instrumented" in the moment before it is due would flash a false
+     * warning on every panel open — and a warning that is usually wrong teaches the user to
+     * ignore the one that matters. Saying "capture is on" would be the original defect. So the
+     * panel says what is true: it has asked and is waiting.
+     */
+    if (state.instrumented === null) {
+      return (
+        <div class="agui-banner agui-banner--info" role="status">
+          <p class="agui-banner__head">Checking whether this page is instrumented…</p>
+          <p class="agui-banner__body">
+            Capture is on for {capture.origin}. The page reports its capture hooks as it loads, and
+            that report has not arrived yet.
+          </p>
+        </div>
+      );
+    }
+
     return (
       <div class="agui-banner agui-banner--info" role="status">
         <p class="agui-banner__head">Capture is on for {capture.origin}.</p>

@@ -133,6 +133,72 @@ describe('installInject — the document_start entry', () => {
     expect(installInject(window)).toBe(false);
   });
 
+  /*
+   * The announcement, and why it is sent with nothing to report.
+   *
+   * The panel used to infer "capturing" from the ORIGIN being granted. Those two facts diverge:
+   * `chrome.scripting.registerContentScripts` affects only FUTURE navigations, so a document
+   * that was already open when the grant landed (or when the extension reloaded) has no hooks in
+   * it, and a panel reading the permission says it is capturing while nothing is. So
+   * instrumentation is now a fact the DOCUMENT reports rather than one the panel infers, and the
+   * entire value of this message is in NOT arriving: absence is what tells the panel the
+   * document is not instrumented. It therefore cannot ride on the first real request — a page
+   * that never makes one is exactly the case that has to be distinguished.
+   */
+  it('announces the hooks at install time, before any traffic', () => {
+    const host = fakeHost();
+    installInject(host);
+
+    const messages = host.sent.map((entry) => entry.message as InjectMessage);
+    expect(messages.map((message) => message.kind)).toEqual(['capture-installed']);
+    expect(messages.every(isInjectMessage)).toBe(true);
+    expect(host.sent[0]?.targetOrigin).toBe('http://localhost:3000');
+  });
+
+  it('announces on a page that never opens a stream at all', async () => {
+    const plain = new Response('{}', { headers: { 'content-type': 'application/json' } });
+    const host = fakeHost({
+      fetch: ((): Promise<Response> => Promise.resolve(plain)) as typeof fetch,
+    });
+    installInject(host);
+    await host.fetch('http://localhost:3000/api');
+    await settle();
+
+    expect(
+      host.sent
+        .map((entry) => entry.message as InjectMessage)
+        .every((message) => message.kind === 'capture-installed'),
+    ).toBe(true);
+    expect(host.sent.length).toBeGreaterThan(0);
+  });
+
+  /*
+   * The MAIN patch and the ISOLATED relay are separate content scripts, and Chrome guarantees no
+   * order between the two worlds — `registerContentScripts` on a runtime-granted origin registers
+   * them as independent scripts. An announcement posted before the relay's listener exists is
+   * lost, and a lost announcement renders the panel's "this page is not instrumented" warning on
+   * a page that IS instrumented. That is a false warning on a working setup, which trains the
+   * user to ignore the banner. So it is re-stated once off the task queue, exactly as
+   * `withOpenRestated` re-states `conn-open` for the same reason.
+   */
+  it('re-states the announcement once, off the task queue', async () => {
+    const host = fakeHost();
+    installInject(host);
+    await settleUntil(() => host.sent.length > 1);
+
+    const kinds = host.sent.map((entry) => (entry.message as InjectMessage).kind);
+    expect(kinds).toEqual(['capture-installed', 'capture-installed']);
+  });
+
+  it('never announces twice from one document when injection is repeated', async () => {
+    const host = fakeHost();
+    expect(installInject(host)).toBe(true);
+    expect(installInject(host)).toBe(false);
+    await settleUntil(() => host.sent.length > 1);
+
+    expect(host.sent).toHaveLength(2);
+  });
+
   it('posts tagged, same-origin messages the relay guard accepts', async () => {
     const host = fakeHost();
     installInject(host);
@@ -147,7 +213,10 @@ describe('installInject — the document_start entry', () => {
       expect(targetOrigin).toBe('http://localhost:3000');
       expect(isInjectMessage(message)).toBe(true);
     }
-    const kinds = host.sent.map((entry) => (entry.message as InjectMessage).kind);
+    const kinds = host.sent
+      .map((entry) => (entry.message as InjectMessage).kind)
+      // The announcement is asserted on its own above; this test is about the traffic messages.
+      .filter((kind) => kind !== 'capture-installed');
     // Two conn-opens, on purpose: the open is re-stated immediately before the first batch of
     // frames, because the ISOLATED-world relay's listener registers a tick after
     // `document_start` and the original may have been posted into that window with nothing
@@ -183,7 +252,7 @@ describe('installInject — the document_start entry', () => {
     expect(installInject(hostile)).toBe(false);
   });
 
-  it('leaves a page that never opens a stream completely untouched', async () => {
+  it('captures nothing from a page that never opens a stream', async () => {
     const plain = new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } });
     const host = fakeHost({
       fetch: ((): Promise<Response> => Promise.resolve(plain)) as typeof fetch,
@@ -192,7 +261,10 @@ describe('installInject — the document_start entry', () => {
     const got = await host.fetch('http://localhost:3000/api');
     await settle();
     expect(got).toBe(plain);
-    expect(host.sent).toEqual([]);
+    // The response object is handed back untouched, and the only thing on the wire is the
+    // announcement — which says the hooks are installed, not that anything was captured.
+    const kinds = new Set(host.sent.map((entry) => (entry.message as InjectMessage).kind));
+    expect([...kinds]).toEqual(['capture-installed']);
   });
 });
 
@@ -310,15 +382,19 @@ describe('installInject — on the real window', () => {
     expect(installInject(window)).toBe(true);
 
     await window.fetch('http://localhost:3000/run', { method: 'POST', body: '{"threadId":"t_1"}' });
-    await settleUntil(() => received.length === 4);
+    await settleUntil(() => received.length === 6);
     window.removeEventListener('message', listener);
 
-    // Four, not three: conn-open, the re-stated conn-open that rides ahead of the first frames
-    // batch (`withOpenRestated`), frames, conn-close. A real listener validates all four.
-    expect(received.length).toBe(4);
+    // Six: the announcement and its re-statement, then conn-open, the re-stated conn-open that
+    // rides ahead of the first frames batch (`withOpenRestated`), frames, conn-close. A real
+    // listener validates all six.
+    expect(received.length).toBe(6);
     expect(received.every(isInjectMessage)).toBe(true);
-    expect(received[1]).toEqual(received[0]);
-    const open = received[0];
+    const traffic = received.filter(
+      (message) => isInjectMessage(message) && message.kind !== 'capture-installed',
+    );
+    expect(traffic[1]).toEqual(traffic[0]);
+    const open = traffic[0];
     if (!isInjectMessage(open) || open.kind !== 'conn-open') throw new Error('expected conn-open');
     expect(open.input).toEqual({ threadId: 't_1' });
     expect(open.contentType).toBe(SSE);

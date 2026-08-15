@@ -86,6 +86,22 @@ export interface PanelState {
    * decision, banner, or signal may read this field.
    */
   framework: string | null;
+  /**
+   * Whether the inspected DOCUMENT has reported that its capture hooks are installed.
+   *
+   * `null` means no report has arrived yet and none is overdue — the "checking" state. It is not
+   * a synonym for `false`, and the difference is the whole point: a panel that rendered the
+   * warning the moment it opened would flash a false alarm on every open, and a warning that is
+   * usually wrong teaches the user to ignore the one that matters.
+   *
+   * Deliberately separate from `capture`, which describes the ORIGIN. Those two facts diverge —
+   * `chrome.scripting.registerContentScripts` affects only future navigations, so an origin
+   * granted in a previous session leaves an already-open document with no hooks in it — and the
+   * panel used to have only the first of them, which is why it reported capture that was not
+   * happening. Nothing infers this field; it is set from what the page said, or from the timeout
+   * that gives up waiting for it.
+   */
+  instrumented: boolean | null;
   tab: TabId;
   scope: RunScope;
   filter: EventFilter;
@@ -140,6 +156,7 @@ export function initialPanelState(): PanelState {
     source: { kind: 'empty' },
     capture: { kind: 'unsupported' },
     framework: null,
+    instrumented: null,
     tab: 'timeline',
     scope: null,
     filter: { text: '', issuesOnly: false },
