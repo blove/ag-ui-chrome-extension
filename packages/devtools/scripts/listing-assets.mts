@@ -54,6 +54,37 @@ async function waitForSelectedDetail(panel: FrameLocator): Promise<void> {
   await panel.locator('.agui-detail__title').waitFor({ timeout: 5000 });
 }
 
+/**
+ * The phrases the Session tab uses to say a capability is not built yet. They are the panel's own
+ * honest self-report; matching on them is how this script learns that a shot's subject does not
+ * exist without hard-coding a list of finished features here.
+ */
+const UNBUILT_MARKERS = ['unavailable in this build', 'not available in phase 1'];
+
+/**
+ * Refuse to photograph a Session tab that is still advertising unbuilt functionality.
+ *
+ * Decision L1 again, applied where it bites hardest. A caption sits above the panel in the same
+ * image, so a shot of a tab reading "Export: not available in phase 1" under the words "Export a
+ * capture as .agui.jsonl" is an asset that contradicts itself — that is the misleading-claim
+ * category that gets store submissions rejected, and the false claim would be ours. The check is
+ * on the rendered text rather than on a feature flag because the rendered text is what a reviewer
+ * reads.
+ *
+ * `blockedBy` says what must exist before the shot can be taken, so the failure is a work item and
+ * not a mystery.
+ */
+async function refuseUnbuiltPanel(panel: FrameLocator, blockedBy: string): Promise<void> {
+  const text = (await panel.locator('.agui-session').innerText()).toLowerCase();
+  const found = UNBUILT_MARKERS.filter((marker) => text.includes(marker));
+  if (found.length > 0) {
+    throw new Error(
+      `the Session tab still reads ${found.map((marker) => `"${marker}"`).join(' and ')}, so this ` +
+        `shot would caption a claim the panel in the same image contradicts. ${blockedBy}`,
+    );
+  }
+}
+
 const STORYBOARD: Shot[] = [
   {
     file: '1-timeline.png',
@@ -80,8 +111,29 @@ const STORYBOARD: Shot[] = [
             'carry exactly one violation. Re-run `pnpm listing:fixture`.',
         );
       }
-      await badge.click();
-      await panel.locator('.agui-event-row').first().click();
+      /*
+       * Deliberately NOT `badge.click()`. The badge filters the list down to the offending row,
+       * and a list of one cannot demonstrate "located" — it shows a violation with its context
+       * deleted, and leaves two thirds of the frame empty white. Clicking the flagged row where
+       * it actually sits keeps the neighbours that make the tint mean something.
+       *
+       * The list is virtualized, and the fixture's one violation is five rows from the end of
+       * thirty-five, so the row is not in the DOM at rest. Rather than reach into the scroller,
+       * drive the panel's own keyboard navigation: click any mounted row to focus the listbox,
+       * then End, which selects the last record and scrolls the window to it. That leaves the
+       * flagged row on screen with events above and below it.
+       */
+      const rows = panel.locator('.agui-event-row');
+      await rows.first().click();
+      await rows.first().press('End');
+
+      // By severity, not by seq: this shot is about the row the validator flagged, and hard-coding
+      // a number would keep passing while silently photographing the wrong row if the fixture is
+      // ever re-cut. The badge check above already pins the count at one, so this cannot be
+      // ambiguous.
+      const flagged = panel.locator('.agui-event-row[data-severity]');
+      await flagged.waitFor({ timeout: 5000 });
+      await flagged.click();
       await waitForSelectedDetail(panel);
     },
   },
@@ -108,6 +160,12 @@ const STORYBOARD: Shot[] = [
     async drive(panel) {
       await panel.locator('button[role="tab"][id="agui-tab-session"]').click();
       await panel.locator('.agui-session').waitFor({ timeout: 5000 });
+      await refuseUnbuiltPanel(
+        panel,
+        'This shot cannot be taken until export ships and the Session tab reports a real ' +
+          'recorded capture — the caption promises a round trip (record, export, reopen) that ' +
+          'the tab in the frame currently reports it cannot do.',
+      );
     },
   },
   {
@@ -118,6 +176,16 @@ const STORYBOARD: Shot[] = [
     async drive(panel) {
       await panel.locator('button[role="tab"][id="agui-tab-session"]').click();
       await panel.locator('.agui-session').waitFor({ timeout: 5000 });
+      await refuseUnbuiltPanel(
+        panel,
+        'The subject of this shot is the per-origin capture grant (design §5) — the prompt that ' +
+          'shows privacy is a choice the user makes, not a promise in prose. That UI is not ' +
+          'reachable here: the harness boots the panel under the `no-devtools` shim, which has ' +
+          'no `chrome.permissions`, so the Session tab falls back to a column of "not detected" ' +
+          'that reads as "nothing works" rather than "nothing is sent". Taking this shot needs ' +
+          'either live capture running against a granted origin or a shim rich enough to render ' +
+          'a granted one. Which of those is deferred, not forgotten.',
+      );
     },
   },
 ];
