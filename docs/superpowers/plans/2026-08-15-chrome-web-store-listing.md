@@ -671,7 +671,7 @@ Create `packages/devtools/scripts/build-demo-fixture.ts`:
  * Run: `pnpm listing:fixture`
  */
 import { writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodeJsonl, type JsonlLine } from '../src/core/jsonl/codec';
 
@@ -798,7 +798,11 @@ function runTwo(): JsonlLine[] {
       63,
       { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm_3', delta: 'Your replacement label' },
     ],
-    [77, { type: 'TEXT_MESSAGE_START', messageId: 'm_3', role: 'assistant' }],
+    // NO TEXT_MESSAGE_START for m_3, deliberately. `ensureMessage` in
+    // src/core/normalizer/run-builder.ts materialises a message on first sight of its content
+    // and adds it to `openTextMessages` — so a START arriving afterwards finds the id already
+    // open and trips `concurrent-text-messages` as a SECOND issue. The story is also simply
+    // truer this way: content arrives for a message that is never opened at all.
     [119, { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm_3', delta: ' is ready to print.' }],
     [136, { type: 'TEXT_MESSAGE_END', messageId: 'm_3' }],
     [148, { type: 'STEP_FINISHED', stepName: 'respond' }],
@@ -842,7 +846,7 @@ Expected: all six tests PASS.
 cd packages/devtools && pnpm tsx -e "import {loadJsonl} from './src/panel/import/load-jsonl'; import {buildDemoFixture} from './scripts/build-demo-fixture'; console.log(loadJsonl(buildDemoFixture()).issues)"
 ```
 
-The likely culprits, in order: `run-started-without-input` (a run whose `connId` has no `request` line), `state-patch-failed` (a delta path absent from the snapshot), `unbalanced-steps`, and `tool-args-not-json` (the three `TOOL_CALL_ARGS` deltas must concatenate to parseable JSON).
+The likely culprits, in order: `concurrent-text-messages` (see the comment in `runTwo` — a content delta auto-opens its message, so a later START for the same id reads as a second message), `run-started-without-input` (a run whose `connId` has no `request` line), `state-patch-failed` (a delta path absent from the snapshot), `unbalanced-steps`, and `tool-args-not-json` (the three `TOOL_CALL_ARGS` deltas must concatenate to parseable JSON).
 
 - [ ] **Step 5: Add the script entry and generate the fixture**
 
@@ -858,7 +862,7 @@ Then:
 cd packages/devtools && mkdir -p listing/fixtures && pnpm listing:fixture && wc -l listing/fixtures/demo.agui.jsonl
 ```
 
-Expected: `wrote …/demo.agui.jsonl`, and 40 lines (1 header + 2 request + 37 events).
+Expected: `wrote …/demo.agui.jsonl`, and 38 lines (1 header + 2 request + 35 events).
 
 - [ ] **Step 6: Read the fixture before committing it**
 
