@@ -11,6 +11,7 @@ import {
   type RunMetrics,
   type ToolCallRecord,
 } from '../model/types';
+import type { RedactionGroup } from '../jsonl/redact';
 import { applyPatch } from '../state/json-patch';
 import { createStateTimeline, type StateTimeline } from '../state/timeline';
 import { runRules, finalizeRules, type RunValidationState } from '../validator';
@@ -27,6 +28,15 @@ type EventRecord = Extract<CaptureRecord, { kind: 'event' }>;
 export interface RunBuilderOptions {
   expandChunks?: boolean; // default true
   stallThresholdMs?: number; // default 2000
+  /**
+   * The §11 groups the SOURCE of these records declares redacted — `JsonlHeader.redacted` off
+   * line 1 of an imported file. Defaults to none, which is what a live capture always is:
+   * redaction happens on the way out, never on the way in.
+   *
+   * Threaded onto every `Run` this builder produces, because the validator needs it: a rule
+   * whose evidence a group destroyed must decline to make its claim rather than make it falsely.
+   */
+  redacted?: readonly RedactionGroup[];
 }
 
 export interface RunBuilder {
@@ -110,12 +120,19 @@ function emptyMetrics(): RunMetrics {
   };
 }
 
-function createRun(runId: string, threadId: string, connId: string, startedAtMs: number): Run {
+function createRun(
+  runId: string,
+  threadId: string,
+  connId: string,
+  startedAtMs: number,
+  redacted: readonly RedactionGroup[],
+): Run {
   return {
     runId,
     threadId,
     connId,
     startedAtMs,
+    redacted,
     outcome: 'running',
     messages: new Map(),
     toolCalls: new Map(),
@@ -150,6 +167,9 @@ function createEntry(run: Run): RunEntry {
 export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
   const expandChunks = options.expandChunks ?? true;
   const stallThresholdMs = options.stallThresholdMs ?? 2000;
+  // Copied, not aliased: a caller mutating the array it passed must not retroactively change
+  // what every run in this builder claims about its own provenance.
+  const redacted: readonly RedactionGroup[] = [...(options.redacted ?? [])];
   const entries = new Map<string, RunEntry>();
   const order: string[] = [];
   const conns = new Map<string, ConnEntry>();
@@ -166,7 +186,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
   function ensureOrphanEntry(connId: string, tMs: number): RunEntry {
     let entry = entries.get(ORPHANED_RUN_ID);
     if (!entry) {
-      const run = createRun(ORPHANED_RUN_ID, '', connId, tMs);
+      const run = createRun(ORPHANED_RUN_ID, '', connId, tMs, redacted);
       run.outcome = 'orphaned';
       entry = createEntry(run);
       entries.set(ORPHANED_RUN_ID, entry);
@@ -182,7 +202,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
       conn.openRunId = runId;
       return existing;
     }
-    const run = createRun(runId, str(event.threadId) ?? '', conn.connId, record.tMs);
+    const run = createRun(runId, str(event.threadId) ?? '', conn.connId, record.tMs, redacted);
     run.parentRunId = str(event.parentRunId);
     run.agentId = str(event.agentId);
     // The POST body stashed by addRequest is the fallback; an inlined RUN_STARTED.input wins.

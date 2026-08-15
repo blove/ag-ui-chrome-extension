@@ -33,12 +33,16 @@ export type ToolArgsStatus = 'streaming' | 'none' | 'parsed' | 'failed' | 'redac
 
 export interface ToolArgsContext {
   /**
-   * True when the capture's own header declares `toolArgs` redacted.
+   * True when the capture's own header declared `toolArgs` redacted — read off `Run.redacted`,
+   * which the import path fills from `JsonlHeader.redacted`.
    *
    * A redacted export replaces every args delta with `«redacted: N chars»`, which is not JSON —
    * so the arguments of a shared bug report genuinely do not parse. Reporting that as `failed`
    * would send the colleague the file was shared with hunting a protocol bug the redactor
    * caused. The evidence is gone, so the honest answer is that there is no verdict.
+   *
+   * `core/`'s `toolArgsNotJsonRule` reads the SAME field and withdraws its issue for the same
+   * reason, which is what keeps this verdict and the issue badge from telling two stories.
    */
   argsRedacted?: boolean;
 }

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { ALL_REDACTION_GROUPS, type RedactionGroup } from '../../jsonl/redact';
 import type { AguiEvent, CaptureRecord, Run, ToolCallRecord } from '../../model/types';
 import type { RunValidationState } from '../types';
 import {
@@ -29,6 +30,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     },
     issues: [],
     recordSeqs: [],
+    redacted: [],
     ...overrides,
   };
 }
@@ -194,5 +196,80 @@ describe('toolArgsNotJsonRule', () => {
 
     expect(toolArgsNotJsonRule(end, makeRecord(end), state)).toEqual([]);
     expect(toolArgsNotJsonRule(args, makeRecord(args), state)).toEqual([]);
+  });
+});
+
+/**
+ * Redaction removes evidence, so the rule that judged that evidence weakens its claim.
+ *
+ * `toolArgs` owns both args-bearing deltas, so once it is redacted `argsText` is a run of
+ * `«redacted: N chars»` placeholders and the verdict is decided before the capture is even
+ * read. The recipient of a shared bug report is who this protects: they see the badge, the run
+ * heading and the timeline tint, and none of them may accuse their agent of a defect the
+ * redactor introduced.
+ */
+describe('toolArgsNotJsonRule under redaction', () => {
+  const REDACTED_ARGS = '«redacted: 16 chars»«redacted: 16 chars»';
+  const end: AguiEvent = { type: 'TOOL_CALL_END', toolCallId: 'tc1' };
+
+  function stateWith(argsText: string, redacted: RedactionGroup[]): RunValidationState {
+    return makeState({
+      run: makeRun({ toolCalls: new Map([['tc1', makeToolCall(argsText)]]), redacted }),
+      openToolCalls: new Set(['tc1']),
+    });
+  }
+
+  it('declines to claim the arguments are not JSON when toolArgs was redacted', () => {
+    const state = stateWith(REDACTED_ARGS, ['toolArgs']);
+
+    expect(JSON.parse.bind(null, REDACTED_ARGS)).toThrow();
+    expect(toolArgsNotJsonRule(end, makeRecord(end, 12), state)).toEqual([]);
+  });
+
+  it('declines under every group set that includes toolArgs, not just that one group', () => {
+    for (const groups of [
+      ['toolArgs'],
+      ['text', 'toolArgs'],
+      [...ALL_REDACTION_GROUPS],
+    ] satisfies RedactionGroup[][]) {
+      expect(toolArgsNotJsonRule(end, makeRecord(end), stateWith(REDACTED_ARGS, groups))).toEqual(
+        [],
+      );
+    }
+  });
+
+  it('still fires when some OTHER group was redacted — those leave the arguments intact', () => {
+    // Redacting message text does not touch `TOOL_CALL_ARGS.delta`, so the arguments in hand are
+    // still the agent's own and the claim is still supportable. Suppressing here would hide a
+    // real protocol error in the exact bug report a user redacted their prose to be able to send.
+    const groups = ALL_REDACTION_GROUPS.filter((group) => group !== 'toolArgs');
+    const state = stateWith('{"q":', [...groups]);
+
+    expect(toolArgsNotJsonRule(end, makeRecord(end, 12), state)).toEqual([
+      {
+        code: 'tool-args-not-json',
+        severity: 'error',
+        message: 'Accumulated arguments for tool call "tc1" are not valid JSON',
+        seq: 12,
+        runId: 'run-1',
+      },
+    ]);
+  });
+
+  it('withdraws the claim even when the arguments were genuinely broken before redaction', () => {
+    // The deliberate cost, stated. `{"city": "Par` really is malformed, but the shared file no
+    // longer holds it — every reader sees the same placeholder either way, so the file cannot
+    // support the claim and the rule must not make it. This is why the export panel says to
+    // leave `toolArgs` unticked when the bug IS the arguments.
+    expect(toolArgsNotJsonRule(end, makeRecord(end), stateWith('{"city": "Par', []))).toHaveLength(1);
+    expect(
+      toolArgsNotJsonRule(end, makeRecord(end), stateWith('«redacted: 13 chars»', ['toolArgs'])),
+    ).toEqual([]);
+  });
+
+  it('still says nothing about a redacted call that streamed no arguments at all', () => {
+    // `redactString('')` returns the empty string by design, so "no arguments" survives
+    // redaction — and an absent argument stream was never this rule's subject anyway.
+    expect(toolArgsNotJsonRule(end, makeRecord(end), stateWith('', ['toolArgs']))).toEqual([]);
   });
 });

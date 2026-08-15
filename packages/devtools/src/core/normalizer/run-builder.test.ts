@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createRunBuilder } from './run-builder';
+import type { RedactionGroup } from '../jsonl/redact';
 import { ORPHANED_RUN_ID } from '../model/types';
 import type { AguiEvent, CaptureRecord } from '../model/types';
 
@@ -810,5 +811,70 @@ describe('createRunBuilder — chunk expansion and connection close', () => {
     // 29 s on cA and 29 s on cB — one gap each, not one interleaved 1 s gap each
     expect(builder.getRun('rA')!.issues.filter((issue) => issue.code === 'keepalive-gap')).toHaveLength(1);
     expect(builder.getRun('rB')!.issues.filter((issue) => issue.code === 'keepalive-gap')).toHaveLength(1);
+  });
+});
+
+/**
+ * The provenance of the records, carried onto every run the fold produces.
+ *
+ * `core/` is Chrome-free so a CLI or a VS Code extension can reuse this fold (§13), which is
+ * exactly why the fact travels here rather than being applied by the panel afterwards: a
+ * consumer that filtered issues downstream would re-inherit the defect this closes.
+ */
+describe('createRunBuilder — what the capture says was redacted out of it', () => {
+  const ARGS_DELTA = '«redacted: 16 chars»';
+
+  function foldToolCall(builder: ReturnType<typeof createRunBuilder>, argsText: string): void {
+    // The request line matters: without it the run also reports `run-started-without-input`,
+    // which would make the issue lists below about something other than the tool arguments.
+    builder.addRequest('c1', 'POST', 'https://example.test/agent', { threadId: 't1' });
+    builder.addRecord(rec(1, 0, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'TOOL_CALL_START', toolCallId: 'tc1', toolCallName: 'f' }));
+    builder.addRecord(rec(3, 20, 'c1', { type: 'TOOL_CALL_ARGS', toolCallId: 'tc1', delta: argsText }));
+    builder.addRecord(rec(4, 30, 'c1', { type: 'TOOL_CALL_END', toolCallId: 'tc1' }));
+    builder.addRecord(rec(5, 40, 'c1', { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' }));
+  }
+
+  it('defaults to nothing redacted, because a live capture never is', () => {
+    const builder = createRunBuilder();
+    foldToolCall(builder, '{"q":"x"}');
+
+    expect(builder.getRun('r1')!.redacted).toEqual([]);
+  });
+
+  it('puts the declared groups on every run it produces, orphans included', () => {
+    const builder = createRunBuilder({ redacted: ['text', 'toolArgs'] });
+    builder.addRecord(rec(1, 0, 'c1', { type: 'TEXT_MESSAGE_END', messageId: 'm1' }));
+    builder.addRecord(rec(2, 10, 'c1', { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }));
+
+    expect(builder.getRun('r1')!.redacted).toEqual(['text', 'toolArgs']);
+    expect(builder.getRun(ORPHANED_RUN_ID)!.redacted).toEqual(['text', 'toolArgs']);
+  });
+
+  it('copies the array, so a caller mutating theirs cannot rewrite what a run claims', () => {
+    const groups: RedactionGroup[] = ['toolArgs'];
+    const builder = createRunBuilder({ redacted: groups });
+    foldToolCall(builder, ARGS_DELTA);
+    groups.length = 0;
+
+    expect(builder.getRun('r1')!.redacted).toEqual(['toolArgs']);
+  });
+
+  it('is what stops the fold inventing tool-args-not-json on a redacted capture', () => {
+    // The whole defect, at the level `core/` owns it. Same bytes, same fold; the only
+    // difference is whether the capture says its tool arguments are still the agent's.
+    const unaware = createRunBuilder();
+    foldToolCall(unaware, ARGS_DELTA);
+    expect(unaware.allIssues().map((issue) => issue.code)).toEqual(['tool-args-not-json']);
+
+    const aware = createRunBuilder({ redacted: ['toolArgs'] });
+    foldToolCall(aware, ARGS_DELTA);
+    expect(aware.allIssues()).toEqual([]);
+
+    // The reconstruction is untouched: the bytes are still shown, and `argsParseError` still
+    // records that they did not parse. Only the CLAIM about whose fault that is is withdrawn.
+    const call = aware.getRun('r1')!.toolCalls.get('tc1')!;
+    expect(call.argsText).toBe(ARGS_DELTA);
+    expect(call.argsParseError).toBeDefined();
   });
 });

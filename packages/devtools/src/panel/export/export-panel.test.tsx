@@ -78,15 +78,21 @@ describe('ExportPanel: what it says before you click', () => {
     expect(screen.getByTestId('agui-export-summary').textContent).toContain('1 run, 14 events');
   });
 
-  test('warns that redacting tool arguments makes them unparseable', () => {
+  test('warns what redacting tool arguments costs, in both directions', () => {
     render(<ExportPanel store={importedStore()} io={io().io} />);
     expect(screen.queryByTestId('agui-export-args-note')).toBeNull();
 
     fireEvent.click(screen.getByLabelText(/Tool arguments/));
 
-    expect(screen.getByTestId('agui-export-args-note').textContent).toContain(
-      'tool-args-not-json',
-    );
+    const note = screen.getByTestId('agui-export-args-note').textContent ?? '';
+    // The reader of the shared file is not shown a `tool-args-not-json` their agent never
+    // caused — the validator declines the claim once the header names this group. What they
+    // also lose is the ability to be told about arguments that really were malformed, and the
+    // person choosing the checkbox is the only one who can weigh that.
+    expect(note).toContain('tool-args-not-json');
+    expect(note).toContain('unparseable');
+    expect(note).toContain('really were malformed');
+    expect(note).toContain('Leave this group unticked if the bug is about the arguments');
   });
 });
 

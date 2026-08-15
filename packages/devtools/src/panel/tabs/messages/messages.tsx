@@ -373,12 +373,6 @@ function scopedRuns(state: PanelState): Run[] {
 export function Messages({ store }: MessagesProps): JSX.Element {
   const state = usePanelState(store);
   const runs = scopedRuns(state);
-  /*
-   * Whether this file's tool arguments were replaced before it was shared (E3's cumulative
-   * header). Without it the tab would report every redacted bug report as a stream of unparseable
-   * tool calls — a finding about the redactor, presented as a finding about the user's agent.
-   */
-  const argsRedacted = state.importedHeader?.redacted.includes('toolArgs') ?? false;
 
   return (
     <section class="agui-messages" aria-label="Messages">
@@ -389,11 +383,17 @@ export function Messages({ store }: MessagesProps): JSX.Element {
         </p>
       ) : (
         runs.map((run) => (
+          /*
+           * Whether this file's tool arguments were replaced before it was shared is read off
+           * `Run.redacted` — the same field `core/`'s `toolArgsNotJsonRule` reads, put there by
+           * the import path from `JsonlHeader.redacted`. One source, so the verdict in this tab
+           * and the issue the validator does or does not raise cannot tell different stories.
+           */
           <RunConversation
             key={run.runId}
             run={run}
             store={store}
-            argsRedacted={argsRedacted}
+            argsRedacted={run.redacted.includes('toolArgs')}
           />
         ))
       )}

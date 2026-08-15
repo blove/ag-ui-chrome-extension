@@ -14,6 +14,7 @@ import { describe, expect, test } from 'vitest';
 import happyJsonl from '../../test/fixtures/happy-run.agui.jsonl?raw';
 import malformedJsonl from '../../test/fixtures/malformed.agui.jsonl?raw';
 import chunkedJsonl from '../../test/fixtures/chunked-run.agui.jsonl?raw';
+import edgeJsonl from '../../test/fixtures/messages-edge.agui.jsonl?raw';
 import { encodeJsonl } from '../../core/jsonl/codec';
 import { ALL_REDACTION_GROUPS, type RedactionGroup } from '../../core/jsonl/redact';
 import { applyLoaded } from '../import/apply-loaded';
@@ -151,21 +152,77 @@ describe('done-when #7: a redacted export has no message text, and still validat
     expect(content).toBe('«redacted: 20 chars»«redacted: 16 chars»«redacted: 16 chars»');
   });
 
-  test('it still VALIDATES: the file decodes cleanly and every rule runs over it', () => {
+  /**
+   * THE HEADLINE. A clean capture, redacted for sharing, must still read as clean.
+   *
+   * This is the claim in the recipient's own terms: they are handed the file, they open it, and
+   * the badge, the run heading and the timeline must not accuse their agent of a defect the
+   * redactor introduced. They never see the export-time warning — they only ever receive the
+   * file — so the file itself has to be honest.
+   */
+  test('a clean capture, exported redacted and re-imported, is still clean', () => {
     const imported = afterImport(happyJsonl);
-    const redacted = afterImport(exportText(imported, [...ALL_REDACTION_GROUPS]));
+    expect(imported.issues).toEqual([]);
+    expect(imported.runs[0]?.toolCalls.get('tc_1')?.args).toEqual({
+      city: 'Paris',
+      units: 'metric',
+    });
 
-    expect(loadJsonl(exportText(imported, [...ALL_REDACTION_GROUPS])).decodeErrors).toEqual([]);
+    const text = exportText(imported, [...ALL_REDACTION_GROUPS]);
+    const redacted = afterImport(text);
+
+    expect(loadJsonl(text).decodeErrors).toEqual([]);
     expect(redacted.runs).toHaveLength(1);
-    /*
-     * `tool-args-not-json` is the ONE issue redaction adds, and it is a true statement about the
-     * file in hand: `«redacted: 16 chars»«redacted: 16 chars»` is not JSON, because no
-     * per-event placeholder can compose into valid JSON across an arbitrary split of a JSON
-     * string. It is redaction's unavoidable cost, not a defect — but it IS a finding a reader
-     * could mistake for one about their agent, so the export panel says so before the click
-     * rather than leaving it to be discovered in the timeline.
-     */
-    expect(redacted.issues.map((issue) => issue.code)).toEqual(['tool-args-not-json']);
+    // The arguments in the file genuinely do not parse — no per-event placeholder can compose
+    // into valid JSON across a split JSON string — and that is precisely why no rule may draw a
+    // conclusion from them. Evidence removed, claim withdrawn.
+    expect(redacted.runs[0]?.toolCalls.get('tc_1')?.argsParseError).toBeDefined();
+    expect(redacted.issues).toEqual(imported.issues);
+  });
+
+  test('the claim is withdrawn on every group set that reaches the arguments', () => {
+    const imported = afterImport(happyJsonl);
+
+    const sets: RedactionGroup[][] = [
+      ['toolArgs'],
+      ['text', 'toolArgs'],
+      [...ALL_REDACTION_GROUPS],
+    ];
+    for (const groups of sets) {
+      expect(afterImport(exportText(imported, groups)).issues).toEqual([]);
+    }
+  });
+
+  test('the fact survives where the arguments themselves are: on the run', () => {
+    // Suppression removes the accusation, not the fact. `Run.redacted` is the single field the
+    // validator and the Messages tab both read, which is what keeps the surfaces from telling
+    // two different stories about the same file.
+    const redacted = afterImport(exportText(afterImport(happyJsonl), ['toolArgs']));
+
+    expect(redacted.runs[0]?.redacted).toEqual(['toolArgs']);
+    expect(redacted.runs[0]?.toolCalls.get('tc_1')?.argsText).toBe(
+      '«redacted: 16 chars»«redacted: 17 chars»',
+    );
+  });
+
+  test('redacting the arguments also withdraws a claim that was TRUE — the deliberate cost', () => {
+    // `messages-edge` carries a genuinely malformed `{"city": "Par`. Redacted, it becomes a
+    // placeholder that is indistinguishable from a redacted VALID argument string, so the
+    // shared file no longer supports the finding and the tool stops asserting it. That is the
+    // honest reading, and it is why the export panel says to leave `toolArgs` unticked when the
+    // bug is the arguments themselves.
+    const imported = afterImport(edgeJsonl);
+    expect(imported.issues.map((issue) => issue.code)).toContain('tool-args-not-json');
+
+    const redacted = afterImport(exportText(imported, ['toolArgs']));
+
+    expect(redacted.issues.map((issue) => issue.code)).not.toContain('tool-args-not-json');
+    // Everything the redactor did not touch is untouched: the other two findings still land.
+    expect(redacted.issues.map((issue) => `${issue.code}@${String(issue.seq)}`)).toEqual(
+      imported.issues
+        .filter((issue) => issue.code !== 'tool-args-not-json')
+        .map((issue) => `${issue.code}@${String(issue.seq)}`),
+    );
   });
 
   test('redacting only what the bug is about leaves the capture issue-for-issue identical', () => {

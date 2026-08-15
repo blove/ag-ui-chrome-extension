@@ -31,6 +31,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     },
     issues: [],
     recordSeqs: [],
+    redacted: [],
     ...overrides,
   };
 }
