@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { loadJsonl } from '../src/panel/import/load-jsonl';
 import { buildDemoFixture } from './build-demo-fixture';
@@ -29,6 +32,20 @@ describe('buildDemoFixture', () => {
 
   it('is byte-deterministic, so the committed fixture is diffable', () => {
     expect(buildDemoFixture()).toBe(buildDemoFixture());
+  });
+
+  /*
+   * The committed fixture is what `listing-assets.mts` photographs, and nothing else compares it
+   * to its generator: edit `buildDemoFixture` and forget `pnpm listing:fixture`, and every gate
+   * stays green while the store screenshots show the OLD capture. The icons have exactly this
+   * guard (`public/icons/.source-sha256`, checked by verify-build.ts); this is the fixture's.
+   */
+  it('matches the committed listing/fixtures/demo.agui.jsonl', () => {
+    const committed = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../listing/fixtures/demo.agui.jsonl'),
+      'utf8',
+    );
+    expect(committed).toBe(buildDemoFixture());
   });
 
   // Pins run 2's seq offset to run 1's actual event count. Without this, a collision (offset

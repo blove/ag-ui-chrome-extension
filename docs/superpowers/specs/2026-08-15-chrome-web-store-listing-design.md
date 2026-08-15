@@ -118,7 +118,7 @@ verbatim. This closes the blocker that
 
 ## 4. The demo fixture
 
-`listing/fixtures/demo.agui.jsonl`, produced by `build-demo.ts` and committed. Events are
+`listing/fixtures/demo.agui.jsonl`, produced by `scripts/build-demo-fixture.ts` and committed. Events are
 constructed through the real generated event table rather than hand-typed, so a fixture that would
 not decode cannot be written.
 
@@ -129,7 +129,7 @@ actually mutate a small order object, step boundaries, and `RUN_FINISHED`.
 **Run 2 — one genuine violation.** A single real protocol error the validator names and locates, so
 the issue badge reads a non-zero count and shot 2 has something true to show.
 
-Constraints: roughly 50 events total (enough to fill the timeline, few enough to read), a fictional
+Constraints: 35 events (enough to fill the timeline, few enough to read), a fictional
 domain, no real product names, no credentials, no content that would need redacting. Deterministic —
 identical bytes on every regeneration, so the fixture is diffable in review.
 
@@ -142,14 +142,27 @@ Five screenshots, one message each, hero first.
 | # | Caption | What is on screen | Renderable today |
 |---|---|---|---|
 | 1 | Every AG-UI event, decoded and in order | Timeline with the waterfall and an event detail pane open on a tool call | ✅ |
-| 2 | Protocol violations, named and located | Issue badge active, list filtered to the flagged rows, detail showing the rule | ✅ |
+| 2 | Protocol violations, named and located | The flagged row selected in context, detail showing the rule | ✅ |
 | 3 | Watch state rebuild, patch by patch | State tab, RFC 6902 patch timeline | ⏳ needs the State tab |
-| 4 | Record a run. Replay it anywhere. | Import/export of `.agui.jsonl` | ✅ |
-| 5 | No network egress. Ever. | Session tab, per-origin grant and capture source | ✅ |
+| 4 | Record a run. Replay it anywhere. | Import/export of `.agui.jsonl` | ⏳ needs export **and** a richer shim |
+| 5 | No network egress. Ever. | Per-origin capture grant | ⏳ needs a live, granted source |
 
-Shot 3 is the gate on submission, which is the point of L1. `listing-assets.mts` **fails loudly**
-when a storyboard entry's required UI is absent — it does not silently emit four screenshots and
-leave a human to notice the gallery is short.
+**Three shots are blocked, not one.** This table said 4 and 5 were renderable, and building them
+proved otherwise — the correction is recorded here rather than smoothed away, because it is the
+table someone will read to plan the submission.
+
+Shot 4's caption promises a round trip the Session tab in the same image reports it cannot do
+(`Export: not available in phase 1`). Two independent things block it, and shipping export clears
+only the first: the harness boots the panel under a shim with no `chrome.devtools`, so capture
+reports `unavailable in this build` regardless of what the product ships. Shot 5's subject is the
+grant prompt itself — privacy here is a choice the user is offered, not a sentence in a caption —
+and that banner is suppressed for an imported source, which is what every shot in this storyboard
+loads.
+
+`listing-assets.mts` **fails loudly** when a storyboard entry's required UI is absent, and a
+refused shot deletes its own stale asset, so the directory can never claim a delivery the run
+denied. Shot 2 is deliberately *not* filtered to the flagged row: "located" is a claim a
+one-row list cannot make.
 
 Promo tiles carry the mark, the name, and the summary line: 440×280 small tile, and a 1400×560
 marquee that is only used if the store features the item but costs nothing to emit alongside.
@@ -170,7 +183,7 @@ single_purpose:     # Privacy tab
 permissions:
   storage: …
   scripting: …
-  host_permissions: …
+  optional_host_permissions: …
 uses_remote_code: false
 privacy_policy_url: …
 ```

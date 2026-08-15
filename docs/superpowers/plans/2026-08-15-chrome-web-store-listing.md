@@ -51,7 +51,7 @@ Three refinements found while mapping the code. Each is a smaller change than it
 |---|---|
 | `packages/devtools/scripts/screenshot-panel.mts` | Delete the extracted helpers, import them from `panel-harness.ts`. No behaviour change. |
 | `packages/devtools/manifest.config.ts` | Add the `icons` block. |
-| `packages/devtools/scripts/verify-build.ts` | Assert the four icon PNGs exist in `dist/icons/` and the manifest points at them. |
+| `packages/devtools/scripts/verify-build.ts` | Assert the four icon PNGs exist in `dist/icons/` and the manifest points at them; later, that each PNG exists in `public/icons/` and that `icon.svg`'s hash matches the committed sidecar. |
 | `packages/devtools/vitest.config.ts` | Add a fourth project, `scripts`, covering `scripts/**/*.test.ts`. |
 | `packages/devtools/package.json` | Add `icons`, `listing:assets`, `listing:fixture`, `verify:listing` scripts. |
 | `packages/devtools/public/icons/README.md` | Rewrite: the icons are now wired, and here is what regenerates them. |
