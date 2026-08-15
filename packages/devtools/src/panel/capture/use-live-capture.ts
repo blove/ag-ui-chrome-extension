@@ -240,7 +240,8 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
    * `EventSource` is unreachable — that then reports itself fully instrumented. That is the
    * failure class being fixed, reintroduced. A reload is honest.
    */
-  const awaitingReload = grantedAwaitingReload || (capture.kind === 'on' && state.instrumented === false);
+  const awaitingReload =
+    grantedAwaitingReload || (capture.kind === 'on' && state.instrumented === false);
 
   return { enable, setRecording, clearBuffer, reloadInspectedPage, status, awaitingReload };
 }
