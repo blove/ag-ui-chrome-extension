@@ -117,10 +117,15 @@ test('the extension loads and its MV3 service worker registers', () => {
 });
 
 test('the MAIN-world content script reaches the harness page', async () => {
+  // The marker gained `protocol` and `source` when the capture layer landed: a page-side hook
+  // has to be able to tell which postMessage protocol this build speaks, and which tag it
+  // stamps on every message. Kept as an exact-shape assertion so a change to the contract the
+  // relay depends on cannot pass unnoticed.
   const marker = await page.evaluate(
-    () => (window as unknown as { __AGUI_DEVTOOLS__?: { version: string } }).__AGUI_DEVTOOLS__,
+    () =>
+      (window as unknown as { __AGUI_DEVTOOLS__?: Record<string, unknown> }).__AGUI_DEVTOOLS__,
   );
-  expect(marker).toEqual({ version: '0.1.0' });
+  expect(marker).toEqual({ version: '0.1.0', protocol: 1, source: 'agui-dt' });
 });
 
 test('the real HttpAgent runs the happy scenario and the page renders it', () => {
