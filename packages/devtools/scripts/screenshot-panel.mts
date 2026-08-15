@@ -632,6 +632,323 @@ async function checkMessages(browser: Browser, origin: string): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Phase 2c — State (§9.3, design decisions S1–S4)                             */
+/* -------------------------------------------------------------------------- */
+
+/** Open the State tab and wait for it. */
+async function openState(page: Page): Promise<void> {
+  await page.click('button[role="tab"][id="agui-tab-state"]');
+  await page.waitForSelector('.agui-state');
+}
+
+interface Tick {
+  index: number;
+  failed: boolean;
+  kind: string;
+  /** Centre of the tick in page pixels, and the track it sits in. */
+  centreX: number;
+  trackLeft: number;
+  trackWidth: number;
+  background: string;
+}
+
+/**
+ * Every scrubber position as it is actually laid out and painted.
+ *
+ * Geometry, not markup. §9.3's requirement is that a failed patch is marked "at its position on
+ * the scrubber", and a `data-failed` attribute proves neither half of that: the unit tests already
+ * assert the attribute, and a strip whose ticks all stacked at x=0, or whose failed rule never
+ * reached the document, would satisfy every one of them while showing the reader nothing.
+ */
+function scrubberTicks(page: Page): Promise<Tick[]> {
+  return page.$$eval('.agui-scrub__tick', (els) =>
+    els.map((el) => {
+      const box = el.getBoundingClientRect();
+      const track = el.parentElement?.getBoundingClientRect();
+      return {
+        index: Number(el.getAttribute('data-index') ?? '-1'),
+        failed: el.getAttribute('data-failed') === 'true',
+        kind: el.getAttribute('data-kind') ?? '?',
+        centreX: box.left + box.width / 2,
+        trackLeft: track?.left ?? 0,
+        trackWidth: track?.width ?? 0,
+        background: getComputedStyle(el).backgroundColor,
+      };
+    }),
+  );
+}
+
+/**
+ * State renders, in every state design §8 names.
+ *
+ * The load-bearing assertion is S3: that a failed patch is VISIBLE, in red, at the position on the
+ * scrubber where it happened. Everything about that claim is invisible to every other gate — the
+ * unit tests see the attribute but not the paint, and `verify:build` sees neither.
+ *
+ * Live capture is the one §8 state not reachable here: it needs `chrome.runtime.connect` and a
+ * service worker feeding records. It is covered in `state.test.tsx`, which drives the tab with
+ * `source.kind === 'live'`.
+ */
+async function checkState(browser: Browser, origin: string): Promise<void> {
+  /* --- empty: it explains itself rather than showing a blank pane --------- */
+  {
+    const session = await openPanel(browser, origin, 'light');
+    await openState(session.page);
+    const text = (await session.page.textContent('.agui-state'))?.trim() ?? '';
+    if (!/no runs to show/i.test(text)) {
+      fail(`the empty State tab reads ${JSON.stringify(text)}, expected it to say so.`);
+    }
+    await session.page.screenshot({ path: join(outDir, 'state-empty.png'), fullPage: true });
+    if (session.errors.length > 0) {
+      fail(`the empty State tab logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+
+  /* --- a run whose state broke twice, mid-timeline (S1, S2, S3) ----------- */
+  {
+    const session = await openPanel(browser, origin, 'dark');
+    await importFixture(session.page, join(fixtureDir, 'state-edge.agui.jsonl'));
+    await openState(session.page);
+    await session.page.screenshot({ path: join(outDir, 'state-edge.png'), fullPage: true });
+
+    const ticks = await scrubberTicks(session.page);
+    if (ticks.length !== 7) {
+      fail(`the scrubber drew ${String(ticks.length)} positions for a 7-frame timeline (S1).`);
+    }
+
+    // Laid out along the track, left to right. Ticks that all shared an x would carry no
+    // positional information at all, which is the whole of S3.
+    const ordered = ticks.every((tick, i) => i === 0 || tick.centreX > (ticks[i - 1]?.centreX ?? 0));
+    if (!ordered) {
+      fail(
+        `the scrubber's positions are not laid out left to right: centres ` +
+          `[${ticks.map((tick) => Math.round(tick.centreX)).join(', ')}]. A strip whose ticks ` +
+          'share an x marks nothing "at its position".',
+      );
+    }
+
+    const failedIndices = ticks.filter((tick) => tick.failed).map((tick) => tick.index);
+    if (failedIndices.join(',') !== '3,5') {
+      fail(
+        `the scrubber marked positions [${failedIndices.join(', ')}] failed, expected [3, 5] — ` +
+          'the state-edge capture refuses a patch at frame 4 and again at frame 6 of 7.',
+      );
+    }
+
+    const firstFailed = ticks.find((tick) => tick.failed);
+    /*
+     * The comparison has to be against a position of the SAME kind.
+     *
+     * Measured, by deleting the `[data-failed='true']` rule and re-running this gate: a failed
+     * delta tick reverts to the plain tick background, which still differs from the SNAPSHOT
+     * tick's — so comparing against "the first surviving position" passed a panel with no red in
+     * it at all. Every surviving delta is the honest reference.
+     */
+    const survivingDeltas = ticks.filter((tick) => !tick.failed && tick.kind === 'delta');
+    const firstOk = survivingDeltas[0];
+    if (firstFailed === undefined || firstOk === undefined) {
+      fail('the state-edge scrubber has no failed position, or no surviving delta, to compare.');
+    } else {
+      // The point of §9.3, measured: the mark is where the failure happened, not summarized at
+      // the end. Frame 4 of 7 sits just past the middle of the track.
+      const fraction =
+        firstFailed.trackWidth === 0
+          ? -1
+          : (firstFailed.centreX - firstFailed.trackLeft) / firstFailed.trackWidth;
+      if (fraction < 0.3 || fraction > 0.7) {
+        fail(
+          `the first failed position sits ${(fraction * 100).toFixed(0)}% along the scrubber, ` +
+            'expected the middle third. Frame 4 of 7 is where state broke; a mark anywhere else ' +
+            'is a mark the reader has to scrub to interpret.',
+        );
+      }
+      const clash = survivingDeltas.find((tick) => tick.background === firstFailed.background);
+      if (clash !== undefined) {
+        fail(
+          `a failed position is painted ${firstFailed.background}, exactly like position ` +
+            `${String(clash.index)}, whose patch applied. §9.3 asks for failed patches marked RED ` +
+            'at their position; an unmarked tick is indistinguishable from a clean timeline.',
+        );
+      }
+      if (
+        firstFailed.background === 'rgba(0, 0, 0, 0)' ||
+        firstFailed.background === 'transparent'
+      ) {
+        fail('the failed scrubber position has no background at all — its rule did not reach it.');
+      }
+    }
+
+    // The headline, before anything is clicked.
+    const headline = await session.page.$eval('.agui-state', (el) => (el as HTMLElement).innerText);
+    if (!headline.includes('2 failed patches')) {
+      fail('the State tab does not say how many patches failed before the reader scrubs.');
+    }
+    // S1: the tab opens on the latest frame, which is the current reconstructed state (§9.3).
+    if (!headline.includes('Frame 7 of 7')) {
+      fail(`the State tab did not open on the current state; it reads ${JSON.stringify(headline)}.`);
+    }
+
+    /* --- S2: scrub to the failure and read what broke --------------------- */
+    await session.page.click('.agui-scrub__tick[data-index="3"]');
+    await session.page.waitForSelector('[data-testid="failure-r_state"]');
+    await session.page.screenshot({ path: join(outDir, 'state-failed-frame.png'), fullPage: true });
+
+    const atFailure = await session.page.$eval(
+      '.agui-state',
+      (el) => (el as HTMLElement).innerText,
+    );
+    if (!/operation 2 of 2 failed/i.test(atFailure)) {
+      fail(
+        'the failed frame does not name WHICH operation failed. The patch has two ops and only ' +
+          'the second is the bug (S2).',
+      );
+    }
+    if (!/did not advance/i.test(atFailure)) {
+      fail(
+        'the failed frame does not say state did not advance past it. The document shown is the ' +
+          'PREVIOUS frame’s by design, and a reader who took it for this patch’s result ' +
+          'would be reading a document the patch never produced.',
+      );
+    }
+    if (!atFailure.includes('/missing/child')) {
+      fail('the failing op’s path is not on screen at the failed frame.');
+    }
+
+    const [failedOp, okOp] = await session.page.evaluate(() =>
+      ['.agui-op[data-failed="true"]', '.agui-op[data-failed="false"]'].map((selector) => {
+        const el = document.querySelector(selector);
+        return el === null ? 'MISSING' : getComputedStyle(el).backgroundColor;
+      }),
+    );
+    if (failedOp === 'MISSING' || failedOp === okOp) {
+      fail(
+        `the op that failed is painted ${String(failedOp)} and the one that applied ` +
+          `${String(okOp)}. S2 marks the failing op in place; an unmarked one leaves the reader ` +
+          'to count.',
+      );
+    }
+
+    /* --- S1: scrubbing back really changes the document ------------------- */
+    await session.page.click('.agui-scrub__tick[data-index="0"]');
+    await session.page.waitForSelector('[data-testid="frame-r_state"][data-kind="snapshot"]');
+    const atSnapshot = await session.page.$eval(
+      '.agui-state__doc',
+      (el) => (el as HTMLElement).innerText,
+    );
+    if (!atSnapshot.includes('"Ada"') || atSnapshot.includes('"Grace"')) {
+      fail(
+        'scrubbing back to the snapshot did not change the document: it should show "Ada", the ' +
+          'name before frame 7 replaced it with "Grace". A scrubber that does not scrub is the ' +
+          'tab doing nothing.',
+      );
+    }
+    await session.page.screenshot({ path: join(outDir, 'state-snapshot.png'), fullPage: true });
+
+    if (session.errors.length > 0) {
+      fail(`State on a run whose patches failed logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+
+  /* --- the malformed golden fixture: two frames, the second refused ------- */
+  {
+    const session = await openPanel(browser, origin, 'light');
+    await importFixture(session.page, join(fixtureDir, 'malformed.agui.jsonl'));
+    await openState(session.page);
+    await session.page.screenshot({ path: join(outDir, 'state-malformed.png'), fullPage: true });
+
+    const ticks = await scrubberTicks(session.page);
+    const shape = ticks.map((tick) => `${tick.kind}:${tick.failed ? 'failed' : 'ok'}`).join(',');
+    if (shape !== 'snapshot:ok,delta:failed') {
+      fail(
+        `the malformed capture's scrubber reads [${shape}], expected the snapshot at seq 8 ` +
+          'followed by the refused delta at seq 9 — the bad patch path done-when #5 counts.',
+      );
+    }
+    if (session.errors.length > 0) {
+      fail(`State on the malformed capture logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+
+  /* --- a redacted capture, produced by the real export and re-imported ---- */
+  {
+    const producer = await openPanel(browser, origin, 'light');
+    await importFixture(producer.page, join(fixtureDir, 'state-edge.agui.jsonl'));
+    await producer.page.click('button[role="tab"][id="agui-tab-session"]');
+    await producer.page.waitForSelector('.agui-export');
+    await producer.page.click('.agui-export__groups button:has-text("Redact everything")');
+    const saved = await clickAndSave(
+      producer.page,
+      'button:has-text("Download capture")',
+      'State (redacted)',
+    );
+    await producer.close();
+    if (saved === null) return;
+
+    const redactedPath = join(outDir, 'state-redacted.agui.jsonl');
+    writeFileSync(redactedPath, saved.text, 'utf8');
+
+    const session = await openPanel(browser, origin, 'dark');
+    await importFixture(session.page, redactedPath);
+    await openState(session.page);
+    await session.page.screenshot({ path: join(outDir, 'state-redacted.png'), fullPage: true });
+
+    const shown = await session.page.$eval('.agui-state', (el) => (el as HTMLElement).innerText);
+    if (shown.includes('Ada') || shown.includes('Grace')) {
+      fail('a redacted capture renders the original state values in State.');
+    }
+    if (!shown.includes('«redacted:')) {
+      fail('a redacted capture shows no placeholder in State — the tree renders as though empty.');
+    }
+    /*
+     * The single most important thing this tab must not do to a shared bug report.
+     *
+     * A tree rebuilt from redacted patches is structurally real and semantically flat: measured
+     * on this fixture, `counter` goes 0 -> 1 -> (2, refused) and every one of those renders as
+     * `«redacted: 1 chars»`. A reader not told would scrub the timeline, see no change, and
+     * conclude the patches had no effect.
+     */
+    if (!/placeholder/i.test(shown) || !/what it changed to/i.test(shown)) {
+      fail(
+        'a redacted capture does not say its values are placeholders. A state tree whose values ' +
+          'are all «redacted: N chars» is presented as the state that was on the wire.',
+      );
+    }
+    // §11 keeps structure, so the paths and the patch failures are still real evidence. Read at
+    // the failed frame, since the tab opens on the latest one and only its own ops are mounted.
+    await session.page.click('.agui-scrub__tick[data-index="3"]');
+    await session.page.waitForSelector('[data-testid="failure-r_state"]');
+    const atFailure = await session.page.$eval(
+      '.agui-state',
+      (el) => (el as HTMLElement).innerText,
+    );
+    if (!atFailure.includes('/missing/child')) {
+      fail('a redacted capture lost its JSON Pointer paths; §11 keeps structure and ordering.');
+    }
+    if (!/operation 2 of 2 failed/i.test(atFailure)) {
+      fail('a redacted capture no longer names which op failed — the bug report lost its subject.');
+    }
+    const failedIndices = (await scrubberTicks(session.page))
+      .filter((tick) => tick.failed)
+      .map((tick) => tick.index);
+    if (failedIndices.join(',') !== '3,5') {
+      fail(
+        `a redacted capture marked positions [${failedIndices.join(', ')}] failed, expected ` +
+          '[3, 5]. Paths survive redaction, so a path-based patch failure must survive with them ' +
+          '— that is what makes the shared file a usable bug report.',
+      );
+    }
+
+    if (session.errors.length > 0) {
+      fail(`State on a redacted capture logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Phase 3 — does a real click produce a real file? (design decision E1)       */
 /* -------------------------------------------------------------------------- */
 
@@ -896,6 +1213,7 @@ async function main(): Promise<void> {
     if (failures.length === 0) await checkUnreachableControls(browser, server.origin);
     if (failures.length === 0) await checkFixtures(browser, server.origin);
     if (failures.length === 0) await checkMessages(browser, server.origin);
+    if (failures.length === 0) await checkState(browser, server.origin);
     if (failures.length === 0) await checkExport(browser, server.origin);
   } finally {
     await browser.close();
@@ -936,6 +1254,19 @@ async function main(): Promise<void> {
   console.log(
     `  redacted: placeholders, structure kept, arguments reported redacted rather than broken — ` +
       `${outDir}/messages-redacted.png`,
+  );
+  console.log('State renders in every state design §8 names:');
+  console.log(`  empty: says so rather than showing a blank pane — ${outDir}/state-empty.png`);
+  console.log(
+    `  issues: 7 scrubber positions laid out left to right, 4 and 6 marked red in place, the ` +
+      `failing op named "operation 2 of 2" — ${outDir}/state-edge.png, ${outDir}/state-failed-frame.png`,
+  );
+  console.log(
+    `  malformed: the snapshot at seq 8 then the refused delta at seq 9 — ${outDir}/state-malformed.png`,
+  );
+  console.log(
+    `  redacted: placeholders, paths kept, the same two failures still marked in place — ` +
+      `${outDir}/state-redacted.png`,
   );
   console.log('the post-grant Reload control is styled (.agui-app__note-action).');
   console.log('panel issued no off-origin requests (requirements §11).');

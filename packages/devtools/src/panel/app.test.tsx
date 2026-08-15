@@ -138,13 +138,20 @@ describe('App', () => {
     expect(dropTarget()).toBeTruthy();
   });
 
-  it.each<[TabId, RegExp]>([
-    ['runs', /Runs — not built yet/],
-    ['state', /State — not built yet/],
-  ])('names the milestone for the %s placeholder', (tab, heading) => {
-    render(<App store={createPanelStore({ ...initialPanelState(), tab })} />);
-    expect(screen.getByRole('heading', { name: heading })).toBeTruthy();
-    expect(screen.getByText(/milestone/i)).toBeTruthy();
+  it.each<[TabId, RegExp]>([['runs', /Runs — not built yet/]])(
+    'names the milestone for the %s placeholder',
+    (tab, heading) => {
+      render(<App store={createPanelStore({ ...initialPanelState(), tab })} />);
+      expect(screen.getByRole('heading', { name: heading })).toBeTruthy();
+      expect(screen.getByText(/milestone/i)).toBeTruthy();
+    },
+  );
+
+  it('renders State on the state tab', () => {
+    render(<App store={createPanelStore({ ...initialPanelState(), tab: 'state' })} />);
+    expect(screen.getByRole('region', { name: 'State' })).toBeTruthy();
+    // Not the placeholder: an empty State tab explains itself in its own words.
+    expect(screen.queryByText(/not built yet/i)).toBeNull();
   });
 
   it('renders Messages on the messages tab', () => {

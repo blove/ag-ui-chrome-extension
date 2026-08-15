@@ -1743,3 +1743,325 @@ code {
   margin: 4px 0 0;
   color: var(--agui-fg-muted);
 }
+
+/* ---------------------------------------------------------------------------
+ * State tab (requirements §9.3, design decisions S1–S4).
+ *
+ * The scrubber is the tab. §9.3 asks for failed patches "marked red at their
+ * position on the scrubber", so the tick strip is laid out as one flex item per
+ * frame: a tick's horizontal position IS its position in the timeline, and a
+ * failure is therefore visible without scrubbing to find it.
+ *
+ * Red is never the only signal. A failed tick also carries a `!` glyph and says
+ * so in its accessible name, so the mark survives greyscale, a colour vision
+ * deficiency, and a screen reader alike.
+ * ------------------------------------------------------------------------- */
+
+.agui-state {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.agui-state__empty {
+  margin: 0;
+  color: var(--agui-fg-muted);
+}
+
+/* Not an error — the file no longer carries the values. Drawn as a note so a
+   reader does not take a redacted document for the one that was on the wire. */
+.agui-state__redacted {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-border);
+  border-left: 3px solid var(--agui-severity-info);
+  border-radius: 3px;
+  background: var(--agui-surface);
+  color: var(--agui-fg-muted);
+}
+
+.agui-state__run {
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  background: var(--agui-surface);
+}
+
+.agui-state__run-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  margin: 0;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--agui-border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agui-state__run-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.agui-state__run-thread,
+.agui-state__run-frames {
+  color: var(--agui-fg-muted);
+  font-weight: 400;
+}
+
+.agui-state__run-outcome {
+  padding: 0 6px;
+  border: 1px solid var(--agui-border);
+  border-radius: 8px;
+  font-weight: 400;
+}
+
+.agui-state__run-outcome[data-outcome='error'],
+.agui-state__run-outcome[data-outcome='aborted'] {
+  border-color: var(--agui-severity-error);
+  color: var(--agui-severity-error);
+}
+
+/* The headline count. A run whose state broke says so before anything is
+   clicked, in the same red the scrubber uses for the positions it broke at. */
+.agui-state__run-failures {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--agui-severity-error-bg);
+  color: var(--agui-severity-error);
+}
+
+.agui-state__streaming {
+  margin: 0;
+  padding: 4px 8px;
+  border-left: 3px solid var(--agui-severity-info);
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+}
+
+.agui-state__absent {
+  margin: 4px 8px;
+  color: var(--agui-fg-muted);
+  font-style: italic;
+}
+
+/* ── The scrubber (S1), with S3's failures in place ─────────────────────── */
+
+.agui-scrub {
+  display: flex;
+  gap: 2px;
+  align-items: stretch;
+  margin: 8px;
+  padding: 3px;
+  border-radius: 3px;
+  background: var(--agui-track);
+  overflow-x: auto;
+}
+
+.agui-scrub__tick {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  /* Never collapses to nothing: a 10k-frame run scrolls its scrubber rather
+     than rendering positions a pointer cannot hit. */
+  min-width: 8px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--agui-border);
+  border-radius: 2px;
+  background: var(--agui-surface-raised);
+  color: var(--agui-fg-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.agui-scrub__tick:hover {
+  background: var(--agui-row-hover);
+}
+
+/* A snapshot is where state was DECLARED rather than derived, so it reads as a
+   landmark. Tinted rather than outlined: the accent outline below is what says
+   "selected", and two accent-edged ticks in one strip is a strip that cannot say
+   which position the reader is on. */
+.agui-scrub__tick[data-kind='snapshot'] {
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+}
+
+/* S3. The whole requirement, in three declarations. */
+.agui-scrub__tick[data-failed='true'] {
+  border-color: var(--agui-severity-error);
+  background: var(--agui-severity-error);
+  color: var(--agui-bg);
+}
+
+.agui-scrub__tick[aria-checked='true'] {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
+
+/* ── The selected frame ─────────────────────────────────────────────────── */
+
+.agui-state__frame {
+  margin: 0 8px 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: var(--agui-surface-raised);
+}
+
+.agui-state__frame[data-failed='true'] {
+  border-left: 3px solid var(--agui-severity-error);
+}
+
+.agui-state__frame-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.agui-state__frame-ordinal {
+  font-weight: 600;
+}
+
+.agui-state__frame-kind {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--agui-track);
+  color: var(--agui-fg-muted);
+  font-size: 11px;
+}
+
+.agui-state__frame-kind[data-kind='snapshot'] {
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+}
+
+.agui-state__frame-seq,
+.agui-state__frame-time {
+  color: var(--agui-fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.agui-state__locate {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: var(--agui-surface);
+  color: var(--agui-fg);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agui-state__locate:hover {
+  background: var(--agui-row-hover);
+}
+
+/* Says which op failed, why, and that the document below is NOT this patch's
+   result — the frame repeats the previous frame's value by design. */
+.agui-state__failure {
+  margin: 6px 0 0;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--agui-severity-error-bg);
+  color: var(--agui-severity-error);
+  font-weight: 600;
+}
+
+/* ── The patch a delta carried (S2) ─────────────────────────────────────── */
+
+.agui-state__patch {
+  margin-top: 6px;
+}
+
+.agui-state__ops {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agui-op {
+  padding: 3px 6px;
+  border-left: 3px solid transparent;
+  border-radius: 2px;
+  background: var(--agui-surface);
+}
+
+/* The op the patch stopped at. Marked in place for the same reason the tick is:
+   a patch of twenty ops with the eighth wrong is not a patch anyone reads. */
+.agui-op[data-failed='true'] {
+  border-left-color: var(--agui-severity-error);
+  background: var(--agui-severity-error-bg);
+}
+
+.agui-op__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.agui-op__index {
+  min-width: 12px;
+  color: var(--agui-fg-muted);
+  font-size: 11px;
+}
+
+.agui-op__name {
+  font-weight: 600;
+}
+
+.agui-op__path,
+.agui-op__from {
+  color: var(--agui-json-key);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.agui-op__absent {
+  color: var(--agui-severity-error);
+  font-style: italic;
+}
+
+.agui-op__raw {
+  margin: 4px 0 0;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--agui-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agui-op__reason {
+  margin: 4px 0 0;
+  color: var(--agui-severity-error);
+}
+
+.agui-op__note {
+  margin: 4px 0 0;
+  color: var(--agui-fg-muted);
+}
+
+/* ── The document as it stood at the selected frame (S1, via S4's tree) ─── */
+
+.agui-state__doc {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--agui-border);
+}
