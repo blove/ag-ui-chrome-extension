@@ -41,7 +41,7 @@ function describeSource(source: PanelSource): string {
  * on the page. A production AG-UI app sends nothing until the user types, so "nothing detected"
  * would read as a finding when it is only an absence of evidence.
  */
-function describeCapture(capture: CaptureStatus, instrumented: boolean | null): string {
+function describeCapture(capture: CaptureStatus, loaded: boolean | null): string {
   switch (capture.kind) {
     case 'unsupported':
       return 'unavailable in this build';
@@ -49,17 +49,21 @@ function describeCapture(capture: CaptureStatus, instrumented: boolean | null): 
       /*
        * `on for <origin>` alone would be the panel's original false claim in its second home.
        * The origin being granted says capture is AVAILABLE here; whether this DOCUMENT has the
-       * hooks in it is a separate fact that only the page can report, and one that
-       * `registerContentScripts` — which affects future navigations only — routinely leaves
-       * false on a page that was already open.
+       * capture layer in it is a separate fact that only the extension's own content script can
+       * report, and one that `registerContentScripts` — which affects future navigations only —
+       * routinely leaves false on a page that was already open.
+       *
+       * The positive wording stops at "loaded" for the same reason the banner does: the relay
+       * reporting proves the content scripts were registered here, not that the MAIN-world
+       * patches installed. See `relay/relay.ts`.
        */
-      if (instrumented === false) {
-        return `on for ${capture.origin} — but this page has no capture hooks in it, so nothing is being captured until you reload it`;
+      if (loaded === false) {
+        return `on for ${capture.origin} — but the capture layer is not loaded in this page, so nothing is being captured until you reload it`;
       }
-      if (instrumented === null) {
-        return `on for ${capture.origin} — this page has not reported its capture hooks yet`;
+      if (loaded === null) {
+        return `on for ${capture.origin} — waiting for this page to report its capture layer`;
       }
-      return `on for ${capture.origin}`;
+      return `on for ${capture.origin} — capture layer loaded in this page`;
     case 'off':
       switch (capture.signal.level) {
         case 'stream':
@@ -158,7 +162,7 @@ export function Session({ store, onLoaded, exportIo }: SessionProps): JSX.Elemen
 
       <h3 class="agui-session__heading">Capture</h3>
       <dl class="agui-session__grid">
-        <Row label="Status" value={describeCapture(state.capture, state.instrumented)} />
+        <Row label="Status" value={describeCapture(state.capture, state.loaded)} />
         <Row label="Expand chunks" value={state.expandChunks ? 'on' : 'off'} />
       </dl>
 

@@ -33,23 +33,29 @@ export type WireFrame =
   | { kind: 'event'; tMs: number; raw: string }
   | { kind: 'keepalive'; tMs: number; raw: string; comment: string };
 
+/**
+ * Everything the MAIN world posts across the boundary — and, since 2026-08-15, nothing else.
+ *
+ * EVERY arm here belongs to a connection. That is a privacy property, not a coincidence, and it
+ * is the reason this union no longer has a `capture-installed` arm: a message posted through
+ * `window.postMessage` reaches the page's own `message` listeners, so an arm that fired at
+ * `document_start` announced the extension to every page on a granted origin, including the vast
+ * majority that never speak AG-UI. The presence signal now travels the ISOLATED world's
+ * `chrome.runtime` port instead (see `relay/relay.ts`), which the page cannot observe at all.
+ *
+ * The consequence for this file: the page can only ever see traffic it caused. A `postMessage`
+ * here is downstream of a `fetch`, an `XMLHttpRequest` or an `EventSource` the page itself
+ * opened, so the extension says nothing the page did not already provoke.
+ *
+ * The transport patches are typed on this union directly. They used to be typed on a
+ * `ConnectionMessage = Exclude<InjectMessage, { kind: 'capture-installed' }>` so a transport
+ * could not structurally claim the hooks were installed; with that arm gone the exclusion said
+ * nothing, so it was deleted rather than kept as a type that only looked like a constraint. The
+ * intent it encoded is now enforced by the world boundary, which is far stronger than a type:
+ * the presence claim is not an `InjectMessage` at all, so no page-side code — ours or the
+ * page's — has a shape in which to make it.
+ */
 export type InjectMessage =
-  /**
-   * The hooks are installed in THIS document. Posted once at install time, before any traffic.
-   *
-   * The only message here that is about the capture layer rather than about the page, and the
-   * only one whose value is in NOT arriving. The panel used to infer "capturing" from the origin
-   * being granted, but a grant registers content scripts for FUTURE navigations only: a document
-   * already open when the grant landed — or when the extension was reloaded — has no hooks in it,
-   * and the panel said it was capturing while nothing was. Absence of this message is what tells
-   * the panel the document is not instrumented, which is why it cannot be folded into the first
-   * real request: a page that never makes one is exactly the case being distinguished.
-   *
-   * It carries no `connId` because there is no connection, and it never becomes a
-   * `CaptureRecord`: it is extension-internal state about our own capture layer, and putting it
-   * in the Timeline would make the panel assert something false about the user's application.
-   */
-  | { source: 'agui-dt'; v: 1; kind: 'capture-installed'; tMs: number }
   | {
       source: 'agui-dt';
       v: 1;
@@ -79,15 +85,6 @@ export type InjectMessage =
       contentType: string;
       bytes: number;
     };
-
-/**
- * Every message that belongs to a connection — i.e. everything except the announcement.
- *
- * The three transport patches are typed on this rather than on `InjectMessage`, so a transport
- * structurally cannot claim the hooks are installed: that claim is `install.ts`'s alone, made
- * once, before any transport has had anything to say.
- */
-export type ConnectionMessage = Exclude<InjectMessage, { kind: 'capture-installed' }>;
 
 const CLOSE_REASONS: ReadonlySet<string> = new Set(['complete', 'error', 'aborted']);
 
@@ -125,15 +122,9 @@ function check(value: unknown): boolean {
   if (!hasOwn(value, 'v') || value.v !== PROTOCOL_VERSION) return false;
   if (!hasOwn(value, 'kind')) return false;
 
-  // The one arm with no connection. It is checked before the `connId` requirement rather than
-  // exempted from it: every other check — own-property strictness, the source tag, the version —
-  // applies to it unchanged, because a page that forges this message makes the panel claim
-  // capture is live on a document with no hooks in it. That is the exact false-success state the
-  // message exists to abolish, so it gets no easier a path across the boundary than any other.
-  if (value.kind === 'capture-installed') {
-    return hasOwn(value, 'tMs') && isTime(value.tMs);
-  }
-
+  // Unconditional now that every arm belongs to a connection. The `capture-installed` arm used to
+  // be checked ahead of this line and exempted from it; it is gone, and with it the one path
+  // across this boundary that did not have to name a connection.
   if (!hasOwn(value, 'connId') || typeof value.connId !== 'string' || value.connId === '') {
     return false;
   }

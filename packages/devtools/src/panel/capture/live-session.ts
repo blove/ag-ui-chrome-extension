@@ -193,11 +193,11 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
           scope: null,
           selectedSeq: null,
           // Only ever upwards, exactly like `raiseSignal`. A snapshot arrives the instant the
-          // panel subscribes, which on a page that is still loading is before any announcement
-          // is due, so `false` here means "nothing reported YET" and never "not instrumented".
-          // The finding is made by the grace-period timeout in `use-live-capture`, which is the
-          // one place that has waited long enough to make it.
-          instrumented: message.instrumented ? true : s.instrumented,
+          // panel subscribes, which on a page that is still loading is before any report is due,
+          // so `false` here means "nothing reported YET" and never "the capture layer is not
+          // loaded". The finding is made by the grace-period timeout in `use-live-capture`,
+          // which is the one place that has waited long enough to make it.
+          loaded: message.loaded ? true : s.loaded,
         };
       }
       case 'append': {
@@ -239,9 +239,9 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
               };
         return project(s);
       }
-      case 'capture-installed': {
+      case 'capture-loaded': {
         /*
-         * The inspected document says its hooks are installed.
+         * The inspected document's ISOLATED-world relay says the capture layer is loaded there.
          *
          * It touches the builder, the records and the seq counter not at all, and it must stay
          * that way: the Timeline claims to show AG-UI protocol events reconstructed from the
@@ -249,7 +249,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
          * application, and it would consume a `seq` that every validator issue is anchored to.
          * The whole visible footprint of this message is the capture status.
          */
-        return { ...s, instrumented: true };
+        return { ...s, loaded: true };
       }
       case 'cleared': {
         restart();

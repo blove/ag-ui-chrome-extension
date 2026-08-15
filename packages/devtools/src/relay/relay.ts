@@ -16,6 +16,9 @@
  *
  * Nothing is ever posted back to the page, no property is added to any global, and no DOM node
  * is created, so a page cannot detect the relay by feature-probing.
+ *
+ * It has one thing of its own to say, at the bottom of this file: that the capture layer is
+ * loaded in this document. That report goes up the `chrome.runtime` port and never near the page.
  */
 import { isInjectMessage, PROTOCOL_VERSION, type InjectMessage } from '../inject/protocol';
 import { RELAY_PORT_NAME, type RelayMessage } from '../sw/protocol';
@@ -94,12 +97,6 @@ function isPlainObject(value: unknown): boolean {
  */
 function toRelayMessage(message: InjectMessage): RelayMessage {
   switch (message.kind) {
-    case 'capture-installed':
-      // Forwarded through the same rebuild as everything else, and deliberately not exempted
-      // from any check above: this is the message the panel reads as "this document has capture
-      // hooks in it", so a forged one would make the panel claim capture is live where it is
-      // not. Only `tMs` survives — there is nothing else the worker needs to know.
-      return { v: PROTOCOL_VERSION, kind: 'capture-installed', tMs: message.tMs };
     case 'conn-open':
       return {
         v: PROTOCOL_VERSION,
@@ -154,5 +151,45 @@ window.addEventListener('message', (event: MessageEvent): void => {
     // A hostile payload can throw from a getter during validation or copying. Drop it.
   }
 });
+
+/**
+ * Report that the capture layer is LOADED in this document — the panel's tri-state signal, moved
+ * out of the page's reach.
+ *
+ * WHY IT IS HERE AND NOT IN THE MAIN WORLD. The MAIN-world script used to post a
+ * `capture-installed` message at `document_start`, and `window.postMessage` targets the page's
+ * own window: every page `message` listener saw it, and many pages have one. That announced the
+ * extension, unprompted, on every load of every page on a granted origin — including the pages
+ * that never make an AG-UI request. This file is the ISOLATED world; `chrome.runtime` is a
+ * channel the page cannot see, read, or forge. Nothing about this call is page-observable.
+ *
+ * WHY AN EXPLICIT MESSAGE RATHER THAN THE PORT CONNECTION ITSELF. The port would be the cheaper
+ * signal — the worker gets `tabId` and `frameId` off `port.sender` either way — but it cannot
+ * carry the fact the worker actually needs. `markLoaded` REPLACES a top-level frame's record and
+ * clears the subframes beneath it, because a new top-level document destroys them; that is only
+ * correct for a genuinely new document. A port connection does not distinguish one from a
+ * RECONNECT: `send` above reopens the port after MV3 terminates an idle worker (§15), and a
+ * reconnect from the main frame would then wipe the still-live subframes' records. This message
+ * is sent exactly once, at module evaluation, so its arrival means "a document just loaded here"
+ * — which is precisely the fact the replace-on-navigation behaviour is keyed on. The identity
+ * still comes from `port.sender`, i.e. from Chrome rather than from the message, so nothing about
+ * WHICH frame this is can be influenced from the page side.
+ *
+ * WHAT IT PROVES, AND WHAT IT DOES NOT — the accepted residual. This relay running proves the
+ * content scripts were registered for this document, which is exactly the broken case the signal
+ * exists to catch: a document already open when its origin was granted has no content scripts in
+ * it at all, so nothing arrives here and the panel says so. It does NOT prove the MAIN-world
+ * patches installed successfully — `installInject` swallows its own throw, and this report would
+ * be sent regardless. That case is our own code under test rather than a configuration the user
+ * can get into, and it self-corrects the instant any AG-UI request happens, because a `conn-open`
+ * is proof the patches work. The panel's wording is weakened to match: it claims the capture
+ * layer is LOADED here, never that the hooks are installed. If the claim is ever to be
+ * strengthened, the way to do it at zero page-visible cost is for the MAIN world to record its
+ * install result somewhere the ISOLATED world can read — the two worlds share the DOM, so a
+ * detached node's attribute would do — and for this file to forward it. That is not built now:
+ * it would trade a page-visible signal for a DOM-visible one, and the extra fact is worth less
+ * than the simplicity.
+ */
+send({ v: PROTOCOL_VERSION, kind: 'capture-loaded' });
 
 export {};

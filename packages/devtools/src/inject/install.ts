@@ -97,27 +97,11 @@ function withOpenRestated(post: (message: InjectMessage) => void): (message: Inj
       // A connection that closed, or turned out to be binary, has no frames left to ride with.
       pending.delete(message.connId);
     }
-    // `capture-installed` falls through: it has no connection, and it is posted through `send`
-    // rather than this sink anyway. Listing the connection kinds explicitly is what keeps a
-    // future arm from silently taking the wrong branch here.
+    // Every arm is listed explicitly, which is what keeps a future one from silently taking the
+    // wrong branch here.
     post(message);
   };
 }
-
-/**
- * How long after install the announcement is re-stated, in ms. `0` — the next task.
- *
- * The MAIN patch and the ISOLATED relay are two separate content scripts, and Chrome guarantees
- * no ordering between the two worlds; `chrome.scripting.registerContentScripts` on a
- * runtime-granted origin registers them as independent scripts with no declared order at all. An
- * announcement posted before the relay's listener exists is simply lost, and a lost announcement
- * makes the panel warn "this page is not instrumented" about a page that is — a false warning on
- * a working setup, which is worse than no warning because it teaches the user to ignore the
- * banner. One re-statement off the task queue closes that window, for the same reason and by the
- * same means as `withOpenRestated` above. The service worker keys instrumentation per frame, so
- * the duplicate changes nothing.
- */
-const RESTATE_DELAY_MS = 0;
 
 /** Requirements §5.5: one monotonic clock for every transport. */
 const monotonicNow: () => number =
@@ -172,22 +156,21 @@ export function installInject(host: InjectHost): boolean {
     };
 
     /*
-     * Announce the hooks, unconditionally, before a single byte of traffic.
+     * NOTHING IS POSTED HERE, and that is the point.
      *
-     * Sent through `send` rather than `post`: `withOpenRestated` is a per-connection concern and
-     * this message has no connection. It is posted here — after the patches are installed and
-     * before anything can be captured — because it is a claim about THIS document, and the panel
-     * treats its absence as proof that the document has no hooks in it.
+     * This function used to announce itself at install time with a `capture-installed` message,
+     * so the panel could tell a granted origin from a patched document. `window.postMessage`
+     * targets the page's own window, so every `message` listener on the page received it — and
+     * many pages have one, for iframe communication. That turned the extension's presence into a
+     * PUSHED signal on every page load of a granted origin, including the pages that never make
+     * an AG-UI request at all. §11 wants this extension unobtrusive, and the concern that matters
+     * for a devtools product is not fingerprinting but an application that behaves differently
+     * when it can tell it is being inspected.
+     *
+     * The signal moved to the ISOLATED world: `relay/relay.ts` reports over its `chrome.runtime`
+     * port, which the page has no access to. From here on the page only ever sees messages
+     * downstream of traffic it started itself.
      */
-    const announce = (): void => {
-      send({
-        source: AGUI_DT_SOURCE,
-        v: PROTOCOL_VERSION,
-        kind: 'capture-installed',
-        tMs: monotonicNow(),
-      });
-    };
-
     installFetchPatch(host, { post, now: monotonicNow, newConnId: nextConnId });
     if (host.XMLHttpRequest !== undefined) {
       installXhrPatch({ target: host.XMLHttpRequest, post, now: monotonicNow, nextConnId });
@@ -197,14 +180,6 @@ export function installInject(host: InjectHost): boolean {
     // shipping it or deleting it.
     if (hasEventSource(host)) {
       installEventSourcePatch({ scope: host, post, now: monotonicNow, nextConnId });
-    }
-    // Every transport is patched and nothing has run since, so this is the earliest moment at
-    // which the claim is true, and no traffic can have been missed before it.
-    announce();
-    try {
-      setTimeout(announce, RESTATE_DELAY_MS);
-    } catch {
-      // A host without timers still announced once above. Nothing else is lost.
     }
     return true;
   } catch {

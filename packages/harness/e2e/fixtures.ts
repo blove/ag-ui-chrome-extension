@@ -36,13 +36,15 @@ export interface CaptureSnapshot {
   requests: RequestLine[];
   droppedBefore: number;
   /**
-   * Whether a document in the browser has reported that its capture hooks are installed — the
+   * Whether a document in the browser has reported that the capture layer is LOADED in it — the
    * same fact the worker puts on the panel's `snapshot`, read from the same function.
    *
    * This is the panel-facing state that used to be inferred from the permission instead, and the
-   * inference is what let the panel report capture from documents it had never touched.
+   * inference is what let the panel report capture from documents it had never touched. The
+   * report now travels the ISOLATED-world relay's `chrome.runtime` port; it used to be a
+   * `window.postMessage` the inspected page could see.
    */
-  instrumented: boolean;
+  loaded: boolean;
   /**
    * Connections the worker has seen close, each with the time it closed at.
    *
@@ -59,7 +61,7 @@ interface TestHook {
   requests(): RequestLine[];
   droppedBefore(): number;
   bytes(): number;
-  instrumented(): boolean;
+  loaded(): boolean;
   closes(): ClosedConn[];
   clear(): void;
 }
@@ -165,7 +167,7 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
       records: hook.records(),
       requests: hook.requests(),
       droppedBefore: hook.droppedBefore(),
-      instrumented: hook.instrumented(),
+      loaded: hook.loaded(),
       closes: hook.closes(),
     };
   });
@@ -304,7 +306,7 @@ export function foldAsLatePanel(capture: CaptureSnapshot): Reconstruction {
     requests: capture.requests,
     closed: capture.closes,
     droppedBefore: capture.droppedBefore,
-    instrumented: capture.instrumented,
+    loaded: capture.loaded,
   });
   return { runs: state.runs, issues: state.issues };
 }

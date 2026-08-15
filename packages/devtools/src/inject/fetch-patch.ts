@@ -22,7 +22,7 @@ import { createSseParser, type SseFrame } from '../core/sse/parser';
 import {
   AGUI_DT_SOURCE,
   PROTOCOL_VERSION,
-  type ConnectionMessage,
+  type InjectMessage,
   type WireFrame,
 } from './protocol';
 
@@ -33,7 +33,7 @@ export interface FetchHost {
 
 export interface FetchPatchOptions {
   /** Delivery to the relay. Called synchronously; may throw — it is caught here. */
-  post(message: ConnectionMessage): void;
+  post(message: InjectMessage): void;
   /** Monotonic clock. Defaults to `performance.now()` (requirements §5.5). */
   now?(): number;
   /** Batch scheduler. Defaults to `queueMicrotask` (requirements §5.1). */
@@ -47,7 +47,7 @@ export interface FetchPatch {
   uninstall(): void;
   /**
    * Content classification for a connection (spec §4.1: two AG-UI events ⇒ `agui`, one ⇒
-   * `provisional`). `ConnectionMessage` has nowhere to carry this yet, so it is exposed here.
+   * `provisional`). `InjectMessage` has nowhere to carry this yet, so it is exposed here.
    */
   classificationOf(connId: string): Classification | undefined;
 }
@@ -255,7 +255,7 @@ export function installFetchPatch(host: FetchHost, options: FetchPatchOptions): 
       return `c${String(connCounter)}-${Math.random().toString(36).slice(2, 10)}`;
     });
 
-  function safePost(message: ConnectionMessage): void {
+  function safePost(message: InjectMessage): void {
     try {
       options.post(message);
     } catch {

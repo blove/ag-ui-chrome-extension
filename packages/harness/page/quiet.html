@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AG-UI harness — a page that never speaks AG-UI</title>
+    <script>
+      // DELIBERATELY INERT. This page makes no request of any kind — no `fetch`, no
+      // `XMLHttpRequest`, no `EventSource` — which is what most pages on a granted origin are.
+      //
+      // It exists for `e2e/quiet-page.spec.ts`: on such a page the extension must say nothing
+      // the page can hear. The one thing this script does is prove it is running at all, so a
+      // spec that failed to load it cannot pass by observing the silence of a blank tab.
+      document.documentElement.setAttribute('data-quiet-page', 'ran');
+    </script>
+  </head>
+  <body>
+    <h1>quiet page</h1>
+    <p id="ready">This page never makes an AG-UI request.</p>
+  </body>
+</html>

@@ -40,30 +40,34 @@ describe('Session', () => {
       ...initialPanelState(),
       source: { kind: 'live', origin: 'http://localhost:3000' },
       capture: { kind: 'on', origin: 'http://localhost:3000' },
-      instrumented: true,
+      loaded: true,
     });
     render(<Session store={store} />);
     expect(screen.getByText('live capture from http://localhost:3000')).toBeTruthy();
-    expect(screen.getByText('on for http://localhost:3000')).toBeTruthy();
+    // "on for <origin>" alone would be the origin's fact standing in for the document's. Even
+    // the positive row names what it actually knows, and stops at "loaded".
+    expect(
+      screen.getByText('on for http://localhost:3000 — capture layer loaded in this page'),
+    ).toBeTruthy();
   });
 
   /*
    * The Session row is the second place the panel states capture status, so it is the second
-   * place the granted-vs-instrumented divergence can be reported falsely. "on for <origin>" says
+   * place the granted-vs-loaded divergence can be reported falsely. "on for <origin>" says
    * capture is HAPPENING; the origin being granted only says it is available here, and on a
    * document that was already open when the grant landed those are different facts.
    */
-  it('does not claim capture is happening on a document that has reported no hooks', () => {
+  it('does not claim capture is happening on a document that reported no capture layer', () => {
     const store = createPanelStore({
       ...initialPanelState(),
       source: { kind: 'live', origin: 'http://localhost:3000' },
       capture: { kind: 'on', origin: 'http://localhost:3000' },
-      instrumented: false,
+      loaded: false,
     });
     render(<Session store={store} />);
     const value = screen.getByText(/^on for http:\/\/localhost:3000/);
     expect(value.textContent).toMatch(/reload/i);
-    expect(value.textContent).toMatch(/no capture hooks/i);
+    expect(value.textContent).toMatch(/capture layer is not loaded/i);
   });
 
   it('says the page has not reported yet rather than either of the two verdicts', () => {
@@ -71,12 +75,12 @@ describe('Session', () => {
       ...initialPanelState(),
       source: { kind: 'live', origin: 'http://localhost:3000' },
       capture: { kind: 'on', origin: 'http://localhost:3000' },
-      instrumented: null,
+      loaded: null,
     });
     render(<Session store={store} />);
     const value = screen.getByText(/^on for http:\/\/localhost:3000/);
-    expect(value.textContent).toMatch(/has not reported/i);
-    expect(value.textContent).not.toMatch(/no capture hooks/i);
+    expect(value.textContent).toMatch(/waiting for this page to report/i);
+    expect(value.textContent).not.toMatch(/is not loaded/i);
   });
 
   it('reports a capture-off origin without claiming nothing is there', () => {

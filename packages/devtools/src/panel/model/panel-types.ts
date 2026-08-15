@@ -89,7 +89,7 @@ export interface PanelState {
    */
   framework: string | null;
   /**
-   * Whether the inspected DOCUMENT has reported that its capture hooks are installed.
+   * Whether the inspected DOCUMENT has reported that the capture layer is LOADED in it.
    *
    * `null` means no report has arrived yet and none is overdue — the "checking" state. It is not
    * a synonym for `false`, and the difference is the whole point: a panel that rendered the
@@ -98,12 +98,18 @@ export interface PanelState {
    *
    * Deliberately separate from `capture`, which describes the ORIGIN. Those two facts diverge —
    * `chrome.scripting.registerContentScripts` affects only future navigations, so an origin
-   * granted in a previous session leaves an already-open document with no hooks in it — and the
-   * panel used to have only the first of them, which is why it reported capture that was not
-   * happening. Nothing infers this field; it is set from what the page said, or from the timeout
-   * that gives up waiting for it.
+   * granted in a previous session leaves an already-open document with no content scripts in it
+   * — and the panel used to have only the first of them, which is why it reported capture that
+   * was not happening. Nothing infers this field; it is set from what the ISOLATED-world relay
+   * reported, or from the timeout that gives up waiting for it.
+   *
+   * NAMED FOR EXACTLY WHAT IT PROVES, and no more. `true` means the relay content script is
+   * running in that document, i.e. the content scripts were registered for it. It does not prove
+   * the MAIN-world patches installed without throwing — see `relay/relay.ts` for the residual —
+   * so no wording driven by this field may claim the hooks are installed. Records arriving is
+   * the stronger fact, and the banner already goes quiet on those.
    */
-  instrumented: boolean | null;
+  loaded: boolean | null;
   tab: TabId;
   scope: RunScope;
   filter: EventFilter;
@@ -178,7 +184,7 @@ export function initialPanelState(): PanelState {
     source: { kind: 'empty' },
     capture: { kind: 'unsupported' },
     framework: null,
-    instrumented: null,
+    loaded: null,
     tab: 'timeline',
     scope: null,
     filter: { text: '', issuesOnly: false },

@@ -43,7 +43,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [],
       droppedBefore: 0,
-      instrumented: true,
+      loaded: true,
     });
 
     expect(next.records).toHaveLength(5);
@@ -64,7 +64,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [],
       droppedBefore: 0,
-      instrumented: true,
+      loaded: true,
     });
     state = session.apply(state, { kind: 'append', records: tail });
 
@@ -127,7 +127,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [{ connId: 'c1', tMs: 99 }],
       droppedBefore: 0,
-      instrumented: true,
+      loaded: true,
     });
 
     expect(state.issues.map((issue) => issue.code)).toContain('run-never-terminated');
@@ -150,7 +150,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [],
       droppedBefore: 0,
-      instrumented: true,
+      loaded: true,
     });
 
     expect(state.issues.map((issue) => issue.code)).not.toContain('run-never-terminated');
@@ -169,7 +169,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [{ connId: 'c1', tMs: 50 }],
       droppedBefore: 0,
-      instrumented: true,
+      loaded: true,
     });
     expect(state.runs[0]?.outcome).toBe('aborted');
 
@@ -181,7 +181,7 @@ describe('createLiveSession', () => {
       requests: [requestLine('c2')],
       closed: [],
       droppedBefore: 0,
-      instrumented: true,
+      loaded: true,
     });
 
     expect(state.runs.map((run) => run.runId)).toEqual(['r2']);
@@ -198,7 +198,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [],
       droppedBefore: 0,
-      instrumented: true,
+      loaded: true,
     });
 
     expect(state.records.map((r) => r.seq)).toEqual([2, 3, 4]);
@@ -213,7 +213,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [],
       droppedBefore: 7,
-      instrumented: true,
+      loaded: true,
     });
 
     expect(state.droppedBefore).toBe(9);
@@ -232,7 +232,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [],
       droppedBefore: 0,
-      instrumented: true,
+      loaded: true,
     });
     expect(state.droppedBefore).toBe(0);
 
@@ -254,7 +254,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [],
       droppedBefore: 6,
-      instrumented: true,
+      loaded: true,
     });
     nextSeq = 5;
     state = session.apply(state, {
@@ -273,7 +273,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [],
       droppedBefore: 0,
-      instrumented: true,
+      loaded: true,
     });
     // Two evicted by the panel already.
     expect(state.droppedBefore).toBe(2);
@@ -297,7 +297,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [],
       droppedBefore: 4,
-      instrumented: true,
+      loaded: true,
     });
     state = { ...state, selectedSeq: 2, scope: 'r1' };
 
@@ -326,7 +326,7 @@ describe('createLiveSession', () => {
       requests: [requestLine()],
       closed: [],
       droppedBefore: 0,
-      instrumented: true,
+      loaded: true,
     });
     state = session.apply(state, { kind: 'closed', connId: 'c1', tMs: 40 });
     const before = state.issues.map((issue) => issue.code);
@@ -352,11 +352,11 @@ describe('createLiveSession', () => {
   describe('instrumentation', () => {
     it('records that the page reported its hooks, without producing anything to show', () => {
       const session = createLiveSession();
-      const start = { ...initialPanelState(), instrumented: null };
+      const start = { ...initialPanelState(), loaded: null };
 
-      const state = session.apply(start, { kind: 'capture-installed' });
+      const state = session.apply(start, { kind: 'capture-loaded' });
 
-      expect(state.instrumented).toBe(true);
+      expect(state.loaded).toBe(true);
       expect(state.records).toEqual([]);
       expect(state.runs).toEqual([]);
       expect(state.issues).toEqual([]);
@@ -371,11 +371,11 @@ describe('createLiveSession', () => {
         requests: [requestLine()],
         closed: [],
         droppedBefore: 0,
-        instrumented: false,
+        loaded: false,
       });
       const before = state.records.map((r) => r.seq);
 
-      state = session.apply(state, { kind: 'capture-installed' });
+      state = session.apply(state, { kind: 'capture-loaded' });
 
       expect(state.records.map((r) => r.seq)).toEqual(before);
       expect(state.runs).toHaveLength(1);
@@ -385,18 +385,18 @@ describe('createLiveSession', () => {
       const session = createLiveSession();
 
       const state = session.apply(
-        { ...initialPanelState(), instrumented: null },
+        { ...initialPanelState(), loaded: null },
         {
           kind: 'snapshot',
           records: [],
           requests: [],
           closed: [],
           droppedBefore: 0,
-          instrumented: true,
+          loaded: true,
         },
       );
 
-      expect(state.instrumented).toBe(true);
+      expect(state.loaded).toBe(true);
     });
 
     it('never reads a snapshot as proof that the page is NOT instrumented', () => {
@@ -407,26 +407,26 @@ describe('createLiveSession', () => {
       // and treating it as a finding is exactly the false warning the grace period exists to
       // prevent — the finding is made by the timeout in `use-live-capture`, never here.
       const fresh = session.apply(
-        { ...initialPanelState(), instrumented: null },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, instrumented: false },
+        { ...initialPanelState(), loaded: null },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false },
       );
-      expect(fresh.instrumented).toBeNull();
+      expect(fresh.loaded).toBeNull();
 
       const known = session.apply(
-        { ...initialPanelState(), instrumented: true },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, instrumented: false },
+        { ...initialPanelState(), loaded: true },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false },
       );
-      expect(known.instrumented).toBe(true);
+      expect(known.loaded).toBe(true);
     });
 
     it('survives a clear, which empties data and uninstalls nothing', () => {
       const session = createLiveSession();
       const state = session.apply(
-        { ...initialPanelState(), instrumented: true },
+        { ...initialPanelState(), loaded: true },
         { kind: 'cleared' },
       );
 
-      expect(state.instrumented).toBe(true);
+      expect(state.loaded).toBe(true);
       expect(state.records).toEqual([]);
     });
   });
@@ -441,7 +441,7 @@ describe('createLiveSession', () => {
         requests: [requestLine()],
         closed: [],
         droppedBefore: 0,
-        instrumented: true,
+        loaded: true,
       },
     );
 
@@ -551,7 +551,7 @@ describe('createLiveSession', () => {
         requests: [],
         closed: [],
         droppedBefore: 0,
-        instrumented: true,
+        loaded: true,
       });
 
       expect(state.binaryTransport?.contentType).toBe('application/vnd.ag-ui.event+proto');
@@ -584,7 +584,7 @@ describe('the request lines an export has to put back', () => {
       requests: [requestLine('c1')],
       closed: [],
       droppedBefore: 0,
-      instrumented: true,
+      loaded: true,
     });
 
     expect(state.requests.map((request) => request.connId)).toEqual(['c1']);

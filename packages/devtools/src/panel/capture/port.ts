@@ -39,9 +39,9 @@ const SW_MESSAGE_KINDS: ReadonlySet<SwMessage['kind']> = new Set([
   'closed',
   'binary',
   // Leaving this out would silently drop the one message that distinguishes a granted origin
-  // from an instrumented document — the panel would warn about a page that had just announced
-  // itself, and the reload it advises would appear to do nothing.
-  'capture-installed',
+  // from a document with the capture layer loaded in it — the panel would warn about a page that
+  // had just reported itself, and the reload it advises would appear to do nothing.
+  'capture-loaded',
   'cleared',
 ] satisfies SwMessage['kind'][]);
 

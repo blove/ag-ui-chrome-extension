@@ -52,12 +52,14 @@ const binary: InjectMessage = {
 };
 
 /**
- * The one message that is about the capture layer rather than about the page's traffic.
+ * The message that used to be about the capture layer rather than about the page's traffic.
  *
- * It has no `connId` — there is no connection, and there may never be one; its whole value is
- * that a document which was never instrumented cannot send it.
+ * It is NOT an `InjectMessage` any more, which is why it is typed loosely here. The presence
+ * signal moved to the ISOLATED-world relay's `chrome.runtime` port, out of the page's view, and
+ * this shape is what a page that had read the old source would try. Kept as a rejection fixture
+ * so "the arm was deleted" and "the arm is refused at the boundary" cannot drift apart.
  */
-const captureInstalled: InjectMessage = {
+const captureInstalled: Record<string, unknown> = {
   source: AGUI_DT_SOURCE,
   v: PROTOCOL_VERSION,
   kind: 'capture-installed',
@@ -107,13 +109,8 @@ describe('isInjectMessage — accepts every message the contract defines', () =>
     expect(isInjectMessage({ ...connOpen, contentType: null })).toBe(true);
   });
 
-  it('accepts capture-installed, which carries no connection', () => {
-    expect(isInjectMessage(captureInstalled)).toBe(true);
-    expect(isInjectMessage({ ...captureInstalled, tMs: 0 })).toBe(true);
-  });
-
   it('accepts messages that survived a structured clone', () => {
-    for (const message of [connOpen, frames, connClose, binary, captureInstalled]) {
+    for (const message of [connOpen, frames, connClose, binary]) {
       expect(isInjectMessage(structuredClone(message))).toBe(true);
     }
   });
@@ -204,26 +201,33 @@ describe('isInjectMessage — rejects anything else', () => {
   });
 
   /*
-   * The new arm gets NO exemption. It is the one message a page has an incentive to forge —
-   * forging it makes the panel claim capture is live on a document that has no hooks in it,
-   * which is precisely the false-success state this whole message exists to abolish.
+   * EVERY message that crosses this boundary belongs to a connection, and that is the privacy
+   * property, not a tidiness one.
+   *
+   * `postMessage` reaches the page's own `message` listeners, so a message the extension sends
+   * unprompted at `document_start` announces the extension to every page on a granted origin —
+   * including the ones that never speak AG-UI. There is now no such message: a `postMessage` from
+   * us is always downstream of a `fetch`, an `XMLHttpRequest` or an `EventSource` the page opened
+   * itself. The presence signal lives on the relay's `chrome.runtime` port instead.
+   *
+   * These cases exist so nothing quietly puts it back, and so the shape a page might forge — the
+   * one that used to make the panel claim capture on a document with no hooks in it — stays
+   * refused rather than merely absent.
    */
-  it('rejects a capture-installed that is not exactly the contract', () => {
-    expect(isInjectMessage({ ...captureInstalled, source: 'agui-dt-evil' })).toBe(false);
-    expect(isInjectMessage({ ...captureInstalled, v: 2 })).toBe(false);
-    expect(isInjectMessage({ ...captureInstalled, v: '1' })).toBe(false);
-    expect(isInjectMessage(without(captureInstalled, 'tMs'))).toBe(false);
-    expect(isInjectMessage({ ...captureInstalled, tMs: Number.NaN })).toBe(false);
-    expect(isInjectMessage({ ...captureInstalled, tMs: '0' })).toBe(false);
-    expect(isInjectMessage({ ...captureInstalled, kind: 'capture-installed ' })).toBe(false);
+  it('rejects the capture-installed announcement, which is not a message any more', () => {
+    expect(isInjectMessage(captureInstalled)).toBe(false);
+    expect(isInjectMessage({ ...captureInstalled, tMs: 0 })).toBe(false);
+    expect(isInjectMessage(structuredClone(captureInstalled))).toBe(false);
+    // Nor with a connection bolted on to satisfy the arms that do have one.
+    expect(isInjectMessage({ ...captureInstalled, connId: 'c1' })).toBe(false);
   });
 
-  it('rejects a capture-installed whose fields live on the prototype', () => {
-    const hostile = Object.create({ tMs: 1 }) as Record<string, unknown>;
-    hostile.source = AGUI_DT_SOURCE;
-    hostile.v = PROTOCOL_VERSION;
-    hostile.kind = 'capture-installed';
-    expect(isInjectMessage(hostile)).toBe(false);
+  it('rejects every connectionless kind, whatever it calls itself', () => {
+    for (const kind of ['capture-installed', 'capture-loaded', 'installed', 'hello']) {
+      expect(isInjectMessage({ source: AGUI_DT_SOURCE, v: PROTOCOL_VERSION, kind, tMs: 1 })).toBe(
+        false,
+      );
+    }
   });
 
   it('rejects binary without a byte count or content type', () => {

@@ -1,12 +1,12 @@
 /**
- * Granted is not instrumented — the gap between a permission and a patched document.
+ * Granted is not loaded — the gap between a permission and a document that has our scripts.
  *
  * WHAT WAS BROKEN, AND WHY NO EXISTING TEST COULD SEE IT. The panel decided it was "capturing"
  * from `chrome.permissions.contains(origin)`. `chrome.scripting.registerContentScripts` affects
- * only FUTURE navigations, so a document that was already open when the origin was granted has no
- * hooks in it: the panel said capture was on and nothing was captured. Three ways in — a grant
- * from a previous session, an extension reload with the page open, and a grant the user never
- * acts on. Measured in a real browser on the already-open page:
+ * only FUTURE navigations, so a document that was already open when the origin was granted has
+ * none of them in it: the panel said capture was on and nothing was captured. Three ways in — a
+ * grant from a previous session, an extension reload with the page open, and a grant the user
+ * never acts on. Measured in a real browser on the already-open page:
  * `Function.prototype.toString.call(window.fetch).includes('[native code]')` was `true`
  * (unpatched); after a reload it was `false`, and capture worked.
  *
@@ -94,16 +94,15 @@ async function fetchIsNative(target: Page): Promise<boolean> {
 }
 
 /**
- * Wait for the announcement to land, and report what was there when the wait ended.
+ * Wait for the load report to land, and report what was there when the wait ended.
  *
- * Deliberately does NOT assert: an announcement that never arrives is a finding for the test
- * that is about it, not a `beforeAll` failure that takes the whole file down and reports the
- * wrong name.
+ * Deliberately does NOT assert: a report that never arrives is a finding for the test that is
+ * about it, not a `beforeAll` failure that takes the whole file down and reports the wrong name.
  */
-async function waitForInstrumented(context: BrowserContext, timeoutMs = 10_000): Promise<boolean> {
+async function waitForLoaded(context: BrowserContext, timeoutMs = 10_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    if ((await readCapture(context)).instrumented) return true;
+    if ((await readCapture(context)).loaded) return true;
     if (Date.now() > deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -170,7 +169,7 @@ test.beforeAll(async () => {
   // itself fully instrumented, which is this defect wearing a different hat.
   await page.reload();
   nativeAfter = await fetchIsNative(page);
-  await waitForInstrumented(ctx);
+  await waitForLoaded(ctx);
   await runOnce(page, PROMPT);
   afterReload = await readSettledCapture(ctx);
 });
@@ -190,12 +189,16 @@ test('the page under test is genuinely not localhost', () => {
   expect(['localhost', '127.0.0.1', '0.0.0.0']).not.toContain(host);
 });
 
-test('a document open before the grant is not patched, and the panel-facing state says so', () => {
+test('a document open before the grant has no capture layer, and the state says so', () => {
   // The measurement that found this, asserted rather than remembered.
   expect(nativeBefore).toBe(true);
   // What the panel reads. Before this change there was nothing to read and the panel inferred
   // "capturing" from the permission — this is the exact moment it was lying.
-  expect(beforeReload.instrumented).toBe(false);
+  //
+  // This assertion is now driven by the ISOLATED-world relay rather than by a MAIN-world
+  // `postMessage`: an already-open document has NO content scripts at all, so the relay is not
+  // running in it and nothing reports. The evidence moved worlds; the finding did not change.
+  expect(beforeReload.loaded).toBe(false);
 });
 
 test('capture really does see nothing from that document, which is what makes the claim false', () => {
@@ -205,11 +208,19 @@ test('capture really does see nothing from that document, which is what makes th
   expect(beforeReload.requests).toEqual([]);
 });
 
-test('a reload patches the document, and the panel-facing state flips with it', () => {
+test('a reload loads the capture layer, and the panel-facing state flips with it', () => {
   expect(nativeAfter).toBe(false);
-  expect(afterReload.instrumented).toBe(true);
+  expect(afterReload.loaded).toBe(true);
 });
 
+/*
+ * The residual, closed by evidence rather than by assertion.
+ *
+ * `loaded` says the relay is running, which proves the content scripts were registered — not
+ * that the MAIN-world patches installed. `nativeAfter` measures the patch directly, and the
+ * records below are the standing proof: a captured run cannot happen without a working patch, and
+ * it is what the panel's own claim rests on once traffic starts.
+ */
 test('and capture then delivers the run, so the flag and the buffer agree', () => {
   const scenario = SCENARIOS[SCENARIO_NAME];
   if (!scenario) throw new Error(`SCENARIOS.${SCENARIO_NAME} is missing`);
