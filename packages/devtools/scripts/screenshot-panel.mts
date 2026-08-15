@@ -54,7 +54,7 @@ const MIME: Record<string, string> = {
  * Enough of `chrome` for the panel bundle to boot outside DevTools. Deliberately minimal: the
  * point is to render the panel's own markup, not to simulate Chrome. `devtools` is left absent
  * so the detection and origin paths take their documented no-DevTools branch, which is what
- * makes the capture banner read "Live capture is not available in this build."
+ * makes the capture banner read "Live capture only runs inside the DevTools panel."
  */
 const CHROME_SHIM = `
   globalThis.chrome = {
@@ -196,6 +196,61 @@ async function checkPaint(browser: Browser, origin: string, htmlMentionsCss: boo
   }
 
   return painted;
+}
+
+/**
+ * Controls the panel styles but cannot reach from here.
+ *
+ * `.agui-app__note-action` is the Reload button offered after a successful origin grant. That
+ * state needs a real `chrome.permissions` grant, which this harness has no way to produce — so
+ * without this check the one control the live-capture task added to the note band would ship
+ * unverified, which is exactly the class of regression this gate exists for (a control present
+ * in the markup and completely unstyled). The element is mounted directly and asked whether the
+ * stylesheet reached it.
+ */
+async function checkUnreachableControls(browser: Browser, origin: string): Promise<void> {
+  const session = await openPanel(browser, origin, 'light');
+  try {
+    /*
+     * The banner's own action is the reference: it is already covered by this gate, and the note
+     * action is deliberately the same control minus a top margin. Written as a `map` over an
+     * inline arrow rather than a named helper — esbuild's `keepNames` rewrites a named function
+     * to reference `__name`, which does not exist in the page.
+     */
+    const [note, banner] = await session.page.evaluate(() =>
+      ['agui-app__note-action', 'agui-banner__action'].map((className) => {
+        const button = document.createElement('button');
+        button.className = className;
+        button.textContent = 'Reload the inspected page';
+        document.body.append(button);
+        const style = getComputedStyle(button);
+        const read: Record<string, string> = {
+          color: style.color,
+          borderColor: style.borderTopColor,
+          cursor: style.cursor,
+        };
+        button.remove();
+        return read;
+      }),
+    );
+
+    if (note === undefined || banner === undefined) {
+      fail('could not measure .agui-app__note-action against .agui-banner__action.');
+      return;
+    }
+    for (const [property, value] of Object.entries(note)) {
+      const reference = banner[property];
+      if (value !== reference) {
+        fail(
+          `.agui-app__note-action ${property} is ${value}, but .agui-banner__action — the same ` +
+            `control, one band up — is ${String(reference)}. The Reload button offered after an ` +
+            'origin grant is not picking up its rule.',
+        );
+      }
+    }
+  } finally {
+    await session.close();
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -351,6 +406,7 @@ async function main(): Promise<void> {
     painted = await checkPaint(browser, server.origin, htmlMentionsCss);
     // Asserting on rows in a panel that is not painting tells you nothing the paint phase has
     // not already said, and buries the diagnosis under consequential failures.
+    if (failures.length === 0) await checkUnreachableControls(browser, server.origin);
     if (failures.length === 0) await checkFixtures(browser, server.origin);
   } finally {
     await browser.close();
@@ -374,6 +430,7 @@ async function main(): Promise<void> {
   console.log(
     `  partial decode: warned on import and after a tab switch — ${outDir}/partial-import.png`,
   );
+  console.log('the post-grant Reload control is styled (.agui-app__note-action).');
   console.log('panel issued no off-origin requests (requirements §11).');
 }
 

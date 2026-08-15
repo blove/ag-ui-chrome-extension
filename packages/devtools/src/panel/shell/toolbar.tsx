@@ -3,12 +3,32 @@ import { issueCounts } from '../model/selectors';
 import { initialPanelState } from '../model/panel-types';
 import type { RunScope } from '../model/panel-types';
 import type { PanelStore } from '../model/store';
-import { setTextFilter, toggleExpandChunks, toggleIssuesOnly } from '../model/store';
+import {
+  setTextFilter,
+  toggleExpandChunks,
+  toggleIssuesOnly,
+  togglePreserveLog,
+} from '../model/store';
 import { usePanelState } from '../model/use-panel-state';
 
 export interface ToolbarProps {
   store: PanelStore;
   onImport: () => void;
+  /**
+   * Record/pause. Not a store action, because pausing has to reach the service worker as well
+   * as the state — a paused panel that let the worker keep buffering would resume by dumping
+   * everything it missed, which is not what Pause means.
+   *
+   * Optional so the control is still constructible where capture is not: the button is
+   * disabled whenever capture is not `on`, so an absent callback is unreachable.
+   */
+  onSetRecording?: (recording: boolean) => void;
+  /**
+   * Called after Clear has reset panel state, so the host can clear the service worker's buffer
+   * too. Without it the two ends disagree: the panel would be empty while the worker still held
+   * the records, and the next snapshot — a reconnect, a reopened panel — would resurrect them.
+   */
+  onClear?: () => void;
 }
 
 export type IssueTone = 'error' | 'warning' | 'none';
@@ -65,15 +85,16 @@ export function issueBadgeLabel(counts: Counts, issuesOnly: boolean, scope: RunS
  * P2: with no Issues tab, this badge is where protocol problems stay visible. It is the scoped
  * count, the severity signal, and the issues-only filter in one control.
  *
- * Record and preserve-on-navigate are rendered disabled: phase 1 has no capture layer, and
- * `ToolbarProps` carries no callback for either. Showing them inert is more honest than hiding
- * them and more honest than wiring a control that does nothing.
+ * Record and preserve-on-navigate are live once capture is on, and disabled with a reason when
+ * it is not. Disabled-with-a-reason rather than hidden: a control that vanishes reads as a
+ * missing feature, and one that is present but inert with no explanation reads as a bug.
  */
-export function Toolbar({ store, onImport }: ToolbarProps): JSX.Element {
+export function Toolbar({ store, onImport, onSetRecording, onClear }: ToolbarProps): JSX.Element {
   const state = usePanelState(store);
   const counts = issueCounts(state);
   const tone = issueTone(counts);
-  const recording = state.capture.kind === 'on';
+  const captureIsOn = state.capture.kind === 'on';
+  const recording = captureIsOn && state.recording;
   const hasData = state.source.kind !== 'empty' || state.records.length > 0 || state.runs.length > 0;
 
   return (
@@ -82,8 +103,13 @@ export function Toolbar({ store, onImport }: ToolbarProps): JSX.Element {
         type="button"
         class="agui-toolbar__button"
         aria-pressed={recording}
-        disabled
-        title="Live capture is not available yet — import a .agui.jsonl to inspect a stream"
+        disabled={!captureIsOn}
+        title={
+          captureIsOn
+            ? 'Stop or resume buffering events for this tab'
+            : 'Enable capture for this origin first — or import a .agui.jsonl to inspect a stream'
+        }
+        onClick={() => onSetRecording?.(!state.recording)}
       >
         {recording ? 'Pause' : 'Record'}
       </button>
@@ -94,8 +120,16 @@ export function Toolbar({ store, onImport }: ToolbarProps): JSX.Element {
         disabled={!hasData}
         onClick={() => {
           // No `clearCapture` action exists; a reset to the initial state is exactly what clear
-          // means. Capture status survives because it describes the inspected page, not the data.
-          store.update((s) => ({ ...initialPanelState(), capture: s.capture }));
+          // means. Capture status, source, record/pause and preserve-log survive: they describe
+          // the inspected page and the session's settings, not the data being discarded.
+          store.update((s) => ({
+            ...initialPanelState(),
+            capture: s.capture,
+            source: s.source.kind === 'live' ? s.source : { kind: 'empty' },
+            recording: s.recording,
+            preserveLog: s.preserveLog,
+          }));
+          onClear?.();
         }}
       >
         Clear
@@ -104,9 +138,14 @@ export function Toolbar({ store, onImport }: ToolbarProps): JSX.Element {
       <button
         type="button"
         class="agui-toolbar__button"
-        aria-pressed={false}
-        disabled
-        title="Takes effect once live capture lands"
+        aria-pressed={captureIsOn && state.preserveLog}
+        disabled={!captureIsOn}
+        title={
+          captureIsOn
+            ? 'Keep captured events when the inspected page navigates'
+            : 'Applies to live capture, which is off for this origin'
+        }
+        onClick={() => store.update(togglePreserveLog)}
       >
         Preserve log on navigate
       </button>

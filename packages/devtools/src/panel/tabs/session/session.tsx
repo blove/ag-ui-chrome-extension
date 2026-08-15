@@ -53,6 +53,28 @@ function describeCapture(capture: CaptureStatus): string {
   }
 }
 
+/**
+ * What carried this capture — and the one row that must never be silent.
+ *
+ * Requirements §5.4 defers protobuf DECODING to phase 3 and asks only that capture detect the
+ * content type and label the connection. That label lands here. A binary connection produces no
+ * records, so a Session tab that reported "not detected" over one would leave the reader with an
+ * empty Timeline and no explanation — indistinguishable from capture being broken.
+ */
+function describeTransport(state: PanelState): string {
+  const binary = state.binaryTransport;
+  if (binary !== null) {
+    return `binary — ${binary.contentType}, ${String(binary.bytes)} bytes. Decoding is not supported yet (requirements §5.4 defers it to phase 3), so no events can be reconstructed from this connection.`;
+  }
+  if (state.source.kind === 'imported') return 'as recorded in the imported capture';
+  if (state.source.kind === 'live') {
+    return state.records.length > 0
+      ? 'text/event-stream — SSE frames are being decoded'
+      : 'nothing on the wire yet, which is normal before the first message';
+  }
+  return 'not detected — detection ships with the capture layer';
+}
+
 function Row({ label, value }: { label: string; value: string }): JSX.Element {
   return (
     <div class="agui-session__row">
@@ -113,14 +135,7 @@ export function Session({ store, onLoaded }: SessionProps): JSX.Element {
           value={state.framework ?? 'not identified — no framework fingerprint in the page'}
         />
         <Row label="Endpoints" value="not detected — detection ships with the capture layer" />
-        <Row
-          label="Transport"
-          value={
-            state.source.kind === 'imported'
-              ? 'as recorded in the imported capture'
-              : 'not detected — detection ships with the capture layer'
-          }
-        />
+        <Row label="Transport" value={describeTransport(state)} />
         <Row label="Agents" value="not detected — /info discovery ships with the capture layer" />
       </dl>
 

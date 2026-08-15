@@ -269,15 +269,17 @@ describe('App', () => {
     await waitFor(() => expect(messageCount(store)).toBe(1));
   });
 
-  it('says why Enable cannot turn capture on in this build', () => {
+  it('says so when there is no chrome.permissions to grant through', async () => {
+    // No `chrome.permissions` in the default stub, which is the panel HTML opened outside
+    // DevTools. Enable must still say what happened rather than doing nothing visible.
     const store = createPanelStore({
       ...initialPanelState(),
       capture: { kind: 'off', origin: 'https://app.example', signal: { level: 'stream' } },
     });
     render(<App store={store} />);
     fireEvent.click(screen.getByRole('button', { name: /enable capture for/i }));
-    expect(screen.getByText(/capture cannot be enabled in this build/i)).toBeTruthy();
-    expect(store.get().tab).toBe('session');
+    expect(await screen.findByText(/not running inside DevTools/i)).toBeTruthy();
+    expect(store.get().capture.kind).toBe('off');
   });
 
   it('raises the signal to stream when the network observer sees one, offering Enable throughout', () => {
@@ -356,6 +358,6 @@ describe('App', () => {
     const store = createPanelStore();
     render(<App store={store} />);
     expect(store.get().capture).toEqual({ kind: 'unsupported' });
-    expect(screen.getByText(/live capture is not available in this build/i)).toBeTruthy();
+    expect(screen.getByText(/only runs inside the DevTools panel/i)).toBeTruthy();
   });
 });

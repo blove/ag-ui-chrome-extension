@@ -41,12 +41,36 @@ function createRequestEvent(): FakeRequestEvent {
   };
 }
 
+/** The `onNavigated` half of the fake network API — preserve-log-on-navigate hangs off it. */
+interface FakeNavigatedEvent {
+  addListener: (listener: (url: string) => void) => void;
+  removeListener: (listener: (url: string) => void) => void;
+  emit: (url: string) => void;
+}
+
+function createNavigatedEvent(): FakeNavigatedEvent {
+  const listeners = new Set<(url: string) => void>();
+  return {
+    addListener: (listener) => {
+      listeners.add(listener);
+    },
+    removeListener: (listener) => {
+      listeners.delete(listener);
+    },
+    emit: (url) => {
+      for (const listener of [...listeners]) listener(url);
+    },
+  };
+}
+
 interface ChromeStub {
   runtime: { getManifest: () => { version: string } };
   devtools: {
-    network: { onRequestFinished: FakeRequestEvent };
+    network: { onRequestFinished: FakeRequestEvent; onNavigated: FakeNavigatedEvent };
     inspectedWindow: {
       tabId: number;
+      /** Reloads the inspected page. A no-op here; tests that care spy on it. */
+      reload: () => void;
       /**
        * Answers every expression with `undefined`.
        *
@@ -64,15 +88,27 @@ interface ChromeStub {
 const chromeStub: ChromeStub = {
   runtime: { getManifest: () => ({ version: '0.1.0' }) },
   devtools: {
-    network: { onRequestFinished: createRequestEvent() },
+    network: { onRequestFinished: createRequestEvent(), onNavigated: createNavigatedEvent() },
     inspectedWindow: {
       tabId: 1,
+      reload: () => {},
       eval: (_expression, callback) => {
         callback?.(undefined);
       },
     },
   },
 };
+
+/*
+ * `chrome.runtime.connect` and `chrome.permissions` are DELIBERATELY absent from the default
+ * stub.
+ *
+ * Both are guarded on the panel side — `connectToServiceWorker` returns null without a
+ * `connect`, and `requestOriginGrant` returns `unavailable` without `permissions` — and those
+ * are the branches every test that is not about live capture must take. A default stub would
+ * silently open a port in all 347 existing panel tests. A test that wants either installs its
+ * own; `src/panel/capture/live-capture.test.tsx` does exactly that.
+ */
 
 // `@types/chrome` types the global as the full API surface. The stub is deliberately a subset —
 // widening it to the real type would mean stubbing hundreds of members no test touches — so the

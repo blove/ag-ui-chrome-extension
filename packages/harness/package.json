@@ -7,8 +7,10 @@
   "license": "MIT",
   "scripts": {
     "build:page": "tsx page/build.ts",
+    "record": "tsx record.ts",
     "test": "playwright test",
     "test:ci": "playwright test",
+    "test:e2e": "playwright test e2e",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint ."
   },

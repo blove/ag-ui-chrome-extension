@@ -170,6 +170,9 @@ export function EventList({ store, locateNonce }: EventListProps): JSX.Element {
   /** A standing request for DOM focus, claimed by whichever row turns out to carry that seq. */
   const focusSeqRef = useRef<number | null>(null);
 
+  /** P6 applies to a live, recording capture: a paused one has nothing arriving to tail. */
+  const follow = state.source.kind === 'live' && state.recording;
+
   /**
    * Arrow / Home / End move the selection, and the selection is what the window follows.
    *
@@ -231,6 +234,13 @@ export function EventList({ store, locateNonce }: EventListProps): JSX.Element {
           height={height}
           scrollToIndex={selectedIndex === -1 ? undefined : selectedIndex}
           scrollNonce={locateNonce}
+          /*
+           * P6: tail a live capture, and only a live one. An imported file is complete the
+           * moment it loads, so following it would do nothing but fight a user who scrolled.
+           * The list stops following as soon as the user scrolls up — `VirtualList` owns that
+           * rule, so this prop is the whole of the wiring.
+           */
+          follow={follow}
           renderRow={(record, index) => (
             // P7: keyed by `seq`, never by the array index — filtering reorders visible rows
             // and `Issue.seq` refers to this number.

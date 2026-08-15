@@ -158,22 +158,82 @@ describe('Toolbar issue badge', () => {
 });
 
 describe('Toolbar controls', () => {
-  it('offers record as an inert control until capture lands', () => {
+  it('offers record as an inert control while capture is off', () => {
     const store = createPanelStore(initialPanelState());
     render(<Toolbar store={store} onImport={() => undefined} />);
 
     const button = screen.getByRole('button', { name: 'Record' });
     expect((button as HTMLButtonElement).disabled).toBe(true);
+    // Not `state.recording`, which is true from the start: with capture off nothing is being
+    // recorded, and a pressed-looking Record button would say otherwise.
     expect(button.getAttribute('aria-pressed')).toBe('false');
+    expect(button.getAttribute('title')).toMatch(/enable capture for this origin first/i);
   });
 
-  it('offers preserve-on-navigate as an inert control until capture lands', () => {
+  it('offers preserve-on-navigate as an inert control while capture is off', () => {
     const store = createPanelStore(initialPanelState());
     render(<Toolbar store={store} onImport={() => undefined} />);
 
     const button = screen.getByRole('button', { name: 'Preserve log on navigate' });
     expect((button as HTMLButtonElement).disabled).toBe(true);
     expect(button.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('activates record once capture is on, and reports the pause through the host', () => {
+    const store = createPanelStore(
+      stateWith({
+        capture: { kind: 'on', origin: 'http://localhost:3000' },
+        source: { kind: 'live', origin: 'http://localhost:3000' },
+      }),
+    );
+    const onSetRecording = vi.fn();
+    render(<Toolbar store={store} onImport={() => undefined} onSetRecording={onSetRecording} />);
+
+    const button = screen.getByRole('button', { name: 'Pause' });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    expect(button.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(button);
+    // Not a store action: pausing has to reach the service worker as well as the state.
+    expect(onSetRecording).toHaveBeenCalledWith(false);
+  });
+
+  it('activates preserve-on-navigate once capture is on, and toggles it in the store', () => {
+    const store = createPanelStore(
+      stateWith({
+        capture: { kind: 'on', origin: 'http://localhost:3000' },
+        source: { kind: 'live', origin: 'http://localhost:3000' },
+      }),
+    );
+    render(<Toolbar store={store} onImport={() => undefined} />);
+
+    const button = screen.getByRole('button', { name: 'Preserve log on navigate' });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(button);
+    expect(store.get().preserveLog).toBe(true);
+  });
+
+  it('tells the host to clear the worker buffer too, and keeps a live source', () => {
+    const store = createPanelStore(
+      stateWith({
+        capture: { kind: 'on', origin: 'http://localhost:3000' },
+        source: { kind: 'live', origin: 'http://localhost:3000' },
+        records: [record(1)],
+        preserveLog: true,
+      }),
+    );
+    const onClear = vi.fn();
+    render(<Toolbar store={store} onImport={() => undefined} onClear={onClear} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+
+    expect(onClear).toHaveBeenCalledTimes(1);
+    const after = store.get();
+    expect(after.records).toEqual([]);
+    // The live source, the capture status and the session's settings describe the inspected
+    // page, not the data being discarded.
+    expect(after.source).toEqual({ kind: 'live', origin: 'http://localhost:3000' });
+    expect(after.preserveLog).toBe(true);
   });
 
   it('disables clear when there is nothing to clear', () => {

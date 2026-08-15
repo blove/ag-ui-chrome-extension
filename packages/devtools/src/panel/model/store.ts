@@ -97,6 +97,40 @@ export function setCapture(s: PanelState, capture: CaptureStatus): PanelState {
   return { ...s, capture };
 }
 
+/**
+ * Capture is on for `origin`: set the status AND the source in one write.
+ *
+ * The two must move together. `source` is what the capture banner and the empty state read to
+ * decide whether the panel is showing data or offering to get some, so leaving it `empty` while
+ * `capture` said `on` would keep the import drop zone on screen over a live stream. It also
+ * drops any imported capture: a panel cannot be showing a file and a live tab at once, and
+ * silently appending live records to an imported file would produce a stream that never existed.
+ */
+export function captureOn(s: PanelState, origin: string): PanelState {
+  const wasImported = s.source.kind === 'imported';
+  return {
+    ...s,
+    capture: { kind: 'on', origin },
+    source: { kind: 'live', origin },
+    runs: wasImported ? [] : s.runs,
+    records: wasImported ? [] : s.records,
+    issues: wasImported ? [] : s.issues,
+    droppedBefore: wasImported ? 0 : s.droppedBefore,
+    binaryTransport: wasImported ? null : s.binaryTransport,
+    scope: wasImported ? null : s.scope,
+    selectedSeq: wasImported ? null : s.selectedSeq,
+    loadError: wasImported ? null : s.loadError,
+  };
+}
+
+export function setRecording(s: PanelState, recording: boolean): PanelState {
+  return { ...s, recording };
+}
+
+export function togglePreserveLog(s: PanelState): PanelState {
+  return { ...s, preserveLog: !s.preserveLog };
+}
+
 /** How much a level is worth. Only the ORDER matters; the numbers are never stored or shown. */
 const SIGNAL_RANK: Record<DetectionSignal['level'], number> = { none: 0, stream: 1 };
 

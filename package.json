@@ -17,7 +17,8 @@
     "lint": "pnpm -r lint",
     "gen:events": "pnpm -r gen:events",
     "verify:build": "pnpm --filter ag-ui-devtools verify:build",
-    "screenshot:panel": "pnpm --filter ag-ui-devtools screenshot:panel"
+    "screenshot:panel": "pnpm --filter ag-ui-devtools screenshot:panel",
+    "test:e2e": "pnpm --filter ag-ui-harness run test:e2e"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

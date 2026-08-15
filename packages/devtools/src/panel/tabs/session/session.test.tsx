@@ -129,3 +129,54 @@ describe('Session', () => {
     );
   });
 });
+
+/*
+ * Requirements §5.4 / resolution C3. A binary connection yields no records at all, so if the
+ * Session tab said nothing about it the reader would see an empty capture and conclude capture
+ * is broken — which §15 names as the failure mode to avoid.
+ */
+describe('Session — binary transport', () => {
+  it('names the binary transport and says decoding is not supported yet', () => {
+    const store = createPanelStore({
+      ...initialPanelState(),
+      source: { kind: 'live', origin: 'http://localhost:3000' },
+      capture: { kind: 'on', origin: 'http://localhost:3000' },
+      binaryTransport: {
+        connId: 'c1',
+        tMs: 4,
+        contentType: 'application/vnd.ag-ui.event+proto',
+        bytes: 2048,
+      },
+    });
+    render(<Session store={store} />);
+
+    const transport = screen.getByText('Transport').nextElementSibling?.textContent ?? '';
+    expect(transport).toContain('binary');
+    expect(transport).toContain('application/vnd.ag-ui.event+proto');
+    expect(transport).toContain('2048');
+    expect(transport).toMatch(/decoding is not supported yet/i);
+  });
+
+  it('reports SSE for a live capture that produced records', () => {
+    const store = createPanelStore({
+      ...initialPanelState(),
+      source: { kind: 'live', origin: 'http://localhost:3000' },
+      capture: { kind: 'on', origin: 'http://localhost:3000' },
+      records: [
+        {
+          kind: 'event',
+          seq: 1,
+          tMs: 0,
+          connId: 'c1',
+          raw: null,
+          event: { type: 'CUSTOM' },
+          issues: [],
+        },
+      ],
+    });
+    render(<Session store={store} />);
+    expect(screen.getByText('Transport').nextElementSibling?.textContent ?? '').toContain(
+      'text/event-stream',
+    );
+  });
+});
