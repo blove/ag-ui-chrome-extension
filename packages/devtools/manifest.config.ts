@@ -37,6 +37,15 @@ export default defineManifest({
   // silently ignored and BOTH scripts below load into ISOLATED instead — a silent failure
   // of the world-isolation design, not a loud one. Pin the floor explicitly.
   minimum_chrome_version: '111',
+  // Paths are relative to dist/, and `public/` is copied there verbatim by Vite — so
+  // `public/icons/icon-16.png` is addressed as `icons/icon-16.png`. Rendered by `pnpm icons`
+  // from listing/icon.svg; `verify-build.ts` fails if any of the four is missing from dist/.
+  icons: {
+    16: 'icons/icon-16.png',
+    32: 'icons/icon-32.png',
+    48: 'icons/icon-48.png',
+    128: 'icons/icon-128.png',
+  },
   devtools_page: 'src/panel/devtools.html',
   background: {
     service_worker: 'src/sw/index.ts',

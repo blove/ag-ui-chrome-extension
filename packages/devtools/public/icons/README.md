@@ -1,9 +1,15 @@
 # Extension icons
 
-Vite copies everything under `public/` into `dist/` verbatim, so files placed here land at
-`dist/icons/*` and can be referenced from `manifest.config.ts` as `icons/<file>`.
+**Generated. Do not edit these PNGs by hand.**
 
-Requirements §12's manifest has no `icons` key, so nothing here is wired up yet. Adding
-icons is a Chrome Web Store submission requirement, not a load-unpacked one; drop
-`icon-16.png`, `icon-32.png`, `icon-48.png`, and `icon-128.png` here and add the matching
-`icons` block to `manifest.config.ts` before the first CWS upload (design §6, D8).
+    pnpm icons        # listing/icon.svg -> icon-{16,32,48,128}.png
+
+Vite copies everything under `public/` into `dist/` verbatim, so these land at `dist/icons/*` and
+are referenced from `manifest.config.ts` as `icons/<file>`. They are committed because they ship
+in the bundle, and `scripts/verify-build.ts` fails the build if any of the four is missing from
+`dist/` or unreferenced by the manifest.
+
+`icon-128.png` doubles as the Chrome Web Store store icon.
+
+The mark itself is designed in
+[`docs/superpowers/specs/2026-08-15-chrome-web-store-listing-design.md`](../../../../docs/superpowers/specs/2026-08-15-chrome-web-store-listing-design.md) §3.

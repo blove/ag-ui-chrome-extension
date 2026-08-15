@@ -215,6 +215,37 @@ function checkSelfContained(role: string, emitted: string, files: string[]): voi
   }
 }
 
+/**
+ * D8: icons are a Chrome Web Store submission requirement, not a load-unpacked one, so nothing
+ * before this milestone caught their absence. The manifest can name them and the build can still
+ * ship without them if `public/icons/` was not rendered — hence both halves are asserted.
+ */
+const ICON_SIZES = ['16', '32', '48', '128'] as const;
+
+function checkIcons(manifest: Rec, distDir: string): void {
+  const icons = asRecord(manifest.icons);
+  if (icons === undefined) {
+    fail(
+      'manifest icons',
+      'manifest has no "icons" block; the Chrome Web Store upload will be rejected.',
+    );
+    return;
+  }
+  for (const size of ICON_SIZES) {
+    const path = asString(icons[size]);
+    if (path === undefined) {
+      fail('manifest icons', `manifest declares no icon for size ${size}.`);
+      continue;
+    }
+    if (!existsSync(join(distDir, path))) {
+      fail(
+        'manifest icons',
+        `manifest points icon ${size} at ${path}, which is not in dist/. Run \`pnpm icons\`.`,
+      );
+    }
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* 1. Entry-point identity: does each chunk contain the code it should?        */
 /* -------------------------------------------------------------------------- */
@@ -501,6 +532,8 @@ function main(): void {
   /* --- 2. Manifest privacy invariants (requirements §11 / §12) ------------- */
   // Re-run here, against the same artifact these entry checks ran against, so one command
   // gates the whole build.
+
+  checkIcons(distManifest, distDir);
 
   /**
    * NO `web_accessible_resources` AT ALL.
