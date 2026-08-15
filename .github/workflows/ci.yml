@@ -38,12 +38,70 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      # The harness e2e loads the unpacked extension, which needs the FULL chromium build.
-      # `chromium-headless-shell` launches fine, loads no extension, registers no service
-      # worker, and reports no error — so without this the e2e would pass having tested
-      # nothing. It must also run before Test, since `pnpm test` includes the e2e.
-      - name: Install Chromium for the harness e2e
-        run: pnpm --filter ag-ui-harness exec playwright install --with-deps chromium
+      # Everything down to the Build step installs the browsers the two browser-driven gates
+      # need. It sits after typecheck and lint — the two cheapest gates — but BEFORE Build and
+      # Test, because `pnpm test` includes the harness capture e2e and that e2e launches a
+      # browser.
+      #
+      # `pnpm exec` is filtered to a package because Playwright is a devDependency of
+      # `ag-ui-devtools` and `ag-ui-harness` and NOT of the workspace root, so a bare
+      # `pnpm exec playwright` at the root fails with "Command 'playwright' not found".
+      #
+      # Two packages now drive a browser — `ag-ui-devtools` for the visual gate and
+      # `ag-ui-harness` for the capture e2e — out of ONE cached browser directory. That only
+      # works while they agree on the version, so the disagreement is made loud here rather than
+      # left to surface as "executable doesn't exist" halfway down the job.
+      - name: Resolve the Playwright version
+        id: playwright
+        run: |
+          version="$(pnpm --filter ag-ui-devtools exec playwright --version | awk '{print $2}')"
+          harness="$(pnpm --filter ag-ui-harness exec playwright --version | awk '{print $2}')"
+          if [ "$version" != "$harness" ]; then
+            echo "Playwright version mismatch: devtools $version, harness $harness." >&2
+            echo "One cached browser serves both packages; pin them to the same version." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Keyed on Playwright's own version, not the lockfile hash: Playwright pins the exact
+      # Chromium build it can drive, so a cache entry is only reusable while that version is
+      # unchanged. No `restore-keys` for the same reason — a prefix match here would restore a
+      # Chromium the installed Playwright refuses to launch.
+      #
+      # The `-ext1` suffix is not decoration. The install step below changed from one browser to
+      # two, and the KEY did not otherwise change: a cache entry written by the old step holds
+      # only `chromium-headless-shell`, and restoring it would satisfy `cache-hit` while leaving
+      # the full Chromium the harness e2e needs missing. Bump this suffix whenever the set of
+      # installed browsers changes.
+      - name: Cache the Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-ext1-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      # Two browsers, because the two gates need different ones.
+      #
+      # `chromium-headless-shell` is what the visual gate drives: measured, 199 MB / 7.0s instead
+      # of 558 MB / 13.7s, and it is what `chromium.launch()` actually starts, since Playwright
+      # resolves a default headless launch to the shell.
+      #
+      # The harness e2e needs the FULL `chromium`. An MV3 extension loads only through
+      # `launchPersistentContext` with `--disable-extensions-except` + `--load-extension`
+      # (verified fact 7), and the headless shell is a separate binary built without the
+      # extensions stack — it does not merely ignore the flags, it launches happily, registers
+      # no service worker, and reports no error, so the e2e would pass having tested nothing.
+      #
+      # `--with-deps` resolves both to the same apt group.
+      - name: Install the Chromium builds
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter ag-ui-devtools exec playwright install --with-deps chromium chromium-headless-shell
+
+      # The cache carries the browsers but not the apt packages they link against, so a cache
+      # hit still has to install the system libraries — just not re-download 750 MB of browser.
+      - name: Install Chromium system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm --filter ag-ui-devtools exec playwright install-deps chromium
 
       # The harness e2e asserts against a real `dist/`, so build before testing rather
       # than after. The devtools unit suites do not depend on it either way.
@@ -53,6 +111,16 @@ jobs:
       # `pnpm test` at the root resolves through `pnpm -r run test:ci`, NOT `pnpm -r test`.
       # pnpm treats `test` as a lifecycle name and `pnpm -r test` exits 0 when no package
       # defines it, which would let this job report green having run zero tests.
+      #
+      # This is both suites: the devtools unit projects, and the harness Playwright suite —
+      # which includes the capture e2e. That e2e is the only gate that watches the extension
+      # CAPTURE: `inject/`, `relay/` and the service worker run in a real browser or not at
+      # all, and 918 unit tests can only agree with our own idea of what a stream looks like
+      # (design §1). It serves fixtures over real SSE, drives them with the real
+      # `@ag-ui/client`, and reads the ring buffer out of the MV3 service worker (H4/H5),
+      # against the `dist/` its global setup just rebuilt.
+      #
+      # No key, no upstream, no network: CI only ever replays committed fixtures (decision H8).
       - name: Test
         run: pnpm test
 
@@ -62,46 +130,6 @@ jobs:
       # that no sourcemap did.
       - name: Verify build output
         run: pnpm verify:build
-
-      # Everything below installs the browser the visual gate drives. It sits after the cheap
-      # gates on purpose: a typecheck, lint, test, build or verify failure should not pay for
-      # a Chromium download first.
-      #
-      # `pnpm exec` is filtered to the package because Playwright is a devDependency of
-      # `ag-ui-devtools` and NOT of the workspace root, so a bare `pnpm exec playwright` at the
-      # root fails with "Command 'playwright' not found".
-      - name: Resolve the Playwright version
-        id: playwright
-        run: |
-          version="$(pnpm --filter ag-ui-devtools exec playwright --version | awk '{print $2}')"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      # Keyed on Playwright's own version, not the lockfile hash: Playwright pins the exact
-      # Chromium build it can drive, so a cache entry is only reusable while that version is
-      # unchanged. No `restore-keys` for the same reason — a prefix match here would restore a
-      # Chromium the installed Playwright refuses to launch.
-      - name: Cache the Playwright browser
-        id: playwright-cache
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
-
-      # `chromium-headless-shell`, not `chromium`: measured, that is 199 MB / 7.0s instead of
-      # 558 MB / 13.7s, and it is what `chromium.launch()` actually starts — the script never
-      # asks for a headed browser, and Playwright resolves a default headless launch to the
-      # shell. Its `--with-deps` group is `chromium`, so the apt packages installed are the same
-      # ones. If the script ever needs a headed run, this has to go back to `chromium`; the
-      # failure if it does not is Playwright's own "executable doesn't exist" error.
-      - name: Install the Chromium headless shell
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: pnpm --filter ag-ui-devtools exec playwright install --with-deps chromium-headless-shell
-
-      # The cache carries the browser but not the apt packages it links against, so a cache hit
-      # still has to install the system libraries — just not re-download the browser.
-      - name: Install Chromium system dependencies
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: pnpm --filter ag-ui-devtools exec playwright install-deps chromium
 
       # WHY THIS STEP EXISTS. Every gate above it — typecheck, lint, test, build, verify:build —
       # passed on the previous milestone's `dist/`, whose panel had NO STYLESHEET AT ALL. None of
