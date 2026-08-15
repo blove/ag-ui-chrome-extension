@@ -9,13 +9,25 @@ export const AGUI_DT_SOURCE = 'agui-dt';
 export const PROTOCOL_VERSION = 1;
 
 /**
- * One SSE frame as it left the wire.
+ * One SSE frame, in the single form every transport must produce.
  *
- * For `kind: 'event'`, `raw` is the frame's `data` payload exactly as received — data lines
- * joined with `\n`, one leading space after the colon stripped, which is what the SSE grammar
- * says the payload is. For `kind: 'keepalive'`, `raw` is the reconstructed comment frame
- * (`:${comment}\n\n`), matching what `panel/import/load-jsonl.ts` already puts in
- * `CaptureRecord.raw` for an imported keepalive.
+ * `raw` has ONE meaning, and all three capture paths — `fetch` (§5.1), `XMLHttpRequest` (§5.2)
+ * and `EventSource` (§5.3) — are required to agree on it byte for byte for the same logical
+ * frame. `inject/raw-invariant.test.ts` asserts exactly that; it exists because the three were
+ * written separately and did not agree the first time.
+ *
+ *  - `kind: 'event'` — `raw` is the frame's `data` payload and nothing else: data lines joined
+ *    with `\n`, one leading space after each colon stripped, which is what the SSE grammar says
+ *    the payload is. It is the string a consumer hands straight to `JSON.parse`. It is NOT the
+ *    frame text: no `data:` prefixes, and no `event:` / `id:` / `retry:` lines. Those fields are
+ *    parsed by `core/sse/parser` and dropped here; anything downstream that needs one needs a
+ *    field of its own on this type, not a different encoding of `raw`.
+ *  - `kind: 'keepalive'` — `raw` is the reconstructed comment frame, `:${comment}\n\n`, matching
+ *    what `panel/import/load-jsonl.ts` already puts in `CaptureRecord.raw` for an imported
+ *    keepalive. `comment` carries the same text without the syntax.
+ *
+ * `EventSource` never reports keepalives at all: the browser consumes comment frames and does
+ * not surface them.
  */
 export type WireFrame =
   | { kind: 'event'; tMs: number; raw: string }
