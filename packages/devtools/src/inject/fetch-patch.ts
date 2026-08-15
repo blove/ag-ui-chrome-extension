@@ -497,8 +497,15 @@ export function installFetchPatch(host: FetchHost, options: FetchPatchOptions): 
     }
 
     const [toPage, toUs] = body.tee();
-    if (transport === 'binary') void drainBinary(toUs, conn, meta.signal);
-    else void drainSse(toUs, conn, meta.signal);
+    // Swallow, deliberately. These promises are discarded on purpose — awaiting them
+    // would stall the page (§15) — but a discarded rejecting promise surfaces as an
+    // unhandled rejection in the PAGE, observable via its own onunhandledrejection.
+    // §11 says this script must never throw into page code, and an unhandled rejection
+    // is throwing into page code by a slower route. Losing capture on a torn stream is
+    // the correct trade against perturbing the host page.
+    const swallow = (): void => {};
+    if (transport === 'binary') void drainBinary(toUs, conn, meta.signal).catch(swallow);
+    else void drainSse(toUs, conn, meta.signal).catch(swallow);
     return copyResponse(response, toPage);
   }
 
