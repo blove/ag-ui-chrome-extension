@@ -123,6 +123,18 @@ export function captureOn(s: PanelState, origin: string): PanelState {
   };
 }
 
+/**
+ * Report what the inspected document said about its capture hooks — or that the question is open
+ * again, with `null`.
+ *
+ * `null` is written on every fresh document, because a new page inherits nothing: the previous
+ * document's hooks say nothing about this one, which may well be on an origin that was never
+ * granted.
+ */
+export function setInstrumented(s: PanelState, instrumented: boolean | null): PanelState {
+  return s.instrumented === instrumented ? s : { ...s, instrumented };
+}
+
 export function setRecording(s: PanelState, recording: boolean): PanelState {
   return { ...s, recording };
 }

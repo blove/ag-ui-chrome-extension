@@ -44,6 +44,8 @@ declare global {
         requests(): RequestLine[];
         droppedBefore(): number;
         bytes(): number;
+        /** Whether any live document in any tab has reported its capture hooks. */
+        instrumented(): boolean;
         clear(): void;
       }
     | undefined;
@@ -70,7 +72,25 @@ interface TabState {
    * input the run builder reads.
    */
   seenConns: Set<string>;
+  /**
+   * Frames of this tab that have reported their capture hooks, mapped to the relay port that
+   * reported it — or `null` for a frame restored from the session mirror, whose port belonged to
+   * a previous incarnation of this worker.
+   *
+   * KEYED BY PORT, NOT JUST BY FRAME, for one reason: a reload announces the new document BEFORE
+   * the old document's port disconnects, and a disconnect that removed a frame id outright would
+   * therefore wipe the flag of the document that had just installed itself. The port identifies
+   * the DOCUMENT; the frame id identifies the slot it occupies.
+   *
+   * A restored (`null`) entry is never removed by a disconnect. The document it describes is
+   * still open and still patched — it simply has nothing to say until it navigates, and MV3
+   * terminating an idle worker (§15) must not be mistaken for the page losing its hooks.
+   */
+  instrumentedFrames: Map<number, chrome.runtime.Port | null>;
 }
+
+/** `frameId` 0 is the top-level document. Everything else is a subframe (§12 `all_frames`). */
+const MAIN_FRAME_ID = 0;
 
 const tabs = new Map<number, TabState>();
 /** Panel ports, mapped to the tab each has subscribed to. `null` until `subscribe` arrives. */
@@ -94,6 +114,15 @@ interface MirroredTab {
   droppedBefore: number;
   nextSeq: number;
   recording: boolean;
+  /**
+   * Frames that had reported their capture hooks when this was written.
+   *
+   * Mirrored for §15 risk row 1: the worker is terminated at ~30 s idle while the page stays open
+   * and stays patched, and a flag that lived only in worker memory would come back false — the
+   * panel would then warn about a page it had been capturing correctly a minute earlier, which is
+   * the same false-report failure in the opposite direction.
+   */
+  instrumentedFrames: number[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -109,6 +138,7 @@ function ensureTab(tabId: number): TabState {
     recording: true,
     restoredDropped: 0,
     seenConns: new Set<string>(),
+    instrumentedFrames: new Map<number, chrome.runtime.Port | null>(),
   };
   tabs.set(tabId, created);
   return created;
@@ -116,6 +146,41 @@ function ensureTab(tabId: number): TabState {
 
 function droppedFor(state: TabState): number {
   return state.restoredDropped + state.buffer.droppedBefore();
+}
+
+/**
+ * Whether this tab holds a document that reported its capture hooks.
+ *
+ * Read by `snapshotFor` and by the test hook through the same function, so the two cannot drift
+ * into disagreeing about what the panel is being told.
+ */
+function instrumentedFor(state: TabState): boolean {
+  return state.instrumentedFrames.size > 0;
+}
+
+/**
+ * Record an announcement, replacing whatever the previous document reported.
+ *
+ * A new TOP-LEVEL document destroys every frame beneath it, so its announcement clears the map
+ * before recording itself: a subframe of the page the user just navigated away from must not keep
+ * the tab looking instrumented. A subframe's own announcement only adds itself.
+ */
+function markInstrumented(state: TabState, frameId: number, port: chrome.runtime.Port): void {
+  if (frameId === MAIN_FRAME_ID) state.instrumentedFrames.clear();
+  state.instrumentedFrames.set(frameId, port);
+}
+
+/** Forget the frames a departing document held, without touching a replacement's. */
+function forgetInstrumentedPort(port: chrome.runtime.Port): void {
+  for (const [tabId, state] of tabs) {
+    let changed = false;
+    for (const [frameId, owner] of state.instrumentedFrames) {
+      if (owner !== port) continue;
+      state.instrumentedFrames.delete(frameId);
+      changed = true;
+    }
+    if (changed) scheduleMirror(tabId);
+  }
 }
 
 function broadcast(tabId: number, message: SwMessage): void {
@@ -217,6 +282,7 @@ async function writeMirror(tabId: number): Promise<void> {
     droppedBefore: droppedFor(state) + (all.length - kept.length),
     nextSeq: state.nextSeq,
     recording: state.recording,
+    instrumentedFrames: [...state.instrumentedFrames.keys()],
   };
   await chrome.storage.session.set({ [sessionKey(tabId)]: mirrored });
 }
@@ -275,6 +341,7 @@ function asMirroredTab(value: unknown): MirroredTab | null {
   const nextSeq = value['nextSeq'];
   if (!Array.isArray(records) || !Array.isArray(requests)) return null;
   if (typeof droppedBefore !== 'number' || typeof nextSeq !== 'number') return null;
+  const frames = value['instrumentedFrames'];
   return {
     v: 1,
     records: records.filter(isCaptureRecord),
@@ -282,6 +349,9 @@ function asMirroredTab(value: unknown): MirroredTab | null {
     droppedBefore,
     nextSeq,
     recording: value['recording'] !== false,
+    // Absent in a mirror written by an older build. Empty is the honest reading: nothing was
+    // recorded, so nothing is claimed.
+    instrumentedFrames: Array.isArray(frames) ? frames.filter((id) => typeof id === 'number') : [],
   };
 }
 
@@ -322,6 +392,10 @@ async function restoreFromSession(): Promise<void> {
       state.restoredDropped = mirrored.droppedBefore;
       state.nextSeq = mirrored.nextSeq;
       state.recording = mirrored.recording;
+      // `null`: the port that reported each of these belonged to the worker incarnation that has
+      // just been terminated. The documents are still open and still patched, so these entries
+      // survive until a new announcement replaces them.
+      for (const frameId of mirrored.instrumentedFrames) state.instrumentedFrames.set(frameId, null);
     }
   } finally {
     restored = true;
@@ -337,19 +411,46 @@ async function restoreFromSession(): Promise<void> {
 /* Relay port                                                                   */
 /* -------------------------------------------------------------------------- */
 
-const RELAY_KINDS: ReadonlySet<string> = new Set(['conn-open', 'frames', 'conn-close', 'binary']);
+const RELAY_KINDS: ReadonlySet<string> = new Set([
+  'capture-installed',
+  'conn-open',
+  'frames',
+  'conn-close',
+  'binary',
+]);
 
 function asRelayMessage(value: unknown): RelayMessage | null {
   if (!isRecord(value)) return null;
   const kind = value['kind'];
   if (typeof kind !== 'string' || !RELAY_KINDS.has(kind)) return null;
+  // The announcement is the one message with no connection: it reports on the document, and a
+  // document may be instrumented and never open a stream at all — which is exactly the case the
+  // panel has to be able to tell apart from a document with no hooks in it.
+  if (kind === 'capture-installed') return value as unknown as RelayMessage;
   if (typeof value['connId'] !== 'string') return null;
   if (kind === 'frames' && !Array.isArray(value['frames'])) return null;
   return value as unknown as RelayMessage;
 }
 
-function handleRelayMessage(tabId: number, message: RelayMessage): void {
+function handleRelayMessage(
+  tabId: number,
+  message: RelayMessage,
+  source: { frameId: number; port: chrome.runtime.Port },
+): void {
   const state = ensureTab(tabId);
+
+  /*
+   * Handled BEFORE the recording gate, on purpose. Pausing is about data; the hooks are still
+   * installed in the page, and reporting otherwise would make Pause look as if it had uninstalled
+   * them. It is also broadcast on every announcement rather than on a change — see the note on
+   * the `capture-installed` arm in `./protocol`.
+   */
+  if (message.kind === 'capture-installed') {
+    markInstrumented(state, source.frameId, source.port);
+    broadcast(tabId, { kind: 'capture-installed' });
+    scheduleMirror(tabId);
+    return;
+  }
   // Not recording means not capturing: a paused panel must not fill the buffer behind the user's
   // back, and requirements §11's opt-in posture is meaningless if a "stopped" capture keeps data.
   if (!state.recording) return;
@@ -423,11 +524,22 @@ function attachRelayPort(port: chrome.runtime.Port): void {
     port.disconnect();
     return;
   }
+  // §12 declares `all_frames: true` — agent chat is frequently in an iframe, and the deployment
+  // this fix was found on is an `/embed` route — so ANY frame's announcement counts. The id
+  // matters only for telling a top-level document from a subframe of it.
+  const frameId = port.sender?.frameId ?? MAIN_FRAME_ID;
   port.onMessage.addListener((raw: unknown): void => {
     const message = asRelayMessage(raw);
     if (!message) return;
     afterRestore(() => {
-      handleRelayMessage(tabId, message);
+      handleRelayMessage(tabId, message, { frameId, port });
+    });
+  });
+  port.onDisconnect.addListener((): void => {
+    // The document is gone. Its instrumentation goes with it, which is what stops a fresh page
+    // load from inheriting the previous document's flag.
+    afterRestore(() => {
+      forgetInstrumentedPort(port);
     });
   });
 }
@@ -443,6 +555,10 @@ function snapshotFor(tabId: number): SwMessage {
     records: state.buffer.records(),
     requests: state.buffer.requests(),
     droppedBefore: droppedFor(state),
+    // How a panel opened AFTER the page loaded learns that the page announced itself — which is
+    // the ordinary case, since the announcement fires at `document_start` and the panel is
+    // usually opened later.
+    instrumented: instrumentedFor(state),
   };
 }
 
@@ -635,6 +751,9 @@ globalThis.__AGUI_DT_TEST__ = {
   },
   bytes(): number {
     return [...tabs.values()].reduce((total, state) => total + state.buffer.bytes(), 0);
+  },
+  instrumented(): boolean {
+    return [...tabs.values()].some(instrumentedFor);
   },
   clear(): void {
     for (const [tabId, state] of tabs) clearTab(tabId, state);
