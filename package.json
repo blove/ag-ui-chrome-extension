@@ -12,7 +12,7 @@
     "dev": "pnpm -r dev",
     "build": "pnpm -r build",
     "package": "pnpm --filter ag-ui-devtools package",
-    "test": "pnpm -r run test:ci",
+    "test": "pnpm -r --workspace-concurrency=1 run test:ci",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "gen:events": "pnpm -r gen:events",

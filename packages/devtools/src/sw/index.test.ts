@@ -667,6 +667,93 @@ describe('service worker', () => {
  * and after a grant the user never acts on. The worker is where the two are told apart, because
  * it is the only place that hears from the document itself.
  */
+/*
+ * The completeness fact, and the reason it is retained rather than only broadcast.
+ *
+ * A ring buffer holding four frames is indistinguishable from one that will hold fourteen a
+ * moment later — the capture path is asynchronous end to end, so "how much is in here" answers
+ * nothing about "is there more coming". `conn-close` is the answer, and it is a one-shot message:
+ * whoever was not listening when it went out has no way to learn it afterwards. Retaining it is
+ * what lets a reader that arrives later — the harness, which is the only thing that watches the
+ * whole path — wait for the end of a stream instead of guessing at a duration.
+ */
+describe('service worker — connections that have closed', () => {
+  let stub: ChromeStub;
+
+  beforeEach(async () => {
+    stub = installChrome();
+    await loadWorker();
+    await settle();
+  });
+
+  it('reports nothing closed until the close arrives, then reports it', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, connOpen('c1'));
+    send(relay, {
+      v: 1,
+      kind: 'frames',
+      connId: 'c1',
+      frames: [eventFrame(12, { type: 'RUN_STARTED' })],
+    });
+    // A request line and a frame, and the stream is still open: this is precisely the state a
+    // reader must not mistake for a finished capture.
+    expect(testHook().closedConns()).toEqual([]);
+
+    send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 99, reason: 'complete' });
+    expect(testHook().closedConns()).toEqual(['c1']);
+  });
+
+  it('records a close per connection, not per tab', () => {
+    const first = relayPort(7);
+    const second = relayPort(8);
+    stub.connect(first);
+    stub.connect(second);
+    send(first, connOpen('c1'));
+    send(second, connOpen('c2'));
+    send(first, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 1, reason: 'complete' });
+
+    expect(testHook().closedConns()).toEqual(['c1']);
+
+    send(second, { v: 1, kind: 'conn-close', connId: 'c2', tMs: 2, reason: 'error' });
+    expect([...testHook().closedConns()].sort()).toEqual(['c1', 'c2']);
+  });
+
+  it('forgets closes on clear, so a finished stream cannot answer for the next one', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, connOpen('c1'));
+    send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 1, reason: 'complete' });
+    expect(testHook().closedConns()).toEqual(['c1']);
+
+    testHook().clear();
+    expect(testHook().closedConns()).toEqual([]);
+  });
+
+  it('survives the worker being terminated, because the stream did not reopen', async () => {
+    const session = new Map<string, unknown>();
+
+    let live = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const relay = relayPort(7);
+    live.connect(relay);
+    send(relay, connOpen('c1'));
+    send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 40, reason: 'complete' });
+    await settle();
+
+    // ---- terminated at ~30 s idle (§15); a new incarnation reads the mirror ----
+    live = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    // Without this the connection would read as still open forever: the close has already been
+    // delivered and will never be sent again.
+    expect(testHook().closedConns()).toEqual(['c1']);
+  });
+});
+
 describe('service worker — instrumentation reported by the document', () => {
   let stub: ChromeStub;
 

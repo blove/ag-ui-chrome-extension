@@ -42,6 +42,7 @@ import {
   distWithGrantedOrigin,
   launchWithExtension,
   readCapture,
+  readSettledCapture,
   reconstruct,
   type CaptureSnapshot,
 } from './fixtures.js';
@@ -147,7 +148,7 @@ test.beforeAll(async () => {
   await page.waitForFunction(() => document.getElementById('status')?.textContent === 'done', {
     timeout: 30_000,
   });
-  capture = await readCapture(ctx);
+  capture = await readSettledCapture(ctx);
 });
 
 test.afterAll(async () => {

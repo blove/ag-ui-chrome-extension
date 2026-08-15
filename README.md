@@ -21,7 +21,7 @@ count that doubles as a filter. Captures export and re-import as `.agui.jsonl`, 
 Underneath, `core/` is Chrome-free and runs under Node: the generated event table and shape
 checking, the incremental SSE frame parser, connection detection, chunk expansion, the run model,
 the validator rules, run metrics, the RFC 6902 JSON Patch state timeline, and the `.agui.jsonl`
-codec with redaction. 1,369 tests, plus a Playwright harness that drives the extension in a real
+codec with redaction. 1,373 tests, plus a Playwright harness that drives the extension in a real
 browser against real sockets.
 
 What is not done: the Chrome Web Store submission itself. The listing pipeline is built and all five
@@ -120,6 +120,13 @@ frame is the extension's honest first-run state. See
 pnpm test                                  # run once, whole workspace
 pnpm --filter ag-ui-devtools exec vitest   # watch mode
 ```
+
+`pnpm test` runs the two packages **one after the other** (`--workspace-concurrency=1`), not at
+once. The harness package drives a real browser and asserts on wall-clock arrival times, and
+running it alongside the devtools unit suite made it measure a machine with no spare cores: the
+capture path was observed lagging by tens of seconds, and the capture e2e failed intermittently
+because of it. The serial run costs about ten seconds and buys a gate whose failures mean
+something.
 
 Tests live next to their sources as `*.test.ts` and run under Node — `src/core/` contains no Chrome
 APIs, which is enforced by an ESLint rule and by a check that no `chrome.` reference survives into

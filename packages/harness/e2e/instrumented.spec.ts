@@ -34,6 +34,7 @@ import {
   distWithGrantedOrigin,
   launchWithExtension,
   readCapture,
+  readSettledCapture,
   type CaptureSnapshot,
 } from './fixtures.js';
 
@@ -156,6 +157,11 @@ test.beforeAll(async () => {
   await registerForOrigin(ctx, APP_ORIGIN_PATTERN);
 
   await runOnce(page, PROMPT);
+  // Read plainly, and deliberately: this document has no hooks, so there is no connection to
+  // wait for and `readSettledCapture` could only time out. What keeps the emptiness below from
+  // being merely an early read is `nativeBefore` — `window.fetch` is measured, in the page, to
+  // still be the browser's own, so there is no patch that could have produced a frame to wait
+  // for in the first place.
   beforeReload = await readCapture(ctx);
 
   // The one honest remedy, and the one the panel offers. Injecting into the open document
@@ -166,7 +172,7 @@ test.beforeAll(async () => {
   nativeAfter = await fetchIsNative(page);
   await waitForInstrumented(ctx);
   await runOnce(page, PROMPT);
-  afterReload = await readCapture(ctx);
+  afterReload = await readSettledCapture(ctx);
 });
 
 test.afterAll(async () => {

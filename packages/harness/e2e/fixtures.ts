@@ -41,6 +41,11 @@ export interface CaptureSnapshot {
    * inference is what let the panel report capture from documents it had never touched.
    */
   instrumented: boolean;
+  /**
+   * Connections the worker has seen close. `readSettledCapture` waits on this; see the note
+   * there for why nothing else will do.
+   */
+  closedConns: string[];
 }
 
 /** The shape `src/sw/index.ts` attaches to the SW global, unconditionally. */
@@ -50,6 +55,7 @@ interface TestHook {
   droppedBefore(): number;
   bytes(): number;
   instrumented(): boolean;
+  closedConns(): string[];
   clear(): void;
 }
 
@@ -155,8 +161,79 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
       requests: hook.requests(),
       droppedBefore: hook.droppedBefore(),
       instrumented: hook.instrumented(),
+      closedConns: hook.closedConns(),
     };
   });
+}
+
+export interface SettleOptions {
+  /** How many connections the run just driven is expected to have opened. Default 1. */
+  connections?: number;
+  /**
+   * Upper bound on the wait.
+   *
+   * Fifteen seconds, which is arithmetic rather than taste: a `beforeAll` gets 60 s, spends up to
+   * 30 s waiting for the page's own `#status`, and a few more starting servers and a browser, so
+   * this is what is left over. It is also more than twenty times the worst delay measured on an
+   * unloaded machine (627 ms), and the value only matters at all when something is genuinely
+   * broken — the wait ends on a message, not on the clock.
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * Read the buffer once the capture of the run just driven is COMPLETE, rather than once the PAGE
+ * says it is finished.
+ *
+ * WHY THIS EXISTS — the cause of a measured flake, not a precaution. Every spec here drives a run
+ * and waits for `#status` to read `done`, which is the page's own promise resolving. That says
+ * nothing about capture: `fetch-patch.ts` tees the response body and drains ITS branch
+ * independently, then the frames cross `postMessage` -> ISOLATED relay -> runtime port -> the MV3
+ * service worker. Nothing synchronises the two, so `readCapture` immediately after `done` reads a
+ * pipeline that is still in flight.
+ *
+ * Measured on `a54a54c`, unmodified: `e2e/capture.spec.ts`'s happy run failed 2 of 25 full
+ * `pnpm test` runs with an EMPTY buffer, and instrumenting the page showed why — at `done` the
+ * MAIN world had already posted `conn-open`, `frames` and `conn-close`, and the run arrived
+ * afterwards, whole and in order. Nothing was ever lost; the assertion simply ran first. On an
+ * idle machine that delay is 18-70 ms and was seen as high as 627 ms; on a machine with no spare
+ * cores it was seen at 3 s, 14 s, 19 s and 29 s, which is the other half of this fix — the root
+ * `test` script no longer runs the devtools unit suite alongside this one.
+ *
+ * WHAT IS WAITED ON. `conn-close` is posted by the MAIN world when its own drain of the stream
+ * ends, so a connection the worker has seen close is a connection whose capture is over — and
+ * because port messages are ordered, every frame ahead of that close has been handled too. It is
+ * a real message with a real cause, not a duration guessed at; the timeout is only there so a
+ * capture layer that genuinely delivers nothing fails loudly instead of hanging.
+ *
+ * It is deliberately NOT a wait on the records themselves. Waiting for the run to look right and
+ * then asserting that it looks right proves nothing, and would turn a lost frame into a timeout
+ * with no diff. Every assertion downstream of this keeps its full force.
+ */
+export async function readSettledCapture(
+  ctx: BrowserContext,
+  options: SettleOptions = {},
+): Promise<CaptureSnapshot> {
+  const wanted = options.connections ?? 1;
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  const deadline = Date.now() + timeoutMs;
+  let latest = await readCapture(ctx);
+  for (;;) {
+    const closed = new Set(latest.closedConns);
+    const open = latest.requests.filter((request) => !closed.has(request.connId));
+    if (latest.requests.length >= wanted && open.length === 0) return latest;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `capture did not settle within ${String(timeoutMs)}ms: expected ${String(wanted)} ` +
+          `connection(s) to open and close, saw ${String(latest.requests.length)} request line(s), ` +
+          `${String(latest.closedConns.length)} close(s), ${String(latest.records.length)} record(s). ` +
+          'A capture layer that never delivered is what this looks like; so is one that opened a ' +
+          'connection it never closed.',
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    latest = await readCapture(ctx);
+  }
 }
 
 /**

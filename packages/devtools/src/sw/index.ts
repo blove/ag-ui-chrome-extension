@@ -46,6 +46,19 @@ declare global {
         bytes(): number;
         /** Whether any live document in any tab has reported its capture hooks. */
         instrumented(): boolean;
+        /**
+         * Connections this worker has seen close, across every tab.
+         *
+         * The end of capture for a connection, and the only fact that says so. Everything else
+         * the harness can observe — the page's own `status`, the response it rendered — describes
+         * the PAGE's copy of the stream, which finishes independently of ours: `fetch-patch.ts`
+         * tees the body and drains its branch on its own schedule, and the drained frames then
+         * cross `postMessage` -> relay -> port -> here. A harness that snapshots the buffer when
+         * the page says "done" is therefore reading a pipeline that is still in flight, and
+         * measured, it is: the buffer has been observed empty ~600 ms after the page finished,
+         * with the whole run landing intact a moment later.
+         */
+        closedConns(): string[];
         clear(): void;
       }
     | undefined;
@@ -72,6 +85,20 @@ interface TabState {
    * input the run builder reads.
    */
   seenConns: Set<string>;
+  /**
+   * Connections whose `conn-close` has arrived — the stream is over and nothing more will be
+   * recorded for it.
+   *
+   * Kept because it is the one statement this worker can make about COMPLETENESS. Frames arrive
+   * asynchronously and a buffer holding four of them looks exactly like a buffer that will hold
+   * fourteen a moment later; only the close tells the two apart, and port messages are ordered,
+   * so a close that has been handled means every frame ahead of it has been too.
+   *
+   * `RelayMessage`s are already broadcast as `closed`, but a broadcast is for whoever is
+   * listening AT THE TIME. This is the same fact retained, which is what a reader arriving after
+   * the event needs.
+   */
+  closedConns: Set<string>;
   /**
    * Frames of this tab that have reported their capture hooks, mapped to the relay port that
    * reported it — or `null` for a frame restored from the session mirror, whose port belonged to
@@ -123,6 +150,15 @@ interface MirroredTab {
    * the same false-report failure in the opposite direction.
    */
   instrumentedFrames: number[];
+  /**
+   * Connections that had closed when this was written.
+   *
+   * Mirrored for the same reason as the flag above: the worker is terminated at ~30 s idle and a
+   * fact that lived only in its memory would come back as "still open" for a connection that
+   * ended minutes ago. A reader waiting for the stream to finish would then wait for a message
+   * that has already been delivered and will never be sent again.
+   */
+  closedConns: string[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -138,6 +174,7 @@ function ensureTab(tabId: number): TabState {
     recording: true,
     restoredDropped: 0,
     seenConns: new Set<string>(),
+    closedConns: new Set<string>(),
     instrumentedFrames: new Map<number, chrome.runtime.Port | null>(),
   };
   tabs.set(tabId, created);
@@ -283,6 +320,7 @@ async function writeMirror(tabId: number): Promise<void> {
     nextSeq: state.nextSeq,
     recording: state.recording,
     instrumentedFrames: [...state.instrumentedFrames.keys()],
+    closedConns: [...state.closedConns],
   };
   await chrome.storage.session.set({ [sessionKey(tabId)]: mirrored });
 }
@@ -342,6 +380,7 @@ function asMirroredTab(value: unknown): MirroredTab | null {
   if (!Array.isArray(records) || !Array.isArray(requests)) return null;
   if (typeof droppedBefore !== 'number' || typeof nextSeq !== 'number') return null;
   const frames = value['instrumentedFrames'];
+  const closed = value['closedConns'];
   return {
     v: 1,
     records: records.filter(isCaptureRecord),
@@ -352,6 +391,7 @@ function asMirroredTab(value: unknown): MirroredTab | null {
     // Absent in a mirror written by an older build. Empty is the honest reading: nothing was
     // recorded, so nothing is claimed.
     instrumentedFrames: Array.isArray(frames) ? frames.filter((id) => typeof id === 'number') : [],
+    closedConns: Array.isArray(closed) ? closed.filter((id) => typeof id === 'string') : [],
   };
 }
 
@@ -396,6 +436,7 @@ async function restoreFromSession(): Promise<void> {
       // just been terminated. The documents are still open and still patched, so these entries
       // survive until a new announcement replaces them.
       for (const frameId of mirrored.instrumentedFrames) state.instrumentedFrames.set(frameId, null);
+      for (const connId of mirrored.closedConns) state.closedConns.add(connId);
     }
   } finally {
     restored = true;
@@ -494,6 +535,7 @@ function handleRelayMessage(
       return;
     }
     case 'conn-close': {
+      state.closedConns.add(message.connId);
       broadcast(tabId, { kind: 'closed', connId: message.connId, tMs: message.tMs });
       // The end of a connection is the moment a lost tail costs a whole run, so this one writes
       // through instead of waiting out the debounce.
@@ -566,6 +608,10 @@ function clearTab(tabId: number, state: TabState): void {
   state.buffer.clear();
   state.restoredDropped = 0;
   state.seenConns.clear();
+  // A clear empties the buffer, so the connections it held are no longer described by anything
+  // here. Keeping their closes would let a reader mistake the previous scenario's finished
+  // stream for the next one's.
+  state.closedConns.clear();
   void chrome.storage.session.remove(sessionKey(tabId));
   broadcast(tabId, { kind: 'cleared' });
 }
@@ -754,6 +800,9 @@ globalThis.__AGUI_DT_TEST__ = {
   },
   instrumented(): boolean {
     return [...tabs.values()].some(instrumentedFor);
+  },
+  closedConns(): string[] {
+    return [...tabs.values()].flatMap((state) => [...state.closedConns]);
   },
   clear(): void {
     for (const [tabId, state] of tabs) clearTab(tabId, state);
