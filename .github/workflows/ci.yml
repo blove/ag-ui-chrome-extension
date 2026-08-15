@@ -131,6 +131,14 @@ jobs:
       - name: Verify build output
         run: pnpm verify:build
 
+      # The store listing copy is a versioned file, and every field it carries has a limit that is
+      # otherwise discovered at the upload form, halfway through a submission. It also asserts that
+      # the manifest's permissions and the listing's justifications agree in BOTH directions: add a
+      # permission and forget to justify it, and the listing silently stops answering the question
+      # a reviewer will ask. Needs no browser and no dist/, so it is nearly free.
+      - name: Verify listing copy
+        run: pnpm verify:listing
+
       # WHY THIS STEP EXISTS. Every gate above it — typecheck, lint, test, build, verify:build —
       # passed on the previous milestone's `dist/`, whose panel had NO STYLESHEET AT ALL. None of
       # them renders anything, so none of them could see it: the panel document is isolated and

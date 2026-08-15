@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>listing frame</title>
+    <link rel="stylesheet" href="./frame.css" />
+  </head>
+  <body>
+    <!--
+      The generator sets the two text nodes and the iframe src from the storyboard, then
+      screenshots `.frame`. Nothing here is interactive; it exists to be photographed.
+    -->
+    <div class="frame">
+      <div class="frame__caption">
+        <h1 class="frame__headline" id="headline"></h1>
+        <p class="frame__sub" id="sub"></p>
+      </div>
+      <div class="frame__card">
+        <iframe class="frame__panel" id="panel" title="AG-UI DevTools panel"></iframe>
+      </div>
+    </div>
+  </body>
+</html>

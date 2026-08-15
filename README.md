@@ -53,7 +53,9 @@ build has no capture path at all, so it reads nothing from any page.
 
 ## Development
 
-Requires Node 22+ and pnpm 10.
+Requires Node 22+ and pnpm 10. `pnpm icons` and `pnpm screenshot:panel` drive a real headless
+Chromium and need it installed once, after `pnpm install`:
+`pnpm exec playwright install chromium-headless-shell`.
 
 ```bash
 pnpm install          # install workspace dependencies
@@ -62,10 +64,14 @@ pnpm build            # production build → packages/devtools/dist/
 pnpm test             # Vitest, node environment
 pnpm typecheck        # tsc --noEmit
 pnpm lint             # ESLint
-pnpm verify:build     # assert dist/ is correct (run after pnpm build)
+pnpm verify:build     # assert dist/ is correct, and public/icons/ fresh (run after pnpm build)
 pnpm screenshot:panel # render dist/ in a real browser and assert it is not blank
 pnpm package          # → packages/devtools/ag-ui-devtools-<version>.zip
 pnpm gen:events       # regenerate the AG-UI event table from @ag-ui/core
+pnpm icons            # listing/icon.svg → public/icons/*.png (run BEFORE build)
+pnpm listing:fixture  # regenerate the demo capture the screenshots use
+pnpm listing:assets   # → packages/devtools/listing/out/*.png (run AFTER build)
+pnpm verify:listing   # assert the store copy fits every CWS field limit
 ```
 
 `pnpm package` requires an existing `dist/`, so the release sequence is
@@ -82,6 +88,25 @@ pnpm gen:events       # regenerate the AG-UI event table from @ag-ui/core
 
 Chrome 111+ is required: the manifest declares a `world: 'MAIN'` content script, which older Chrome
 silently ignores.
+
+### Store listing assets
+
+Everything the Chrome Web Store form needs is generated from the build, in this order — icons are
+*source* (Vite copies `public/` into `dist/`), screenshots read `dist/`, so they sit on opposite
+sides of `pnpm build`. Run each command on its own line rather than chaining with `&&`:
+`listing:assets` exits 1 today, by design (see below), and a chained sequence would never reach
+`verify:listing`.
+
+    pnpm icons
+    pnpm build
+    pnpm listing:assets
+    pnpm verify:listing
+
+Copy lives in `packages/devtools/listing/copy.md`; the generated upload set lands in
+`packages/devtools/listing/out/`. `pnpm listing:assets` fails while any storyboard shot's UI is
+still a placeholder — three of the five shots today, on the State tab, export, and the per-origin
+capture grant — see
+[the listing design](docs/superpowers/specs/2026-08-15-chrome-web-store-listing-design.md).
 
 ### Tests
 
@@ -105,7 +130,10 @@ structurally cannot see:
   carries its message listener, the service worker carries its `onConnect` handler;
 - the manifest privacy invariants above;
 - `panel.html` and `devtools.html` reached `dist/`;
-- no `*.map` files ship.
+- no `*.map` files ship;
+- `public/icons/*.png` are fresh against `listing/icon.svg` — checked by comparing a committed
+  SHA-256 of the source SVG, not by re-rendering, so this needs no browser and is identical on
+  every platform.
 
 This exists because a real regression got through everything else: two entry points shared the
 basename `index.ts`, CRXJS keys emitted scripts by basename, and the MAIN-world content script was

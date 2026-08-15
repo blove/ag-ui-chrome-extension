@@ -1,0 +1,82 @@
+/*
+ * Styling for the marketing surround only. The panel inside the iframe brings its own CSS and
+ * must not be touched from here — the whole point is that the panel pixels are the real build.
+ *
+ * Colours are the panel's palette tokens, restated because this document is not the panel and
+ * inherits nothing from it.
+ */
+:root {
+  --accent: #1a73e8;
+  --accent-deep: #0b3d91;
+  --ink: #ffffff;
+  --ink-muted: rgba(255, 255, 255, 0.72);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  /*
+   * 'Inter' is NOT bundled — nothing here may fetch a font, so the caption falls through to
+   * whatever the generating machine has. On a developer Mac that is `-apple-system`, on Linux CI
+   * something else again. The committed PNGs are therefore reproducible on one machine, not
+   * across machines: expect the caption glyphs (never the panel, which ships its own stack) to
+   * shift if these are ever regenerated somewhere new. Pinning this would mean embedding a
+   * webfont as a data URI in this file.
+   */
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: linear-gradient(160deg, var(--accent) 0%, var(--accent-deep) 100%);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+.frame {
+  width: 1280px;
+  height: 800px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow: hidden;
+}
+
+.frame__caption {
+  height: 148px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 0 80px;
+}
+
+.frame__headline {
+  margin: 0;
+  font-size: 38px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.frame__sub {
+  margin: 10px 0 0;
+  font-size: 17px;
+  font-weight: 450;
+  color: var(--ink-muted);
+}
+
+/* The card is the only place the panel is allowed to be framed. */
+.frame__card {
+  width: 1160px;
+  height: 604px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 26px 60px rgba(0, 0, 0, 0.34), 0 2px 0 rgba(255, 255, 255, 0.14) inset;
+}
+
+.frame__panel {
+  width: 1160px;
+  height: 604px;
+  border: 0;
+  display: block;
+}

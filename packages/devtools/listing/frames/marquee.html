@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>marquee</title>
+    <link rel="stylesheet" href="./frame.css" />
+    <!--
+      Three things worth knowing before this file is next touched (tile.html carries the same
+      note, this is the marquee's copy of it):
+
+      1. The gradient is not on .marquee itself - it lives on body in frame.css. A screenshot of
+         .marquee shows a gradient only because .marquee's own background is transparent and the
+         paint from body shows through underneath it. Give .marquee an opaque background of its
+         own and this quietly becomes a screenshot of a different design, with no error to flag it.
+
+      2. This marquee's pixel size is stated three times: the width/height on .marquee below, the
+         matching entry in TILES (listing-assets.mts), and the output filename. downsample()
+         cross-checks the raw screenshot against the TILES entry, so the CSS and TILES cannot
+         silently drift apart - but the filename is not checked against either one, it is a label
+         for humans and the store, not an assertion.
+
+      3. ../icon.svg resolves only because listing/ is mounted whole at /listing/ (the mounts
+         argument to startServer in panel-harness.ts), putting this document at
+         /listing/frames/marquee.html and the mark exactly one directory above it. Move this file,
+         or change the mount, and the mark fails silently into a broken-image icon rather than a
+         build error - the exact failure mode that already cost a rasterised SVG once in this
+         project.
+    -->
+    <style>
+      .marquee {
+        width: 1400px;
+        height: 560px;
+        display: flex;
+        align-items: center;
+        gap: 56px;
+        padding: 0 96px;
+      }
+      .marquee__mark { width: 168px; height: 168px; flex: none; }
+      .marquee__name { margin: 0; font-size: 66px; font-weight: 700; letter-spacing: -0.03em; }
+      .marquee__sub { margin: 18px 0 0; font-size: 25px; line-height: 1.4; color: var(--ink-muted); max-width: 780px; }
+    </style>
+  </head>
+  <body>
+    <div class="marquee">
+      <img class="marquee__mark" src="../icon.svg" alt="" />
+      <div>
+        <h1 class="marquee__name">AG-UI DevTools</h1>
+        <!-- Deliberately short-form, not copy.md's summary verbatim: this frame has its own
+             width budget and copy.md's line does not fit it exactly. verify-listing-copy.ts
+             validates only copy.md, so this and tile.html's sub are hand-maintained near-copies
+             of that summary and can drift from it silently - keep them saying the same thing
+             when copy.md changes. "Replay" here is intentional, not a slip: listing-assets.mts's
+             header explains why a promo tile is allowed to describe the finished product while
+             the Session-tab screenshot in the same script is refused for saying less than this. -->
+        <p class="marquee__sub">
+          Capture, decode, validate and replay AG-UI agent event streams from any page.
+          No SDK, no code change, no data leaves your browser.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>

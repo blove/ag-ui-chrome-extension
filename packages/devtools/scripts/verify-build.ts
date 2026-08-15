@@ -31,6 +31,7 @@
  *
  * Run against a real `dist/`: `pnpm build && pnpm verify:build`.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -336,6 +337,112 @@ function checkEntry(expectation: EntryExpectation): void {
   }
 }
 
+// Independent from `SIZES` in `render-icons.mts` ON PURPOSE: this list is a statement of what
+// the manifest owes, not a mirror of what the renderer happens to produce. Importing it would
+// degrade the check into comparing the renderer to itself — a renderer that silently dropped a
+// size, or a fifth size added to it and forgotten here, would both still pass.
+const ICON_SIZES = ['16', '32', '48', '128'] as const;
+
+/**
+ * D8: icons are a Chrome Web Store submission requirement, not a load-unpacked one, so nothing
+ * before this milestone caught their absence. The manifest can name them and the build can still
+ * ship without them if `public/icons/` was not rendered — hence both halves are asserted.
+ */
+function checkIcons(manifest: Rec): void {
+  const icons = asRecord(manifest.icons);
+  if (icons === undefined) {
+    fail(
+      'manifest icons',
+      'manifest has no "icons" block; the Chrome Web Store upload will be rejected. ' +
+        'Add the `icons` block to manifest.config.ts.',
+    );
+    return;
+  }
+  for (const size of ICON_SIZES) {
+    const path = asString(icons[size]);
+    if (path === undefined) {
+      fail(
+        'manifest icons',
+        `manifest declares no icon for size ${size}. Add ${size}: 'icons/icon-${size}.png' to ` +
+          `the icons block in manifest.config.ts.`,
+      );
+      continue;
+    }
+    if (!existsSync(join(distDir, path))) {
+      fail(
+        'manifest icons',
+        `manifest points icon ${size} at ${path}, which is not in dist/. Run ` +
+          '`pnpm icons && pnpm build`.',
+      );
+    }
+  }
+}
+
+/**
+ * The icons are generated and committed, so they can go stale against `listing/icon.svg` with no
+ * signal at all — `checkIcons` above only asserts the files exist in `dist/`, never that their
+ * bytes still match the source that made them.
+ *
+ * This compares a SHA-256 of the source SVG, not rendered pixels. An earlier version of this
+ * check re-rendered `icon.svg` to a scratch directory (`render-icons.mts` still supports that via
+ * `ICON_OUT`, for manual use) and diffed the resulting PNGs against `public/icons/`. That is
+ * WRONG for a check that has to pass identically everywhere: the PNGs are antialiased Chromium
+ * output, and Chromium's rasterizer is not bit-identical across platforms or versions. The
+ * committed icons were rendered on darwin/arm64; CI's `release` job runs on ubuntu x86_64 and, at
+ * the time this was caught in review, had no Playwright install step at all — every tag push
+ * would have failed `verify:build` on a missing browser, and even with one installed a rasterizer
+ * difference could flip the check red on a PR that never touched `icon.svg`. A hash has neither
+ * problem: it is deterministic on every machine and needs no browser, so `verify:build` stays
+ * pure file inspection.
+ *
+ * The trade-off is real and deliberate: this no longer catches the PNGs drifting under a
+ * Playwright/Chromium upgrade, only the source SVG changing without a re-render. That is the
+ * right side to be wrong on — drifted antialiasing still produces a valid icon, whereas a stale
+ * icon (edited SVG, un-regenerated PNGs) is a wrong one — but it is a real reduction in coverage,
+ * so it is named here rather than left for the next reader to discover.
+ *
+ * `render-icons.mts` writes `public/icons/.source-sha256` alongside the PNGs on every run; this
+ * is the one place that reads it back.
+ */
+function checkIconsAreFresh(): void {
+  const iconsDir = join(packageRoot, 'public/icons');
+  const hashPath = join(iconsDir, '.source-sha256');
+  const currentHash = createHash('sha256')
+    .update(readFileSync(join(packageRoot, 'listing/icon.svg'), 'utf8'), 'utf8')
+    .digest('hex');
+
+  if (!existsSync(hashPath)) {
+    fail(
+      'icon source hash missing',
+      `public/icons/.source-sha256 does not exist. Run \`pnpm icons\` and commit the result.`,
+    );
+  } else {
+    const committedHash = readFileSync(hashPath, 'utf8').trim();
+    if (committedHash !== currentHash) {
+      fail(
+        'committed icons are stale',
+        'public/icons/.source-sha256 does not match a fresh hash of listing/icon.svg — the SVG ' +
+          'was edited without re-rendering. Run `pnpm icons` and commit the result.',
+      );
+    }
+  }
+
+  // Independent of the hash check above: a PNG deleted (rather than edited) from public/icons/
+  // still has a matching, untouched .source-sha256 next to it, so the comparison above would
+  // pass while the committed icon set is incomplete. checkIcons does not catch this either — it
+  // reads dist/, which still holds whatever was built last, stale or not. This is the one check
+  // that owns the committed source, so it has to be the one that notices it went missing.
+  for (const size of ICON_SIZES) {
+    const name = `icon-${size}.png`;
+    if (!existsSync(join(iconsDir, name))) {
+      fail(
+        'committed icon missing',
+        `public/icons/${name} does not exist. Run \`pnpm icons\` and commit the result.`,
+      );
+    }
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 
 function main(): void {
@@ -563,9 +670,14 @@ function main(): void {
     );
   }
 
-  /* --- 3. Panel HTML actually reached dist/ -------------------------------- */
+  /* --- 3. Declared assets actually reached dist/ (panel HTML, icons) ------- */
   // panel.html is opened at runtime by chrome.devtools.panels.create, so no manifest key
-  // points at it and nothing else would notice it going missing until the panel 404s.
+  // points at it and nothing else would notice it going missing until the panel 404s. Icons are
+  // the same shape of gap: not a privacy invariant, just a declared asset nothing but this
+  // script and a human Chrome Web Store reviewer would ever notice missing.
+
+  checkIcons(distManifest);
+  checkIconsAreFresh();
 
   for (const html of ['src/panel/panel.html', 'src/panel/devtools.html']) {
     if (!existsSync(join(distDir, html))) {

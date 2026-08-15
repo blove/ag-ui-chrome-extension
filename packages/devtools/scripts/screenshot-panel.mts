@@ -10,7 +10,8 @@
  *
  * It serves `dist/` over a local static server (ES modules will not load over `file://`),
  * installs a small `chrome` shim so the panel bundle runs outside DevTools, and then runs two
- * phases:
+ * phases. The server and shim themselves live in `panel-harness.ts` — start debugging a serving
+ * problem there, not here.
  *
  *   1. PAINT — load the panel once per colour scheme, assert the document is actually painted
  *      and that the two schemes differ, and write a PNG each.
@@ -35,109 +36,23 @@
  * `chromium.launch()` resolves to, and it is what CI installs). `PANEL_DIST` points it at a
  * different build, which is how the gate itself is tested against a deliberately unstyled variant.
  */
-import { createServer } from 'node:http';
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, normalize, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Browser, BrowserContext, Page } from 'playwright';
 import { chromium } from 'playwright';
+import { importFixture, openPanel, PANEL_PATH, startServer } from './panel-harness';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = process.env.PANEL_DIST ?? join(packageRoot, 'dist');
 const outDir = process.env.PANEL_SHOTS ?? join(packageRoot, '.screenshots');
 const fixtureDir = join(packageRoot, 'src/test/fixtures');
-const panelPath = 'src/panel/panel.html';
-
-const MIME: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-};
-
-/**
- * Enough of `chrome` for the panel bundle to boot outside DevTools. Deliberately minimal: the
- * point is to render the panel's own markup, not to simulate Chrome. `devtools` is left absent
- * so the detection and origin paths take their documented no-DevTools branch, which is what
- * makes the capture banner read "Live capture only runs inside the DevTools panel."
- */
-const CHROME_SHIM = `
-  globalThis.chrome = {
-    runtime: { getManifest: () => ({ version: '0.0.0-screenshot' }) },
-  };
-`;
 
 const failures: string[] = [];
 
 function fail(message: string): void {
   failures.push(message);
-}
-
-function startServer(root: string): Promise<{ origin: string; close: () => Promise<void> }> {
-  const server = createServer((req, res) => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    const rel = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
-    const file = join(root, rel);
-    if (!file.startsWith(root) || !existsSync(file)) {
-      res.writeHead(404).end('not found');
-      return;
-    }
-    res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' });
-    createReadStream(file).pipe(res);
-  });
-  return new Promise((ready) => {
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address !== null ? address.port : 0;
-      ready({
-        origin: `http://127.0.0.1:${String(port)}`,
-        close: () => new Promise<void>((done) => server.close(() => done())),
-      });
-    });
-  });
-}
-
-interface Session {
-  page: Page;
-  /** Errors the page logged or threw, in order. */
-  errors: string[];
-  /** Every URL the page requested, so requirements §11 (no egress) can be asserted. */
-  requests: string[];
-  close: () => Promise<void>;
-}
-
-async function openPanel(
-  browser: Browser,
-  origin: string,
-  scheme: 'light' | 'dark',
-): Promise<Session> {
-  const context = await browser.newContext({
-    colorScheme: scheme,
-    viewport: { width: 1100, height: 760 },
-    deviceScaleFactor: 2,
-  });
-  await context.addInitScript(CHROME_SHIM);
-  const page = await context.newPage();
-  const errors: string[] = [];
-  const requests: string[] = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(message.text());
-  });
-  page.on('request', (request) => requests.push(request.url()));
-
-  await page.goto(`${origin}/${panelPath}`, { waitUntil: 'networkidle' });
-  return { page, errors, requests, close: () => context.close() };
-}
-
-/** Import a capture through the panel's own file input, exactly as a user would. */
-async function importFixture(page: Page, file: string): Promise<void> {
-  await page.setInputFiles('input.agui-drop__input', file);
-  await page.waitForSelector('.agui-timeline, .agui-app__load-error', { timeout: 5000 });
 }
 
 function seqsOf(page: Page, selector: string): Promise<number[]> {
@@ -154,7 +69,7 @@ async function checkPaint(browser: Browser, origin: string, htmlMentionsCss: boo
   const painted: Record<string, string> = {};
 
   for (const scheme of ['light', 'dark'] as const) {
-    const session = await openPanel(browser, origin, scheme);
+    const session = await openPanel(browser, origin, { scheme });
     const probe = await session.page.evaluate(() => {
       const body = getComputedStyle(document.body);
       return {
@@ -176,8 +91,8 @@ async function checkPaint(browser: Browser, origin: string, htmlMentionsCss: boo
         `body has no background colour in ${scheme} scheme — the panel is unstyled, which is ` +
           'invisible under the DevTools dark theme. ' +
           (htmlMentionsCss
-            ? `dist/${panelPath} does reference a stylesheet, so it failed to load.`
-            : `dist/${panelPath} references no stylesheet at all.`),
+            ? `dist/${PANEL_PATH} does reference a stylesheet, so it failed to load.`
+            : `dist/${PANEL_PATH} references no stylesheet at all.`),
       );
     }
     if (probe.text < 20) {
@@ -218,7 +133,7 @@ async function checkPaint(browser: Browser, origin: string, htmlMentionsCss: boo
  * stylesheet reached it.
  */
 async function checkUnreachableControls(browser: Browser, origin: string): Promise<void> {
-  const session = await openPanel(browser, origin, 'light');
+  const session = await openPanel(browser, origin, { scheme: 'light' });
   try {
     /*
      * The banner's own action is the reference: it is already covered by this gate, and the note
@@ -272,7 +187,7 @@ const MALFORMED_ISSUE_SEQS = [5, 9, 10];
 async function checkFixtures(browser: Browser, origin: string): Promise<void> {
   /* --- happy-run: fifteen rows, nothing annotated, badge silent ----------- */
   {
-    const session = await openPanel(browser, origin, 'light');
+    const session = await openPanel(browser, origin, { scheme: 'light' });
     await importFixture(session.page, join(fixtureDir, 'happy-run.agui.jsonl'));
     await session.page.screenshot({ path: join(outDir, 'timeline-happy.png'), fullPage: true });
 
@@ -306,7 +221,7 @@ async function checkFixtures(browser: Browser, origin: string): Promise<void> {
 
   /* --- malformed: three annotated rows, and the badge filters to them ----- */
   {
-    const session = await openPanel(browser, origin, 'dark');
+    const session = await openPanel(browser, origin, { scheme: 'dark' });
     await importFixture(session.page, join(fixtureDir, 'malformed.agui.jsonl'));
     await session.page.screenshot({ path: join(outDir, 'timeline-malformed.png'), fullPage: true });
 
@@ -358,7 +273,7 @@ async function checkFixtures(browser: Browser, origin: string): Promise<void> {
       'utf8',
     );
 
-    const session = await openPanel(browser, origin, 'dark');
+    const session = await openPanel(browser, origin, { scheme: 'dark' });
     await importFixture(session.page, partialPath);
     const onImport = (await session.page.textContent('.agui-app__load-error'))?.trim() ?? '';
     if (!/1 line could not be decoded/i.test(onImport)) {
@@ -423,7 +338,7 @@ function messageRows(page: Page): Promise<string[]> {
 async function checkMessages(browser: Browser, origin: string): Promise<void> {
   /* --- empty: it explains itself rather than showing a blank pane --------- */
   {
-    const session = await openPanel(browser, origin, 'light');
+    const session = await openPanel(browser, origin, { scheme: 'light' });
     await openMessages(session.page);
     const text = (await session.page.textContent('.agui-messages'))?.trim() ?? '';
     if (!/no runs to show/i.test(text)) {
@@ -438,7 +353,7 @@ async function checkMessages(browser: Browser, origin: string): Promise<void> {
 
   /* --- an imported capture: order, content, and the jump to Timeline ------ */
   {
-    const session = await openPanel(browser, origin, 'light');
+    const session = await openPanel(browser, origin, { scheme: 'light' });
     await importFixture(session.page, join(fixtureDir, 'happy-run.agui.jsonl'));
     await openMessages(session.page);
     await session.page.screenshot({ path: join(outDir, 'messages-happy.png'), fullPage: true });
@@ -491,7 +406,7 @@ async function checkMessages(browser: Browser, origin: string): Promise<void> {
 
   /* --- a run carrying issues: M2's failure, M3's reasoning, M4's streaming - */
   {
-    const session = await openPanel(browser, origin, 'dark');
+    const session = await openPanel(browser, origin, { scheme: 'dark' });
     await importFixture(session.page, join(fixtureDir, 'messages-edge.agui.jsonl'));
     await openMessages(session.page);
     await session.page.screenshot({ path: join(outDir, 'messages-edge.png'), fullPage: true });
@@ -576,7 +491,7 @@ async function checkMessages(browser: Browser, origin: string): Promise<void> {
 
   /* --- a redacted capture, produced by the real export and re-imported ---- */
   {
-    const producer = await openPanel(browser, origin, 'light');
+    const producer = await openPanel(browser, origin, { scheme: 'light' });
     await importFixture(producer.page, join(fixtureDir, 'happy-run.agui.jsonl'));
     await producer.page.click('button[role="tab"][id="agui-tab-session"]');
     await producer.page.waitForSelector('.agui-export');
@@ -592,7 +507,7 @@ async function checkMessages(browser: Browser, origin: string): Promise<void> {
     const redactedPath = join(outDir, 'messages-redacted.agui.jsonl');
     writeFileSync(redactedPath, saved.text, 'utf8');
 
-    const session = await openPanel(browser, origin, 'dark');
+    const session = await openPanel(browser, origin, { scheme: 'dark' });
     await importFixture(session.page, redactedPath);
     await openMessages(session.page);
     await session.page.screenshot({ path: join(outDir, 'messages-redacted.png'), fullPage: true });
@@ -741,7 +656,7 @@ function scrubberTicks(page: Page): Promise<Tick[]> {
 async function checkState(browser: Browser, origin: string): Promise<void> {
   /* --- empty: it explains itself rather than showing a blank pane --------- */
   {
-    const session = await openPanel(browser, origin, 'light');
+    const session = await openPanel(browser, origin, { scheme: 'light' });
     await openState(session.page);
     const text = (await session.page.textContent('.agui-state'))?.trim() ?? '';
     if (!/no runs to show/i.test(text)) {
@@ -756,7 +671,7 @@ async function checkState(browser: Browser, origin: string): Promise<void> {
 
   /* --- a run whose state broke twice, mid-timeline (S1, S2, S3) ----------- */
   {
-    const session = await openPanel(browser, origin, 'dark');
+    const session = await openPanel(browser, origin, { scheme: 'dark' });
     await importFixture(session.page, join(fixtureDir, 'state-edge.agui.jsonl'));
     await openState(session.page);
     await session.page.screenshot({ path: join(outDir, 'state-edge.png'), fullPage: true });
@@ -902,7 +817,7 @@ async function checkState(browser: Browser, origin: string): Promise<void> {
 
   /* --- the malformed golden fixture: two frames, the second refused ------- */
   {
-    const session = await openPanel(browser, origin, 'light');
+    const session = await openPanel(browser, origin, { scheme: 'light' });
     await importFixture(session.page, join(fixtureDir, 'malformed.agui.jsonl'));
     await openState(session.page);
     await session.page.screenshot({ path: join(outDir, 'state-malformed.png'), fullPage: true });
@@ -923,7 +838,7 @@ async function checkState(browser: Browser, origin: string): Promise<void> {
 
   /* --- a redacted capture, produced by the real export and re-imported ---- */
   {
-    const producer = await openPanel(browser, origin, 'light');
+    const producer = await openPanel(browser, origin, { scheme: 'light' });
     await importFixture(producer.page, join(fixtureDir, 'state-edge.agui.jsonl'));
     await producer.page.click('button[role="tab"][id="agui-tab-session"]');
     await producer.page.waitForSelector('.agui-export');
@@ -939,7 +854,7 @@ async function checkState(browser: Browser, origin: string): Promise<void> {
     const redactedPath = join(outDir, 'state-redacted.agui.jsonl');
     writeFileSync(redactedPath, saved.text, 'utf8');
 
-    const session = await openPanel(browser, origin, 'dark');
+    const session = await openPanel(browser, origin, { scheme: 'dark' });
     await importFixture(session.page, redactedPath);
     await openState(session.page);
     await session.page.screenshot({ path: join(outDir, 'state-redacted.png'), fullPage: true });
@@ -1098,7 +1013,7 @@ function rowOf(rows: RunRowShot[], runId: string): RunRowShot | undefined {
 async function checkRuns(browser: Browser, origin: string): Promise<void> {
   /* --- empty: it explains itself rather than showing a bare header --------- */
   {
-    const session = await openPanel(browser, origin, 'light');
+    const session = await openPanel(browser, origin, { scheme: 'light' });
     await openRuns(session.page);
     const text = (await session.page.textContent('.agui-runs'))?.trim() ?? '';
     if (!/no runs to show/i.test(text)) {
@@ -1117,7 +1032,7 @@ async function checkRuns(browser: Browser, origin: string): Promise<void> {
   /* --- four runs, four outcomes: the table, painted (R1, R3) -------------- */
   let originalIssueCounts: Record<string, string> = {};
   {
-    const session = await openPanel(browser, origin, 'dark');
+    const session = await openPanel(browser, origin, { scheme: 'dark' });
     await importFixture(session.page, join(fixtureDir, 'runs-edge.agui.jsonl'));
     await openRuns(session.page);
     await session.page.screenshot({ path: join(outDir, 'runs-edge.png'), fullPage: true });
@@ -1339,7 +1254,7 @@ async function checkRuns(browser: Browser, origin: string): Promise<void> {
 
   /* --- a redacted capture, produced by the real export and re-imported ---- */
   {
-    const producer = await openPanel(browser, origin, 'light');
+    const producer = await openPanel(browser, origin, { scheme: 'light' });
     await importFixture(producer.page, join(fixtureDir, 'runs-edge.agui.jsonl'));
     await producer.page.click('button[role="tab"][id="agui-tab-session"]');
     await producer.page.waitForSelector('.agui-export');
@@ -1355,7 +1270,7 @@ async function checkRuns(browser: Browser, origin: string): Promise<void> {
     const redactedPath = join(outDir, 'runs-redacted.agui.jsonl');
     writeFileSync(redactedPath, saved.text, 'utf8');
 
-    const session = await openPanel(browser, origin, 'light');
+    const session = await openPanel(browser, origin, { scheme: 'light' });
     await importFixture(session.page, redactedPath);
     await openRuns(session.page);
     await session.page.screenshot({ path: join(outDir, 'runs-redacted.png'), fullPage: true });
@@ -1593,7 +1508,7 @@ async function checkExportSurfaces(page: Page, where: string, shots: string): Pr
  * other is exactly what this gate exists to catch.
  */
 async function checkExport(browser: Browser, origin: string): Promise<void> {
-  const session = await openPanel(browser, origin, 'dark');
+  const session = await openPanel(browser, origin, { scheme: 'dark' });
   try {
     await importFixture(session.page, join(fixtureDir, 'happy-run.agui.jsonl'));
     await checkExportSurfaces(session.page, 'served dist/', 'served');
@@ -1683,14 +1598,14 @@ function report(): never {
 }
 
 async function main(): Promise<void> {
-  if (!existsSync(join(distDir, panelPath))) {
-    console.error(`FAIL: ${join(distDir, panelPath)} does not exist. Run \`pnpm build\` first.`);
+  if (!existsSync(join(distDir, PANEL_PATH))) {
+    console.error(`FAIL: ${join(distDir, PANEL_PATH)} does not exist. Run \`pnpm build\` first.`);
     process.exit(1);
   }
   // Diagnostic only. Whether a stylesheet reaches the document is decided by the computed
   // styles below, not by grepping the HTML — the CSS may arrive by link, by inline <style>, or
   // through the module graph, and only the browser knows which of those actually worked.
-  const html = readFileSync(join(distDir, panelPath), 'utf8');
+  const html = readFileSync(join(distDir, PANEL_PATH), 'utf8');
   const htmlMentionsCss = /<link[^>]+stylesheet/i.test(html) || /<style/i.test(html);
 
   mkdirSync(outDir, { recursive: true });
