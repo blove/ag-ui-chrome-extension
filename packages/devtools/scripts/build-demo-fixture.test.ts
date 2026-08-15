@@ -31,6 +31,17 @@ describe('buildDemoFixture', () => {
     expect(buildDemoFixture()).toBe(buildDemoFixture());
   });
 
+  // Pins run 2's seq offset to run 1's actual event count. Without this, a collision (offset
+  // too low) or a gap (offset too high) would pass silently: no codec or validator rule checks
+  // seq uniqueness or contiguity, and the "anchors that violation" test above resolves by
+  // `records.find(r => r.seq === issue.seq)`, which under a collision would just find the wrong
+  // record and still pass.
+  it('numbers event seqs contiguously 1..N across both connections', () => {
+    const { records } = loadJsonl(buildDemoFixture());
+    const eventSeqs = records.filter((r) => r.kind === 'event').map((r) => r.seq);
+    expect(eventSeqs).toEqual(Array.from({ length: eventSeqs.length }, (_, i) => i + 1));
+  });
+
   it('carries nothing that looks like a redaction placeholder or a secret', () => {
     const text = buildDemoFixture();
     expect(text).not.toMatch(/«redacted/);

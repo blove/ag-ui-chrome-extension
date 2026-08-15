@@ -5,8 +5,10 @@
  * a validator unit test. Neither reads as a product. Why not a Tier B recording: `record.ts`
  * redacts every payload string, so a recorded capture photographs as «redacted: N chars».
  *
- * The content is fictional and deliberately dull — an order lookup. No real product names, no
- * credentials, nothing that would need redacting.
+ * The content is fictional and deliberately dull — an order lookup. `framework` and the request
+ * URL genuinely name CopilotKit, because that is the real integration this extension targets and
+ * it is meant to be visible in the screenshots. What the fixture guarantees instead: no customer
+ * or personal names, no credentials, nothing embarrassing.
  *
  * Exactly ONE validator issue, by construction: run 2 emits a TEXT_MESSAGE_CONTENT for a message
  * that has not been opened yet, which is `unopened-message-id`. Every other rule is deliberately
@@ -133,9 +135,17 @@ function runOne(): JsonlLine[] {
   ]);
 }
 
-function runTwo(): JsonlLine[] {
+/**
+ * `startSeq` is the caller's job, not this function's: seq is global across the whole capture,
+ * so run 2 cannot know where it starts without knowing how many events run 1 emitted. Hardcoding
+ * it here once was exactly the bug — add or remove an event in `runOne` and this offset silently
+ * stops matching, producing either a seq collision or a gap that nothing in the codec or the
+ * validator catches (the "anchors that violation" test would still pass on a collision, just
+ * against the wrong record).
+ */
+function runTwo(startSeq: number): JsonlLine[] {
   const runId = 'r_demo_2';
-  return events('c2', 29, [
+  return events('c2', startSeq, [
     [11, { type: 'RUN_STARTED', threadId: THREAD, runId }],
     [24, { type: 'STEP_STARTED', stepName: 'respond' }],
     // THE VIOLATION. A delta for a message the stream never opened — `unopened-message-id`.
@@ -145,8 +155,7 @@ function runTwo(): JsonlLine[] {
     // run-builder.ts materializes the message (and adds it to `openTextMessages`) on first
     // sight regardless of which event opened it, so a START placed after this line would
     // find the id already "open" and trip `concurrent-text-messages` too — turning the one
-    // violation this fixture exists to show into two, which is exactly what Step 4's
-    // troubleshooting note warns against building past.
+    // violation this fixture exists to show into two.
     [
       63,
       { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm_3', delta: 'Your replacement label' },
@@ -159,12 +168,14 @@ function runTwo(): JsonlLine[] {
 }
 
 export function buildDemoFixture(): string {
+  const one = runOne();
+  const two = runTwo(1 + one.length);
   return encodeJsonl([
     header(),
     request('c1', 'r_demo_1', 'Where is my order 4417?'),
-    ...runOne(),
+    ...one,
     request('c2', 'r_demo_2', 'Can you resend the return label?'),
-    ...runTwo(),
+    ...two,
   ]);
 }
 
