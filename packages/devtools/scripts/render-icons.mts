@@ -7,7 +7,9 @@
  *
  * `icon-128.png` doubles as the Chrome Web Store store icon; nothing separate is emitted for it.
  *
- * Run: `pnpm icons`
+ * Run: `pnpm icons` (first run also needs `pnpm exec playwright install chromium-headless-shell`
+ * — the shell is what a default headless `chromium.launch()` resolves to, and it is what CI
+ * installs; see `screenshot-panel.mts` for the same prerequisite).
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -16,7 +18,10 @@ import { chromium } from 'playwright';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const svgPath = join(packageRoot, 'listing/icon.svg');
-const outDir = join(packageRoot, 'public/icons');
+// ICON_OUT lets a freshness check (scripts/verify-build.ts, a later task) render to a scratch
+// directory and diff it against the committed PNGs, catching output that has gone stale against
+// icon.svg or drifted under a Playwright/Chromium upgrade.
+const outDir = process.env.ICON_OUT ?? join(packageRoot, 'public/icons');
 
 /** Manifest icon sizes. 128 is also the CWS store icon. */
 const SIZES = [16, 32, 48, 128] as const;
@@ -40,7 +45,22 @@ async function main(): Promise<void> {
           `<img src="${dataUrl}" style="display:block;width:100vw;height:100vh">` +
           `</body>`,
       );
-      await page.locator('img').waitFor({ state: 'visible' });
+      // `visible` only means the <img> has a non-empty bounding box, which it has (100vw/100vh)
+      // even when the SVG failed to decode: a broken image still writes a PNG of exactly the
+      // right dimensions, so neither `file` nor the screenshot call reports anything wrong.
+      // naturalWidth is the only signal that the SVG actually parsed. See listing/icon.svg for
+      // the XML comment bug (a literal "--" inside a comment body) that made this concrete.
+      const decoded = await page
+        .locator('img')
+        .evaluate((img: HTMLImageElement) =>
+          img.decode().then(
+            () => img.naturalWidth > 0,
+            () => false,
+          ),
+        );
+      if (!decoded) {
+        throw new Error(`${svgPath} did not decode — the SVG is almost certainly not well-formed XML.`);
+      }
       // omitBackground preserves the tile's rounded corners as transparency.
       const png = await page.screenshot({ omitBackground: true });
       writeFileSync(join(outDir, `icon-${String(size)}.png`), png);
