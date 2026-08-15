@@ -426,6 +426,57 @@ describe('panel live wiring', () => {
     expect(first.port.connected).toBe(false);
   });
 
+  /*
+   * Expand chunks has to mean something on a live capture too.
+   *
+   * `toggleExpandChunks` only flips the flag; expansion happens inside the run builder, so the
+   * capture has to be re-folded. The imported path re-decodes its retained bytes — a live one
+   * has no bytes, so the session re-folds its retained records instead. Without that, the
+   * button would change its pressed state and move nothing on screen.
+   */
+  it('re-folds a live capture when Expand chunks is toggled', async () => {
+    stubOrigin('http://localhost:5173');
+    const { port } = stubPort();
+    const store = createPanelStore();
+
+    render(<App store={store} />);
+    await waitFor(() => {
+      expect(port.posted).toHaveLength(1);
+    });
+
+    act(() => {
+      port.emit({
+        kind: 'snapshot',
+        records: [
+          RUN_STARTED,
+          eventRecord(1, {
+            type: 'TEXT_MESSAGE_CHUNK',
+            messageId: 'm1',
+            role: 'assistant',
+            delta: 'hi',
+          }),
+          eventRecord(2, { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' }),
+        ],
+        requests: [REQUEST],
+        droppedBefore: 0,
+      });
+      port.emit({ kind: 'closed', connId: 'c1', tMs: 40 });
+    });
+
+    // Unexpanded, a chunk builds no message at all: there is nothing for Messages to show.
+    expect(store.get().runs[0]?.messages.size).toBe(0);
+
+    (await screen.findByRole('button', { name: 'Expand chunks' })).click();
+
+    await waitFor(() => {
+      expect(store.get().runs[0]?.messages.size).toBe(1);
+    });
+    expect(store.get().runs[0]?.messages.get('m1')?.content).toBe('hi');
+    // The re-fold must not invent an issue the same capture did not have a moment earlier.
+    expect(store.get().issues).toEqual([]);
+    expect(store.get().records).toHaveLength(3);
+  });
+
   /* P6: `VirtualList.follow` has existed and never been set. Live tailing is what it was for. */
   it('tails a live capture and not an imported one (P6)', async () => {
     stubOrigin('http://localhost:5173');
