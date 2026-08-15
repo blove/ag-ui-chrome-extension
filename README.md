@@ -105,11 +105,10 @@ sides of `pnpm build`. Run each command on its own line rather than chaining wit
     pnpm verify:listing
 
 Copy lives in `packages/devtools/listing/copy.md`; the generated upload set lands in
-`packages/devtools/listing/out/`. `pnpm listing:assets` fails while any storyboard shot's UI is not
-yet reachable, rather than quietly shipping a short gallery. **Three of five shots render today**;
-the two that do not are both blocked on the *harness*, not the product — the generator boots the
-panel without `chrome.devtools`, so the Session tab reports capture as unavailable, and the
-per-origin grant banner is suppressed for an imported source. See
+`packages/devtools/listing/out/`. `pnpm listing:assets` fails while any storyboard shot's subject is
+unreachable, rather than quietly shipping a short gallery. **Four of five shots render today.** The
+one that does not is the privacy shot, whose subject is the per-origin capture grant prompt — that
+needs a live, granted origin, which this harness cannot produce. See
 [the listing design](docs/superpowers/specs/2026-08-15-chrome-web-store-listing-design.md).
 
 ### Tests

@@ -10,30 +10,25 @@
  * rendered at 1×.
  *
  * A storyboard entry the product cannot yet back FAILS THE RUN, and leaves no file behind. Today
- * that is three of the five shots, refused for two different reasons:
+ * that is one of the five shots: shot 5's subject — the per-origin capture grant — cannot be
+ * reached from this harness at all. A caption sits directly above the panel in the same image, so
+ * shooting it anyway produces an asset that contradicts itself, which is the misleading-claim
+ * category that gets store submissions rejected.
  *
- *   - the State tab (shot 3) is still a `.agui-coming` placeholder, so there is nothing to
- *     photograph;
- *   - the Session tab (shots 4 and 5) still reports its own unbuilt capabilities in the panel
- *     pixels, and shot 5's subject — the per-origin capture grant — cannot even be reached from
- *     this harness. A caption sits directly above the panel in the same image, so shooting those
- *     produces an asset that contradicts itself, which is the misleading-claim category that gets
- *     store submissions rejected.
- *
- * Emitting the two that work and leaving a human to notice the gallery is short is precisely the
+ * Emitting the ones that work and leaving a human to notice the gallery is short is precisely the
  * failure this script exists to prevent, so it exits 1 with each refusal naming what must exist
- * first. Two good screenshots and a loud list of blockers beats five and a rejected submission.
+ * first. Four good screenshots and a loud list of blockers beats five and a rejected submission.
  *
  * The two promo tiles below (`TILES`) are NOT gated the same way, and that is deliberate rather
  * than an oversight: a screenshot photographs the built panel, so an entry the product cannot yet
  * back is a caption arguing with the pixels beneath it, which is exactly what the storyboard
  * refuses above. A tile is prose over a static mark — the same category of asset as
  * `listing/copy.md`'s store description, which already describes the finished tool rather than
- * today's build. That is why the marquee's copy can say "replay" in the same run that refuses to
- * caption the Session tab with that word: one is a claim about an image, the other is a claim
- * about the product's destination. The gap between the tiles' prose and today's build is the same
- * one the design doc already records as a deferred requirement; closing it is a product task, not
- * a bug in this script.
+ * today's build. That is why the marquee's copy can still claim the whole product in the same run
+ * that refuses shot 5: one is a claim about an image, the other is a claim about the product's
+ * destination. The gap between the tiles' prose and today's build is the same one the design doc
+ * already records as a deferred requirement; closing it is a product task, not a bug in this
+ * script.
  *
  * Run: `pnpm build && pnpm listing:assets`
  */
@@ -42,6 +37,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Browser, FrameLocator } from 'playwright';
 import { chromium } from 'playwright';
+// The one source of truth for how many redaction groups shot 4 photographs. `redact.ts` is plain
+// TypeScript with a single type-only import, so unlike `session.tsx` — see `UNBUILT_MARKERS` below,
+// which duplicates its strings rather than drag JSX into a Node script — it costs nothing to import
+// here, and a sixth group added to §11 makes shot 4's gate expect six without anyone remembering to.
+import { ALL_REDACTION_GROUPS } from '../src/core/jsonl/redact';
 import type { Session } from './panel-harness';
 import { importFixture, openPanel, PANEL_PATH, startServer } from './panel-harness';
 
@@ -86,15 +86,20 @@ async function waitForSelectedDetail(panel: FrameLocator): Promise<void> {
  *
  * Substrings, not whole values, so the surrounding sentence can be reworded without silently
  * emptying this list. Every one of them is pinned by a unit test — `session.test.tsx:26` ("
- * unavailable in this build"), `:72` (the capture-layer rows), `:74` (the framework row) and
- * `:100` ("not available in phase 1") — so a genuine reword breaks a test that names the string
- * rather than quietly turning this gate off. They are duplicated here rather than imported
- * because `session.tsx` is a Preact component: importing it would drag JSX and the panel's whole
- * module graph into a Node script for the sake of four string literals.
+ * unavailable in this build"), `:105` (the capture-layer rows) and `:107` (the framework row) — so
+ * a genuine reword breaks a test that names the string rather than quietly turning this gate off.
+ * They are duplicated here rather than imported because `session.tsx` is a Preact component:
+ * importing it would drag JSX and the panel's whole module graph into a Node script for the sake
+ * of three string literals.
+ *
+ * A fourth marker, "not available in phase 1", was dropped when export shipped and its row with it.
+ * Keeping a marker no rendered string can match is not free caution: it is a line in a list whose
+ * whole documented contract is that every entry is pinned by a test, and there was no longer a test
+ * or a row for that one to be pinned to. Grep before removing an entry — the point of the list is
+ * completeness, and only a string `session.tsx` cannot produce may leave it.
  */
 const UNBUILT_MARKERS = [
   'unavailable in this build',
-  'not available in phase 1',
   'ships with the capture layer',
   'no framework fingerprint in the page',
 ];
@@ -102,14 +107,21 @@ const UNBUILT_MARKERS = [
 /**
  * Refuse to photograph a Session tab that is still advertising unbuilt functionality.
  *
- * Decision L1, applied where it bites hardest. A caption sits above the panel in the same image,
- * so a shot of a tab reading "Export: not available in phase 1" under the words "Export a capture
- * as .agui.jsonl" is an asset that contradicts itself. The check is on the rendered text rather
- * than on a feature flag because the rendered text is what a store reviewer reads.
+ * Decision L1, applied where it bites hardest. A caption sits above the panel in the same image, so
+ * a shot of a tab reporting a column of "not detected" under the words "No network egress. Ever."
+ * is an asset that contradicts itself. The check is on the rendered text rather than on a feature
+ * flag because the rendered text is what a store reviewer reads.
+ *
+ * Used by shot 5 only, and deliberately not by shot 4 any more. It is a scan of the WHOLE tab, so
+ * for a caption about one section it fires on rows that have nothing to say about that section:
+ * `Endpoints` and `Agents` are hardcoded "ships with the capture layer" strings
+ * (`session.tsx:154,156`), genuinely unbuilt but silent on export and replay. Shot 4 was refused by
+ * exactly those two under a message that blamed the harness shim — a blocker no change to the shim
+ * could ever have cleared, described by a gate that never looked at its own subject. Shot 5 keeps
+ * this because its caption IS a claim about the whole tab, which is the case the scan fits.
  *
  * `blockedBy` says what must exist before the shot can be taken, so the failure is a work item and
- * not a mystery. It must describe EVERY condition — see shot 4, which is blocked on the harness as
- * well as on the product.
+ * not a mystery. It must describe EVERY condition.
  */
 async function refuseUnbuiltPanel(panel: FrameLocator, blockedBy: string): Promise<void> {
   const text = (await panel.locator('.agui-session').innerText()).toLowerCase();
@@ -118,6 +130,60 @@ async function refuseUnbuiltPanel(panel: FrameLocator, blockedBy: string): Promi
     throw new Error(
       `the Session tab still reads ${found.map((marker) => `"${marker}"`).join(', ')} — so this ` +
         `shot would caption a claim the panel in the same image contradicts. ${blockedBy}`,
+    );
+  }
+}
+
+/**
+ * Refuse the export shot unless the export panel is actually OFFERING an export.
+ *
+ * Same principle as `refuseWithoutGrantPrompt` below, applied to shot 4's own subject. The panel
+ * decides one thing — `exportBlockedReason` (`export/build.ts:183`) — and renders it three ways:
+ * `.agui-export__blocked` carries the sentence, the group `<fieldset>` goes `disabled`, and every
+ * action button goes `disabled`. All three are checked rather than one, because they are three
+ * separate JSX expressions that can drift, and this shot photographs all three at once: a frame
+ * full of greyed-out checkboxes under "Record a run. Replay it anywhere." is the self-contradicting
+ * asset this script exists to refuse.
+ *
+ * The download button is matched by the extension in its label, not by position, because
+ * `.agui.jsonl` is the exact string the caption promises. A rename that breaks this match is a
+ * rename that invalidates the caption too, and a loud failure is the correct response to it — the
+ * alternative, `.first()`, would keep passing while the button beneath it said something else.
+ *
+ * Nothing here scans for the tab's unbuilt-capability wording. Shot 4's frame is scrolled to the
+ * export controls (see `drive`), and the rows that confess unbuilt discovery are not in it; gating
+ * this shot on them was a gate that never looked at its own subject.
+ */
+async function refuseBlockedExport(panel: FrameLocator): Promise<void> {
+  const blocked = panel.locator('.agui-export__blocked');
+  if ((await blocked.count()) > 0) {
+    throw new Error(
+      `the export panel is refusing to export: "${(await blocked.innerText()).trim()}" — so this ` +
+        'shot would caption a round trip over a control that is offering none. The demo fixture ' +
+        'must import into records this panel can re-encode; re-run `pnpm listing:fixture`.',
+    );
+  }
+
+  const download = panel.locator('.agui-export__actions button', { hasText: '.agui.jsonl' });
+  if ((await download.count()) !== 1 || (await download.isDisabled())) {
+    throw new Error(
+      'the export panel offers no enabled `.agui.jsonl` download button, which is the literal ' +
+        'promise of this caption. Either `export-panel.tsx` no longer labels the download with ' +
+        'the extension, or it rendered the button disabled without also rendering ' +
+        '`.agui-export__blocked` — in which case fix that divergence before re-running this.',
+    );
+  }
+
+  const groups = panel.locator('.agui-export__group input[type="checkbox"]:enabled');
+  const count = await groups.count();
+  if (count !== ALL_REDACTION_GROUPS.length) {
+    throw new Error(
+      `the export panel shows ${String(count)} enabled redaction group checkboxes, expected ` +
+        `${String(ALL_REDACTION_GROUPS.length)} (requirements §11's groups: ` +
+        `${ALL_REDACTION_GROUPS.join(', ')}). They are what fills this frame and what the ` +
+        'sub-caption describes, so a shot missing them shows the panel with its subject cropped ' +
+        'out. A disabled `<fieldset>` disables every checkbox inside it, so this also catches an ' +
+        'export blocked without the blocked sentence being rendered.',
     );
   }
 }
@@ -255,21 +321,50 @@ const STORYBOARD: Shot[] = [
   {
     file: '4-replay.png',
     headline: 'Record a run. Replay it anywhere.',
-    sub: 'Export a capture as .agui.jsonl, reopen it on any machine.',
+    /*
+     * The sub describes the redaction choice rather than repeating "reopen it on any machine",
+     * because the frame is scrolled to the redaction controls and a caption should name what is
+     * under it — the headline already carries the round trip. Every word of it is checked against
+     * the build: the download button is literally "Download capture (.agui.jsonl)"; the five
+     * groups are `ALL_REDACTION_GROUPS`, each its own checkbox; and "unless you say so" is the
+     * fieldset's own legend, backed by `groups` starting empty in `export-panel.tsx:59`.
+     */
+    sub: 'Export it as .agui.jsonl — whole for yourself, or redacted group by group for a bug report.',
     scheme: 'light',
     async drive(panel) {
       await panel.locator('button[role="tab"][id="agui-tab-session"]').click();
-      await panel.locator('.agui-session').waitFor({ timeout: 5000 });
-      await refuseUnbuiltPanel(
-        panel,
-        'The caption promises a round trip — record, export, reopen — that the tab in the same ' +
-          'image reports it cannot do. TWO separate things block it, and shipping export alone ' +
-          'will not clear this: (1) export must exist, replacing "Export: not available in ' +
-          'phase 1"; and (2) the harness must stop booting the panel under the `no-devtools` ' +
-          'shim, because `resolveOrigin` returns early with no `chrome.devtools` ' +
-          '(`app.tsx:53-59`) and capture therefore reports "unavailable in this build" no matter ' +
-          'what the product ships. Expect this shot to keep failing on (2) after (1) lands.',
-      );
+      await panel.locator('.agui-export').waitFor({ timeout: 5000 });
+      await refuseBlockedExport(panel);
+      /*
+       * Frame on the export section by driving the panel's own scroll container (`.agui-session`
+       * is `overflow-y: auto`) — never by writing a `scrollTop`, which is a number that silently
+       * means something else the next time a row is added above it.
+       *
+       * `block: 'start'` rather than `scrollIntoViewIfNeeded`, and the difference is the whole
+       * shot. `scrollIntoViewIfNeeded` scrolls the MINIMUM, so on a section shorter than the
+       * scroller — the export panel measures 362px in a 510px viewport — it stops as soon as the
+       * section fits and leaves ~150px of whatever precedes it in frame. Photographed exactly once
+       * that way, and what sat at the top of the card, directly beneath the words "Record a run",
+       * was `Status: unavailable in this build`: the self-contradicting asset this script exists to
+       * refuse, produced by a shot that had just passed its own gate. `block: 'start'` pins the
+       * EXPORT heading to the top of the scroller instead, which is a stated alignment rather than
+       * an emergent one. The unbuilt Detected and Capture rows go off the top edge; the Issues
+       * grid, which is honest counts, takes the ~130px of slack at the bottom.
+       *
+       * The heading, not `.agui-export` itself, so the word EXPORT is in the frame — aligning the
+       * root leaves the section's own label one pixel above the fold.
+       *
+       * This is also what makes the shot REPRODUCIBLE, which it was not before. `describeSource`
+       * (`session.tsx:29`) renders `demo.agui.jsonl (imported 11:36:29 AM)` — a wall clock read at
+       * import time, so this PNG's bytes changed on every run and every regeneration arrived in
+       * review as a diff nobody could account for. That row is in the Source grid, which is now
+       * scrolled off the top of the card. Nothing left in frame reads a clock: the summary line is
+       * counts plus group names, and `exportedAtIso` is passed to `buildExport` but only ever lands
+       * in the header of a file this shot never downloads.
+       */
+      await panel.locator('.agui-session__heading', { hasText: 'Export' }).evaluate((heading) => {
+        heading.scrollIntoView({ block: 'start' });
+      });
     },
   },
   {
