@@ -10,7 +10,8 @@
  *
  * It serves `dist/` over a local static server (ES modules will not load over `file://`),
  * installs a small `chrome` shim so the panel bundle runs outside DevTools, and then runs two
- * phases:
+ * phases. The server and shim themselves live in `panel-harness.ts` — start debugging a serving
+ * problem there, not here.
  *
  *   1. PAINT — load the panel once per colour scheme, assert the document is actually painted
  *      and that the two schemes differ, and write a PNG each.

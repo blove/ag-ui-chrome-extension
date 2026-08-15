@@ -8,7 +8,7 @@
  *
  * Nothing here asserts anything. Assertions belong to the caller.
  */
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
 import type { Browser, FrameLocator, Page } from 'playwright';
@@ -49,18 +49,42 @@ export interface StaticServer {
   close: () => Promise<void>;
 }
 
+/**
+ * `existsSync` is true for directories too, so a request for a directory path — or for `${origin}/`
+ * itself, which the composing frame in a later task can produce — used to reach
+ * `createReadStream(dir)`. That emits an unhandled `'error'` (`EISDIR`) and kills the whole
+ * script with a bare stack trace and no diagnostic pointing at the request that caused it. This
+ * was survivable while the only consumer requested one known HTML file; it is not now that the
+ * harness is shared plumbing whose second consumer navigates to arbitrary URLs.
+ */
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /** Serve a directory over HTTP. ES modules will not load over `file://`. */
 export function startServer(root: string): Promise<StaticServer> {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const rel = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
     const file = join(root, rel);
-    if (!file.startsWith(root) || !existsSync(file)) {
+    if (!file.startsWith(root) || !isFile(file)) {
       res.writeHead(404).end('not found');
       return;
     }
     res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' });
-    createReadStream(file).pipe(res);
+    const stream = createReadStream(file);
+    // Belt-and-suspenders for what `isFile` above cannot see coming — e.g. the file is removed
+    // between the stat and the read. Without this handler the stream's error is unhandled and
+    // takes the process down exactly like the EISDIR case this guard exists to prevent.
+    stream.on('error', () => {
+      if (!res.headersSent) res.writeHead(500);
+      res.end('internal error');
+    });
+    stream.pipe(res);
   });
   return new Promise((ready) => {
     server.listen(0, '127.0.0.1', () => {
@@ -88,7 +112,12 @@ export interface OpenPanelOptions {
   viewport?: { width: number; height: number };
   deviceScaleFactor?: number;
   shim?: ShimKind;
-  /** Load this URL instead of the panel itself — used to load a composing frame that iframes it. */
+  /**
+   * Load this URL instead of the panel document itself. The returned session still exposes
+   * `page`, but `page` is now a document that *contains* the panel — e.g. a composing frame that
+   * iframes it — rather than the panel document. Callers that need the panel's own elements go
+   * through one of its frames, which is what `PanelScope` below exists for.
+   */
   url?: string;
 }
 
@@ -127,7 +156,7 @@ export async function openPanel(
 
 /**
  * Anything the panel can be driven through: the page itself, or a frame containing it.
- * Both expose `locator`, which is why the import path below is written against locators rather
+ * Both expose `locator`, which is why `importFixture` below is written against locators rather
  * than `page.setInputFiles`.
  */
 export type PanelScope = Page | FrameLocator;
@@ -135,8 +164,9 @@ export type PanelScope = Page | FrameLocator;
 /** Import a capture through the panel's own file input, exactly as a user would. */
 export async function importFixture(scope: PanelScope, file: string): Promise<void> {
   await scope.locator('input.agui-drop__input').setInputFiles(file);
-  await scope
-    .locator('.agui-timeline, .agui-app__load-error')
-    .first()
-    .waitFor({ state: 'attached', timeout: 5000 });
+  // No explicit `state` — `waitFor`'s default is `'visible'`, matching the `page.waitForSelector`
+  // call this replaced (whose own default was also `'visible'`). Both call sites screenshot
+  // immediately after this resolves, so settling for merely `'attached'` (present in the DOM,
+  // possibly still invisible) would be a silent loosening of what "imported" means here.
+  await scope.locator('.agui-timeline, .agui-app__load-error').first().waitFor({ timeout: 5000 });
 }

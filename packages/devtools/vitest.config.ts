@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
 /**
- * Three projects, because the three halves of this package have incompatible environments.
+ * Four projects, because the four parts of this package have incompatible environments.
  *
  * `core/` is deliberately Chrome-free and DOM-free (design §3 / D10, enforced by the
  * `no-restricted-globals` fence in eslint.config.js) and must keep running under plain `node` —
@@ -10,6 +10,8 @@ import { defineConfig } from 'vitest/config';
  * `capture/` is `inject/`, `relay/` and `sw/`: they patch DOM globals and talk to `chrome`, so
  * they need jsdom, but they must NOT get the panel's setup file — the relay is a security
  * boundary and each of its tests installs the exact `chrome` stub it wants to assert against.
+ * `scripts/` is build- and listing-time tooling (see that project's own comment below) — plain
+ * Node, no DOM, no `chrome`, so it belongs beside `core` rather than in either jsdom project.
  *
  * `test.projects` is the Vitest 4 API (`InlineConfig.projects?: TestProjectConfiguration[]`);
  * each entry is itself a config object with its own nested `test` block.
@@ -48,10 +50,10 @@ export default defineConfig({
       },
       {
         test: {
-          // The listing generators live in `scripts/` because that is what tsconfig.json
-          // includes; `listing/` holds only data and assets. They are plain Node — no DOM, no
-          // `chrome` — so they belong beside `core` rather than in either jsdom project.
-          name: 'listing',
+          // Named for what it selects, like the other three — `include` covers every test under
+          // `scripts/` (the listing generators plus `panel-harness.ts`, `verify-build.ts`, etc.),
+          // not only the listing ones, so this project is not called `listing`.
+          name: 'scripts',
           environment: 'node',
           include: ['scripts/**/*.test.ts'],
         },
