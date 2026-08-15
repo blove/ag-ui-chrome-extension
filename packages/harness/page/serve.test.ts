@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 import { startHarnessServer, type HarnessServer } from '../server/agui-server.js';
 
-import { startPageServer, type PageServer } from './serve.js';
+import { DOCUMENT_START_PATH, startPageServer, type PageServer } from './serve.js';
 
 let harness: HarnessServer;
 let server: PageServer;
@@ -50,6 +50,30 @@ test('proxies /agui to the harness server as a real SSE response', async () => {
   const body = await res.text();
   expect(body).toContain('data: {"type":"RUN_STARTED"');
   expect(body).toContain('data: {"type":"RUN_FINISHED"');
+});
+
+test('serves the document_start GET stream EventSource can reach', async () => {
+  // The harness server answers POST only, and `EventSource` cannot POST (§5.3), so this is the
+  // only endpoint `document-start.html` can open. Its frames are delayed on purpose: an open
+  // and its first frame arriving in the same instant is not a shape any real response has, and
+  // the async-load window this page exists to exercise lives in that gap.
+  const started = Date.now();
+  const res = await fetch(new URL(DOCUMENT_START_PATH, server.url));
+  const body = await res.text();
+
+  expect(res.status).toBe(200);
+  expect(res.headers.get('content-type')).toBe('text/event-stream');
+  expect(body).toContain('data: {"type":"RUN_STARTED"');
+  expect(body).toContain('data: {"type":"RUN_FINISHED"');
+  expect(Date.now() - started).toBeGreaterThanOrEqual(200);
+});
+
+test('serves document-start.html with its inline script intact', async () => {
+  // An inline script, deliberately: a bundled module would load asynchronously and could not
+  // run inside the window under test.
+  const res = await fetch(new URL('/document-start.html', server.url));
+  expect(res.status).toBe(200);
+  expect(await res.text()).toContain('new EventSource');
 });
 
 test('404s a path outside the built page', async () => {

@@ -1,12 +1,13 @@
 /**
- * The ISOLATED-world → service-worker wire protocol (design §3, requirements §11).
+ * The service worker's two wire protocols (design §3, requirements §11).
  *
- * Pure types and constants — no DOM, no `chrome` — so both ends can import it anywhere.
+ * Pure types and constants — no DOM, no `chrome` — so every end can import it anywhere.
  *
- * This module currently declares only the relay leg. The panel leg (`PANEL_PORT_NAME`,
- * `SwMessage`, `RequestLine`, `PanelCommand`) lands with the service-worker task that needs it;
- * `src/sw/index.ts` still carries its own copy of the panel port name until then.
+ * The relay leg is the ISOLATED-world → worker direction (`RELAY_PORT_NAME`, `RelayMessage`).
+ * The panel leg is the worker ⇄ DevTools panel direction (`PANEL_PORT_NAME`, `SwMessage`,
+ * `PanelCommand`), and `RequestLine` crosses both.
  */
+import type { CaptureRecord } from '../core/model/types';
 import type { InjectMessage } from '../inject/protocol';
 
 /** Port name the ISOLATED-world relay connects with. Must match the service-worker side. */
@@ -29,3 +30,74 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
  * forwarded. `v` stays — the service worker still has to reject a version it cannot read.
  */
 export type RelayMessage = DistributiveOmit<InjectMessage, 'source'>;
+
+/**
+ * One captured connection's request line: what was asked for, and the `RunAgentInput` that went
+ * with it.
+ *
+ * Held apart from `CaptureRecord` because it is not a frame — it has no `seq`, it is one per
+ * connection rather than one per event, and it is what `run-started-without-input` reads. Mirrors
+ * the `request` line of the `.agui.jsonl` codec so a captured session and an imported one present
+ * the same thing to the run builder.
+ */
+export interface RequestLine {
+  connId: string;
+  tMs: number;
+  method: string;
+  url: string;
+  input: unknown;
+}
+
+/* -------------------------------------------------------------------------- */
+/* The panel leg                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Port name the DevTools panel connects with. Must match the panel side verbatim — and the
+ * connection is also the MV3 keepalive of requirements §15 risk row 1: while a panel holds this
+ * port open, Chrome does not terminate the worker and the buffer survives.
+ */
+export const PANEL_PORT_NAME = 'agui-devtools-panel';
+
+/**
+ * Worker → panel. One union, because the panel folds every arm through the same reducer.
+ *
+ * `droppedBefore` rides on `snapshot` AND on `append` on purpose (P9): eviction happens
+ * *during* a long session, so a count delivered only with the initial snapshot would be
+ * permanently stale by the time it mattered.
+ */
+export type SwMessage =
+  /** Replay for a panel that subscribed late — §3's "survives panel-opened-late via replay". */
+  | {
+      kind: 'snapshot';
+      records: CaptureRecord[];
+      requests: RequestLine[];
+      droppedBefore: number;
+    }
+  | {
+      kind: 'append';
+      records: CaptureRecord[];
+      /**
+       * Total records evicted before the earliest one the worker still holds, as of this
+       * append. Optional only so a producer with nothing to report may omit it; the worker
+       * always sends it.
+       */
+      droppedBefore?: number;
+    }
+  | { kind: 'request'; request: RequestLine }
+  | { kind: 'closed'; connId: string; tMs: number }
+  /**
+   * Requirements §5.4: a binary transport is DETECTED and LABELLED, never decoded in this
+   * phase. It carries no records, so without this arm a protobuf stream would reach the panel
+   * as an empty capture — indistinguishable from capture being broken, which §15 names as the
+   * failure mode to avoid.
+   */
+  | { kind: 'binary'; connId: string; tMs: number; contentType: string; bytes: number }
+  | { kind: 'cleared' };
+
+/** Panel → worker. */
+export type PanelCommand =
+  /** Which tab this panel is inspecting. Sent once, on connect. */
+  | { kind: 'subscribe'; tabId: number }
+  | { kind: 'clear' }
+  | { kind: 'set-recording'; recording: boolean };

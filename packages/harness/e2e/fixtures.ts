@@ -23,21 +23,11 @@ import { fileURLToPath } from 'node:url';
 
 import { chromium, type BrowserContext, type Worker } from '@playwright/test';
 
-import type { CaptureRecord } from '@devtools/core/model/types';
+import type { CaptureRecord, Issue, Run } from '@devtools/core/model/types';
+import { createRunBuilder } from '@devtools/core/normalizer/run-builder';
+import type { RequestLine } from '@devtools/sw/protocol';
 
-/**
- * Mirrors `RequestLine` in the locked contract verbatim. It is declared here rather than
- * imported because `packages/devtools/src/sw/protocol.ts` does not exist while the harness is
- * being built — the harness ships first, by design. Re-point this import at
- * `@devtools/sw/protocol` in the commit that creates that module.
- */
-export interface RequestLine {
-  connId: string;
-  tMs: number;
-  method: string;
-  url: string;
-  input: unknown;
-}
+export type { RequestLine };
 
 export interface CaptureSnapshot {
   records: CaptureRecord[];
@@ -45,7 +35,7 @@ export interface CaptureSnapshot {
   droppedBefore: number;
 }
 
-/** The shape `src/sw/index.ts` attaches to the SW global. Undefined until that task lands. */
+/** The shape `src/sw/index.ts` attaches to the SW global, unconditionally. */
 interface TestHook {
   records(): CaptureRecord[];
   requests(): RequestLine[];
@@ -89,17 +79,71 @@ async function serviceWorker(ctx: BrowserContext): Promise<Worker> {
 export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot> {
   const sw = await serviceWorker(ctx);
   return sw.evaluate((): CaptureSnapshot => {
-    // `__AGUI_DT_TEST__` is undefined on today's build — `src/sw/index.ts` is the phase-1
-    // stub. Reporting empties rather than throwing is what lets the first e2e be green while
-    // still asserting something true.
+    // The hook is installed unconditionally by `src/sw/index.ts`, so its absence is a broken
+    // build, not a phase we are still in. Throwing names the cause; reporting empties would
+    // make every capture assertion below silently vacuous.
     const hook = (globalThis as { __AGUI_DT_TEST__?: TestHook }).__AGUI_DT_TEST__;
     if (!hook) {
-      return { records: [], requests: [], droppedBefore: 0 };
+      throw new Error(
+        '__AGUI_DT_TEST__ is not installed on the service worker. The loaded extension is not ' +
+          'this working tree, or src/sw/index.ts stopped installing the hook.',
+      );
     }
     return {
       records: hook.records(),
       requests: hook.requests(),
       droppedBefore: hook.droppedBefore(),
     };
+  });
+}
+
+/**
+ * Empty every tab's buffer, so the next scenario is measured on its own.
+ *
+ * `seq` is deliberately NOT reset by a clear — the worker keeps it monotonic per tab so a frame
+ * still in flight cannot collide with a fresh one — so a test that asserts on absolute seq
+ * numbers must run its scenario in a NEW tab rather than reusing a cleared one.
+ */
+export interface Reconstruction {
+  runs: Run[];
+  issues: Issue[];
+}
+
+/**
+ * Fold a captured snapshot with the real `core/` pipeline — the equivalence proof this whole
+ * milestone exists for.
+ *
+ * This is deliberately the SAME sequence `panel/import/load-jsonl.ts` performs over an imported
+ * `.agui.jsonl`: request lines first, then records in `seq` order, then every connection closed
+ * at its last observed frame. So "what the panel would show for a live capture" and "what it
+ * shows for the golden fixture" are computed by one code path, and a difference between them is
+ * a difference in the CAPTURED BYTES, not in the reader.
+ *
+ * Closing is what runs the finalize rules, so an unterminated run reports
+ * `run-never-terminated` here exactly as it does on import.
+ */
+export function reconstruct(capture: CaptureSnapshot): Reconstruction {
+  const builder = createRunBuilder();
+  const lastTMsByConn = new Map<string, number>();
+
+  for (const request of capture.requests) {
+    builder.addRequest(request.connId, request.method, request.url, request.input);
+    lastTMsByConn.set(request.connId, request.tMs);
+  }
+  for (const record of capture.records) {
+    builder.addRecord(record);
+    lastTMsByConn.set(record.connId, record.tMs);
+  }
+  for (const [connId, tMs] of lastTMsByConn) builder.closeConnection(connId, tMs);
+
+  return { runs: builder.runs(), issues: builder.allIssues() };
+}
+
+export async function clearCapture(ctx: BrowserContext): Promise<void> {
+  const sw = await serviceWorker(ctx);
+  await sw.evaluate((): void => {
+    const hook = (globalThis as { __AGUI_DT_TEST__?: TestHook }).__AGUI_DT_TEST__;
+    if (!hook) throw new Error('__AGUI_DT_TEST__ is not installed on the service worker.');
+    hook.clear();
   });
 }

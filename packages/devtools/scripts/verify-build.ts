@@ -363,8 +363,14 @@ function main(): void {
       role: 'service worker',
       sourceFile: sourceWorker,
       emitted: distWorker,
-      // The port hub: the panel connects, the worker accepts. Nothing else in this build.
-      required: ['onConnect', 'agui-devtools-panel'],
+      // The port hub (both port names, so a chunk carrying only the panel leg fails), the
+      // session mirror's key prefix, and the harness's test hook. `__AGUI_DT_TEST__` is
+      // asserted HERE because it is installed unconditionally and the e2e reads the ring
+      // buffer through it: a build that dropped it would leave the whole capture suite
+      // asserting empties against a working extension.
+      required: ['onConnect', 'agui-devtools-panel', 'agui-devtools-relay', '__AGUI_DT_TEST__'],
+      // The port names live in the protocol module the worker imports.
+      tokenSources: ['src/sw/protocol.ts'],
       forbidden: [],
     });
   }
