@@ -6,6 +6,8 @@ language: en
 single_purpose: Capture and inspect AG-UI protocol event streams on pages the user explicitly enables, for debugging.
 uses_remote_code: false
 privacy_policy_url: https://github.com/blove/ag-ui-chrome-extension/blob/main/PRIVACY.md
+website: https://threadplane.ai
+support_url: https://github.com/blove/ag-ui-chrome-extension/issues
 permissions:
   storage: Stores the user's per-origin capture opt-in and panel preferences. Captured events live in chrome.storage.session, which Chrome clears when the browser closes. Nothing is synced and nothing is written to disk unless the user exports a capture themselves.
   scripting: Registers the capture content scripts at runtime on origins the user has explicitly granted, via chrome.scripting.registerContentScripts. This is required precisely because the extension ships with no static remote host permissions - without it, capture could only ever work on localhost.

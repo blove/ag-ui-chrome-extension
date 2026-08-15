@@ -9,6 +9,8 @@ language: en
 single_purpose: Capture and inspect AG-UI protocol event streams for debugging.
 uses_remote_code: false
 privacy_policy_url: https://github.com/blove/ag-ui-chrome-extension/blob/main/PRIVACY.md
+website: https://threadplane.ai
+support_url: https://github.com/blove/ag-ui-chrome-extension/issues
 permissions:
   storage: Per-origin opt-in and panel preferences only.
   scripting: Registers capture content scripts on origins the user grants.
@@ -110,13 +112,24 @@ describe('checkCopy', () => {
     expect(checkCopy(parseCopy(markup), MANIFEST_PERMISSIONS).join(' ')).toMatch(/markup/i);
   });
 
-  it('fails a privacy_policy_url that is not https', () => {
-    const insecure = VALID.replace(
-      /^privacy_policy_url: .*$/m,
-      'privacy_policy_url: http://example.com/privacy',
-    );
-    expect(checkCopy(parseCopy(insecure), MANIFEST_PERMISSIONS).join(' ')).toMatch(
-      /privacy_policy_url.*https/i,
+  it.each(['privacy_policy_url', 'website', 'support_url'])(
+    'fails a %s that is not https',
+    (field) => {
+      const insecure = VALID.replace(
+        new RegExp(`^${field}: .*$`, 'm'),
+        `${field}: http://example.com`,
+      );
+      expect(checkCopy(parseCopy(insecure), MANIFEST_PERMISSIONS).join(' ')).toMatch(
+        new RegExp(`${field} must be an https URL`),
+      );
+    },
+  );
+
+  it.each(['website', 'support_url'])('fails when %s is missing entirely', (field) => {
+    const without = VALID.replace(new RegExp(`^${field}: .*\n`, 'm'), '');
+    expect(checkCopy(parseCopy(without), MANIFEST_PERMISSIONS).join(' ')).toMatch(
+      new RegExp(`${field} is required`),
     );
   });
+
 });

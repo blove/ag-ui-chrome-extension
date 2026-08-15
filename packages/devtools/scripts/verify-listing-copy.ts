@@ -42,7 +42,17 @@ const REQUIRED_FIELDS = [
   'language',
   'single_purpose',
   'privacy_policy_url',
+  'website',
+  'support_url',
 ] as const;
+
+/**
+ * Every field the store treats as a link. They are checked together because they fail together:
+ * `privacy_policy_url` pointed at a file that did not exist for the whole of the listing
+ * milestone, and nothing noticed, because "is a URL" and "resolves" are different questions and
+ * only the first is checkable offline. This asserts the first for all three rather than for one.
+ */
+const URL_FIELDS = ['privacy_policy_url', 'website', 'support_url'] as const;
 
 export interface CopyFields {
   title?: string;
@@ -51,6 +61,8 @@ export interface CopyFields {
   language?: string;
   single_purpose?: string;
   privacy_policy_url?: string;
+  website?: string;
+  support_url?: string;
   uses_remote_code?: string;
   permissions?: Record<string, string>;
 }
@@ -167,9 +179,11 @@ export function checkCopy(copy: Copy, manifestPermissions: readonly string[]): s
       `the detailed description is ${String(body.length)} characters; the store limit is ${String(LIMITS.description)}.`,
     );
   }
-  if (fields.privacy_policy_url !== undefined && fields.privacy_policy_url !== '') {
-    if (!/^https:\/\//.test(fields.privacy_policy_url)) {
-      failures.push('privacy_policy_url must be an https URL.');
+  for (const key of URL_FIELDS) {
+    const value = fields[key];
+    if (value === undefined || value === '') continue;
+    if (!/^https:\/\//.test(value)) {
+      failures.push(`${key} must be an https URL.`);
     }
   }
 

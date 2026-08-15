@@ -190,6 +190,6 @@ MIT. See [LICENSE](./LICENSE).
 
 ## Credits
 
-Built and maintained by the [Threadplane](https://threadplane.com) team. The tool is deliberately
+Built and maintained by the [Threadplane](https://threadplane.ai) team. The tool is deliberately
 framework-neutral: it works against any AG-UI stream — CopilotKit, the AG-UI Dojo, a hand-rolled
 server — and requires nothing from Threadplane.
