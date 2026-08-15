@@ -17,6 +17,18 @@
  * and it takes the expected source files from `manifest.config.ts`, so renaming an entry file
  * cannot silently move the guard's goalposts.
  *
+ * IT ALSO CHECKS SELF-CONTAINMENT, for a second defect of the same family. CRXJS's default for a
+ * content script that has imports is an async LOADER which `await import(...)`s the real chunk,
+ * with that chunk listed in `web_accessible_resources` scoped to the script's declared matches.
+ * A MAIN-world content script runs in the PAGE's world, so on a runtime-granted non-localhost
+ * origin (decision D3) the import resolved to a `chrome-extension:` URL the page had no access
+ * to and Chrome denied it — the user granted the origin, the worker registered the scripts, and
+ * capture silently never started. Nothing looking at sources, at the manifest, or at WHICH code
+ * is in a chunk could see it, and the e2e could not either: it all runs on localhost, where the
+ * WAR matches. So the shape of the emitted content scripts is asserted here, in the one place
+ * that reads the built artefact. See `packages/harness/e2e/non-localhost.spec.ts` for the
+ * runtime half of the same guard.
+ *
  * Run against a real `dist/`: `pnpm build && pnpm verify:build`.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -146,6 +158,63 @@ function resolveEntryChunk(rel: string): string {
   return first === undefined ? rel : posix.normalize(posix.join(posix.dirname(rel), first));
 }
 
+/**
+ * Assert that a content script is ONE self-contained file that runs synchronously.
+ *
+ * Two independent probes, because they fail on different halves of the loader shape and either
+ * one alone would leave a gap:
+ *
+ *  - `bundle.files` longer than one means the script reaches code in another file. Under a
+ *    loader that is the loader plus the chunk plus the chunk's shared imports; under plain code
+ *    splitting it is the shared chunk on its own. Both are subject to
+ *    `web_accessible_resources` from the MAIN world.
+ *  - the two specifier forms CRXJS's loaders actually emit, matched in the text. A MAIN-world
+ *    loader writes `await import("./<chunk>.js")`; an ISOLATED one has `chrome.runtime`
+ *    available and writes `await import(chrome.runtime.getURL("assets/<chunk>.js"))`. The second
+ *    form resolves to a file `readBundle` DOES follow, so it would be caught above too — but
+ *    naming both here is what makes the failure message say "loader", which is the actual cause,
+ *    rather than "extra file".
+ *
+ * Being one file is also what closes the document_start window: a loader installs the capture
+ * patch a microtask late, and a stream opened by the page's first inline script is gone before
+ * it exists.
+ */
+function checkSelfContained(role: string, emitted: string, files: string[]): void {
+  if (files.length !== 1) {
+    fail(
+      `content script is not self-contained (${role})`,
+      `dist/${emitted} reaches ${String(files.length)} files: ${files.join(', ')}. A content ` +
+        `script must be ONE file with every import inlined. Anything it loads at runtime is ` +
+        `fetched from the PAGE's world and is subject to web_accessible_resources, so on a ` +
+        `runtime-granted non-localhost origin (decision D3) the load is denied and capture ` +
+        `silently never starts. Keep the entry listed in \`contentScripts.standaloneFiles\` in ` +
+        `vite.config.ts, and keep it free of exports — CRXJS emits a loader for any content ` +
+        `script whose chunk has imports OR exports.`,
+    );
+  }
+
+  const abs = join(distDir, emitted);
+  if (!existsSync(abs)) {
+    return;
+  }
+  const text = readFileSync(abs, 'utf8');
+  const loaderForms: { pattern: RegExp; what: string }[] = [
+    { pattern: /\bimport\s*\(/, what: 'a dynamic import()' },
+    { pattern: /getURL\s*\(/, what: 'a chrome.runtime.getURL() lookup' },
+  ];
+  for (const { pattern, what } of loaderForms) {
+    if (pattern.test(text)) {
+      fail(
+        `content script is loader-wrapped (${role})`,
+        `dist/${emitted} contains ${what}. That is the CRXJS loader shape: the content script ` +
+          `is a shim that fetches its real chunk at runtime. From the MAIN world that fetch is ` +
+          `governed by web_accessible_resources and fails on any origin outside the declared ` +
+          `matches, with no error the extension can see.`,
+      );
+    }
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* 1. Entry-point identity: does each chunk contain the code it should?        */
 /* -------------------------------------------------------------------------- */
@@ -176,10 +245,24 @@ interface EntryExpectation {
   required: string[];
   /** Tokens that must NOT appear in the emitted bundle. */
   forbidden: string[];
+  /**
+   * Assert the entry is one self-contained file. True for content scripts, which are injected
+   * into a page and must not fetch anything; false for the service worker, which runs at the
+   * extension's own origin where code splitting is free.
+   */
+  selfContained?: boolean;
 }
 
 function checkEntry(expectation: EntryExpectation): void {
-  const { role, sourceFile, tokenSources = [], emitted, required, forbidden } = expectation;
+  const {
+    role,
+    sourceFile,
+    tokenSources = [],
+    emitted,
+    required,
+    forbidden,
+    selfContained = false,
+  } = expectation;
 
   const sourceAbs = join(packageRoot, sourceFile);
   if (!existsSync(sourceAbs)) {
@@ -220,6 +303,10 @@ function checkEntry(expectation: EntryExpectation): void {
       `dist/manifest.json points at ${emitted}, which is not in dist/ (or imports a chunk that is not).`,
     );
     return;
+  }
+
+  if (selfContained) {
+    checkSelfContained(role, emitted, bundle.files);
   }
 
   for (const token of required) {
@@ -282,6 +369,7 @@ function main(): void {
 
   const distScripts = asArray(distManifest.content_scripts) ?? [];
   const sourceScripts = asArray(sourceManifest.content_scripts) ?? [];
+  const viteConfigText = readFileSync(join(packageRoot, 'vite.config.ts'), 'utf8');
 
   const entryChunks: { role: string; file: string }[] = [];
 
@@ -297,10 +385,14 @@ function main(): void {
       role: 'MAIN-world content script',
       // The presence marker. `checkEntry` requires every token to appear verbatim in the entry
       // SOURCE file as well as the bundle, so the capture layer cannot be asserted from here:
-      // inject.ts reaches the message tag through the `AGUI_DT_SOURCE` identifier, and
+      // the inject entry reaches the message tag through the `AGUI_DT_SOURCE` identifier, and
       // identifiers do not survive minification. The literal is asserted on the relay entry,
       // whose own source contains it.
       required: ['__AGUI_DEVTOOLS__'],
+      // `inject.ts` is a three-line call into `install.ts` and must stay export-free: rollup
+      // gives an IIFE with exports a named global to hang them on, which would put a
+      // `window.inject` on every page. The marker lives in the module it calls.
+      tokenSources: ['src/inject/install.ts'],
       // MAIN world is the page's own world: chrome.* is undefined there.
       forbidden: ['chrome.runtime'],
     },
@@ -345,7 +437,22 @@ function main(): void {
       emitted,
       required: spec.required,
       forbidden: spec.forbidden,
+      selfContained: true,
     });
+
+    // Names the cause, one level up from the symptom. `checkSelfContained` reports that the
+    // emitted script is loader-wrapped; this reports WHY, when the why is that vite.config.ts
+    // and manifest.config.ts have drifted apart — renaming an entry in one and not the other
+    // silently drops it back to CRXJS's loader default.
+    if (!viteConfigText.includes(sourceFile)) {
+      fail(
+        `standalone content script not configured (${spec.world})`,
+        `manifest.config.ts declares ${sourceFile} as a content script, but vite.config.ts does ` +
+          `not mention it. It must be listed in \`crx({ contentScripts: { standaloneFiles } })\` ` +
+          `or CRXJS emits it as an async loader plus a web-accessible chunk, which cannot load ` +
+          `on a non-localhost origin.`,
+      );
+    }
   }
 
   /* --- Service worker ----------------------------------------------------- */
@@ -393,8 +500,32 @@ function main(): void {
 
   /* --- 2. Manifest privacy invariants (requirements §11 / §12) ------------- */
   // Re-run here, against the same artifact these entry checks ran against, so one command
-  // gates the whole build. `web_accessible_resources` is CRXJS-injected and correctly scoped
-  // to the localhost matches — it is expected, and deliberately not flagged.
+  // gates the whole build.
+
+  /**
+   * NO `web_accessible_resources` AT ALL.
+   *
+   * This key used to be here, CRXJS-injected and scoped to the localhost matches, and was
+   * accepted as expected. It was not: it was the shadow of the loader indirection, and the
+   * reason capture could not start on a granted non-localhost origin. Self-contained content
+   * scripts need nothing web-accessible, so the key's reappearance means either the loader is
+   * back or something new is being exposed to pages — and every entry in it is a probe any page
+   * can fetch to fingerprint the extension, which §11 does not accept.
+   *
+   * The rejected shortcut, recorded so it is not rediscovered: widening the matches to
+   * `http://*` / `https://*` makes capture work and makes the extension detectable by every page
+   * on the web. `use_dynamic_url: true` fixes the fingerprinting and keeps the loader's async
+   * gap, in which a stream opened by a page's first inline script is invisible. Neither is
+   * acceptable; not needing the key is.
+   */
+  if ('web_accessible_resources' in distManifest) {
+    fail(
+      'manifest privacy invariant',
+      `web_accessible_resources is present: ${JSON.stringify(distManifest.web_accessible_resources)}. ` +
+        'Content scripts are built as self-contained IIFEs and need no web-accessible chunk; ' +
+        'anything listed here is fetchable by a page and fingerprints the extension (§11).',
+    );
+  }
 
   const permissions = (asArray(distManifest.permissions) ?? []).map((p) => asString(p) ?? '');
   for (const banned of ['debugger', 'webRequest', 'webRequestBlocking']) {

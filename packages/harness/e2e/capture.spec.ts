@@ -305,4 +305,33 @@ test.describe('the document_start window', () => {
 
     await early.close();
   });
+
+  test('a stream opened by the first SYNCHRONOUS inline script is captured', async () => {
+    // The second symptom of the loader, and the one the re-statement above could not reach. The
+    // test above waits for `window.__AGUI_DEVTOOLS__` before opening its stream, so the MAIN
+    // patch is installed by construction and only the relay's listener is in doubt. This page
+    // waits for NOTHING: it constructs an `EventSource` in the page's first inline script.
+    //
+    // While both content scripts were emitted as CRXJS loaders that `await import(...)`ed their
+    // real chunk, neither had run at this point — `EventSource` was still the page's own, the
+    // connection was never patched, and the entire stream was invisible to capture with nothing
+    // logged anywhere. Self-contained IIFE content scripts run to completion before the parser
+    // reaches this script, which is what makes the assertion below possible at all.
+    await clearCapture(ctx);
+    const sync = await ctx.newPage();
+    await sync.goto(`${pageServer.url}document-start-sync.html`);
+
+    await expect
+      .poll(async () => capturedEventTypes((await readCapture(ctx)).records), { timeout: 10_000 })
+      .toEqual(['RUN_STARTED', 'RUN_FINISHED']);
+
+    const syncCapture = await readCapture(ctx);
+    // The query string distinguishes this page's connection from the polling page's, and is
+    // recorded verbatim (`eventsource-patch.ts` stores `String(url)`).
+    expect(syncCapture.requests.map((request) => request.url)).toEqual([
+      '/agui-document-start?sync=1',
+    ]);
+
+    await sync.close();
+  });
 });

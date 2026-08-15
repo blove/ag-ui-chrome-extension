@@ -16,7 +16,7 @@
  * The DevTools panel UI is NOT reachable and must not be driven from here. All assertions go
  * through `readCapture`, which reads the ring buffer out of the service worker.
  */
-import { existsSync, mkdtempSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,25 +49,77 @@ const harnessRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const EXTENSION_DIST =
   process.env.AGUI_EXTENSION_DIST ?? resolve(harnessRoot, '../devtools/dist');
 
-export async function launchWithExtension(): Promise<{
+export interface LaunchOptions {
+  /**
+   * Extra Chromium arguments. The non-localhost suite passes
+   * `--host-resolver-rules=MAP app.test 127.0.0.1` so a real hostname that is NOT in the
+   * localhost family resolves to the harness server, which is the only way to exercise the
+   * origin axis decision D3 is justified by.
+   */
+  args?: readonly string[];
+  /**
+   * The unpacked extension to load. Defaults to the real `dist/`; `distWithGrantedOrigin`
+   * returns the copy the non-localhost suite loads instead.
+   */
+  dist?: string;
+}
+
+export async function launchWithExtension(options: LaunchOptions = {}): Promise<{
   ctx: BrowserContext;
   extensionId: string;
 }> {
+  const dist = options.dist ?? EXTENSION_DIST;
   // A missing dist launches a browser with no extension and fails later on a confusing
   // assertion about a marker that was never going to be there. Fail here instead.
-  if (!existsSync(join(EXTENSION_DIST, 'manifest.json'))) {
+  if (!existsSync(join(dist, 'manifest.json'))) {
     throw new Error(
-      `${join(EXTENSION_DIST, 'manifest.json')} does not exist. ` +
+      `${join(dist, 'manifest.json')} does not exist. ` +
         'Run `pnpm --filter ag-ui-devtools build` before the e2e suite.',
     );
   }
   const ctx = await chromium.launchPersistentContext(mkdtempSync(join(tmpdir(), 'agui-harness-')), {
     channel: 'chromium',
     headless: true,
-    args: [`--disable-extensions-except=${EXTENSION_DIST}`, `--load-extension=${EXTENSION_DIST}`],
+    args: [
+      `--disable-extensions-except=${dist}`,
+      `--load-extension=${dist}`,
+      ...(options.args ?? []),
+    ],
   });
   const sw = await serviceWorker(ctx);
   return { ctx, extensionId: new URL(sw.url()).host };
+}
+
+/**
+ * A byte-identical copy of `dist/` whose manifest additionally declares `origin` as a static
+ * host permission, and the path to it.
+ *
+ * WHY A COPY, AND WHAT IT DOES NOT SIMULATE. The product grants a non-localhost origin at
+ * runtime: the panel calls `chrome.permissions.request`, and `src/sw/index.ts` turns the
+ * resulting `permissions.onAdded` into `chrome.scripting.registerContentScripts`. Neither half
+ * is drivable from Playwright — `chrome.permissions.request` throws without a real user gesture
+ * and then raises a NATIVE confirmation dialog that no page-level automation can accept.
+ *
+ * So the grant, and only the grant, is faked: an unpacked extension receives the host
+ * permissions its manifest declares at load time, with no prompt. Everything downstream of the
+ * grant is real — the registration goes through `chrome.scripting.registerContentScripts` with
+ * the manifest's own declarations, exactly as `registerForMatches` does, and the injected files
+ * are the ones this build emitted, unmodified. The `onAdded` -> `registerForMatches` wiring
+ * itself is unit-covered in `packages/devtools/src/sw/index.test.ts`.
+ *
+ * Nothing else in the manifest is touched, so the two things this suite is actually about —
+ * whether the emitted content scripts are self-contained, and whether they still need a
+ * `web_accessible_resources` grant the page's origin does not have — are read from the real
+ * build.
+ */
+export function distWithGrantedOrigin(origin: string): string {
+  const copy = mkdtempSync(join(tmpdir(), 'agui-dist-granted-'));
+  cpSync(EXTENSION_DIST, copy, { recursive: true });
+  const manifestPath = join(copy, 'manifest.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+  manifest.host_permissions = [origin];
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  return copy;
 }
 
 async function serviceWorker(ctx: BrowserContext): Promise<Worker> {

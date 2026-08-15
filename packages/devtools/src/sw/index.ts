@@ -521,13 +521,15 @@ function attachPanelPort(port: chrome.runtime.Port): void {
  * the built filenames are content-hashed: `dist/inject.ts-<hash>.js` changes every build and a
  * hardcoded path would rot into a silent no-op.
  *
- * KNOWN GAP, one layer further out and NOT fixable from here: CRXJS emits both content scripts
- * as loaders that dynamic-import their real chunk, and `web_accessible_resources` in the built
- * manifest scopes those chunks to the localhost family only. A MAIN-world script runs in the
- * page's world, so on a granted origin such as `https://example.com` that import is subject to
- * `web_accessible_resources` and is expected to fail. Registering here is necessary but may not
- * be sufficient until `manifest.config.ts` widens that list — which is a privacy trade (§11
- * wants the extension undetectable) and belongs with the manifest, not with the worker.
+ * THIS USED TO BE NECESSARY BUT NOT SUFFICIENT, and the missing half was in the build. CRXJS
+ * emitted both content scripts as loaders that dynamic-imported their real chunk, with those
+ * chunks listed in `web_accessible_resources` scoped to the localhost family. A MAIN-world script
+ * runs in the page's world, so on an origin granted here the import was denied outright: the
+ * registration below succeeded and capture still never started. `vite.config.ts` now builds both
+ * scripts as self-contained IIFEs (`contentScripts.standaloneFiles`), the built manifest has no
+ * `web_accessible_resources` key at all, and registering an origin here is now sufficient on its
+ * own. `packages/harness/e2e/non-localhost.spec.ts` holds that end to end; `scripts/verify-build.ts`
+ * holds the emitted shape.
  */
 const registeredMatches = new Set<string>();
 
