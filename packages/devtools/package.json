@@ -17,6 +17,7 @@
     "icons": "tsx scripts/render-icons.mts",
     "listing:fixture": "tsx scripts/build-demo-fixture.ts",
     "listing:assets": "tsx scripts/listing-assets.mts",
+    "verify:listing": "tsx scripts/verify-listing-copy.ts",
     "verify:build": "tsx scripts/verify-build.ts",
     "screenshot:panel": "tsx scripts/screenshot-panel.mts"
   },
