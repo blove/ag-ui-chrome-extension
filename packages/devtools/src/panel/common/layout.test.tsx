@@ -1,9 +1,16 @@
 import { render, screen } from '@testing-library/preact';
 import type { JSX } from 'preact';
+import { useRef } from 'preact/hooks';
 import { act } from 'preact/test-utils';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { NARROW_BREAKPOINT_PX, NARROW_MEDIA_QUERY, useIsNarrow } from './layout';
+import {
+  FALLBACK_VIEWPORT_HEIGHT_PX,
+  NARROW_BREAKPOINT_PX,
+  NARROW_MEDIA_QUERY,
+  useIsNarrow,
+  useMeasuredHeight,
+} from './layout';
 
 interface FakeMatchMedia {
   /** Every query string the hook asked for. */
@@ -109,5 +116,43 @@ describe('useIsNarrow', () => {
     Reflect.deleteProperty(window, 'matchMedia');
     render(<Probe />);
     expect(probeText()).toBe('false');
+  });
+});
+
+/**
+ * The viewport height a virtualized list windows against.
+ *
+ * Shared because both lists that virtualize need it and it has one non-obvious rule: jsdom
+ * reports `clientHeight` as 0, so a hook that trusted the measurement would window every list
+ * down to zero rows and render NOTHING under test — which is indistinguishable, to every gate
+ * except the screenshot one, from a list that renders correctly.
+ */
+describe('useMeasuredHeight', () => {
+  function HeightProbe({ clientHeight }: { clientHeight?: number }): JSX.Element {
+    const ref = useRef<HTMLDivElement>(null);
+    const height = useMeasuredHeight(ref);
+    return (
+      <div
+        ref={(el: HTMLDivElement | null) => {
+          ref.current = el;
+          if (el !== null && clientHeight !== undefined) {
+            Object.defineProperty(el, 'clientHeight', { value: clientHeight, configurable: true });
+          }
+        }}
+      >
+        <span data-testid="probe">{String(height)}</span>
+      </div>
+    );
+  }
+
+  it('falls back rather than windowing to zero rows when nothing has been measured', () => {
+    render(<HeightProbe />);
+    expect(probeText()).toBe(String(FALLBACK_VIEWPORT_HEIGHT_PX));
+    expect(FALLBACK_VIEWPORT_HEIGHT_PX).toBeGreaterThan(0);
+  });
+
+  it('uses the container’s own height once it has one', () => {
+    render(<HeightProbe clientHeight={321} />);
+    expect(probeText()).toBe('321');
   });
 });

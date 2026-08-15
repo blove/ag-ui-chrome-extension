@@ -370,7 +370,7 @@ async function checkFixtures(browser: Browser, origin: string): Promise<void> {
 
     // The drop zone that showed the per-line detail unmounts with the tab. The summary must not.
     await session.page.click('button[role="tab"][id="agui-tab-runs"]');
-    await session.page.waitForSelector('.agui-coming');
+    await session.page.waitForSelector('.agui-runs');
     const afterSwitch = (await session.page.textContent('.agui-app__load-error'))?.trim() ?? '';
     if (!/1 line could not be decoded/i.test(afterSwitch)) {
       fail(
@@ -998,6 +998,449 @@ async function checkState(browser: Browser, origin: string): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Phase 2d — Runs (§9.2, design decisions R1–R3)                              */
+/* -------------------------------------------------------------------------- */
+
+/** Open the Runs tab and wait for it. */
+async function openRuns(page: Page): Promise<void> {
+  await page.click('button[role="tab"][id="agui-tab-runs"]');
+  await page.waitForSelector('.agui-runs');
+}
+
+interface RunCell {
+  column: string;
+  text: string;
+  known: boolean;
+  tone: string;
+  outcome: string;
+  /** Laid-out position, so "there are columns" is measured rather than assumed. */
+  left: number;
+  colour: string;
+  fontStyle: string;
+}
+
+interface RunRowShot {
+  runId: string;
+  outcome: string;
+  redacted: boolean;
+  current: boolean;
+  top: number;
+  cells: RunCell[];
+}
+
+/**
+ * Every row of the table as it is actually laid out and painted.
+ *
+ * Geometry and computed colour, not markup. The unit tests already assert the attributes; what
+ * only a browser can say is whether the eight cells land in eight columns, and whether a cell
+ * reporting an ABSENCE is drawn differently from the measurements beside it. A panel whose Runs
+ * stylesheet never loaded satisfies every other gate in this repository.
+ */
+function runTable(page: Page): Promise<RunRowShot[]> {
+  return page.$$eval('.agui-runs__row', (rows) =>
+    rows.map((row) => {
+      const box = row.getBoundingClientRect();
+      return {
+        runId: row.getAttribute('data-run-id') ?? '?',
+        outcome: row.getAttribute('data-outcome') ?? '?',
+        redacted: row.getAttribute('data-redacted') === 'true',
+        current: row.getAttribute('aria-current') === 'true',
+        top: box.top,
+        cells: [...row.querySelectorAll('.agui-runs__cell')].map((cell) => {
+          const style = getComputedStyle(cell);
+          return {
+            column: cell.getAttribute('data-column') ?? '?',
+            text: ((cell as HTMLElement).innerText || '').trim(),
+            known: cell.getAttribute('data-known') !== 'false',
+            tone: cell.getAttribute('data-tone') ?? '',
+            outcome: cell.getAttribute('data-outcome') ?? '',
+            left: cell.getBoundingClientRect().left,
+            colour: style.color,
+            fontStyle: style.fontStyle,
+          };
+        }),
+      };
+    }),
+  );
+}
+
+function headerColumns(page: Page): Promise<{ column: string; left: number }[]> {
+  return page.$$eval('.agui-runs__th', (els) =>
+    els.map((el) => ({
+      column: el.getAttribute('data-column') ?? '?',
+      left: el.getBoundingClientRect().left,
+    })),
+  );
+}
+
+/** The one cell of a row, by column. */
+function cellOf(row: RunRowShot | undefined, column: string): RunCell | undefined {
+  return row?.cells.find((cell) => cell.column === column);
+}
+
+function rowOf(rows: RunRowShot[], runId: string): RunRowShot | undefined {
+  return rows.find((row) => row.runId === runId);
+}
+
+/**
+ * Runs renders, in every state design §8 names.
+ *
+ * The load-bearing assertion is R1's: a cell whose value is NOT KNOWN — a run still going has no
+ * duration, an orphaned run has no start to measure from, a run that emitted no text has no first
+ * token — must not be drawn like the measurements beside it. Everything about that claim is
+ * invisible to every other gate.
+ *
+ * Live capture is the one §8 state not reachable here: it needs `chrome.runtime.connect` and a
+ * service worker feeding records, and it is the ONLY way to reach `outcome: 'running'` at all —
+ * the import path closes every connection, which turns an unterminated run into `aborted`. It is
+ * covered in `runs.test.tsx`, which drives the tab with `source.kind === 'live'`.
+ */
+async function checkRuns(browser: Browser, origin: string): Promise<void> {
+  /* --- empty: it explains itself rather than showing a bare header --------- */
+  {
+    const session = await openPanel(browser, origin, 'light');
+    await openRuns(session.page);
+    const text = (await session.page.textContent('.agui-runs'))?.trim() ?? '';
+    if (!/no runs to show/i.test(text)) {
+      fail(`the empty Runs tab reads ${JSON.stringify(text)}, expected it to say so.`);
+    }
+    if (await session.page.isVisible('.agui-runs__head')) {
+      fail('the empty Runs tab draws a header row over nothing, which reads as a broken table.');
+    }
+    await session.page.screenshot({ path: join(outDir, 'runs-empty.png'), fullPage: true });
+    if (session.errors.length > 0) {
+      fail(`the empty Runs tab logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+
+  /* --- four runs, four outcomes: the table, painted (R1, R3) -------------- */
+  let originalIssueCounts: Record<string, string> = {};
+  {
+    const session = await openPanel(browser, origin, 'dark');
+    await importFixture(session.page, join(fixtureDir, 'runs-edge.agui.jsonl'));
+    await openRuns(session.page);
+    await session.page.screenshot({ path: join(outDir, 'runs-edge.png'), fullPage: true });
+
+    const rows = await runTable(session.page);
+    const ids = rows.map((row) => row.runId);
+    if (ids.join(',') !== 'r_alpha,r_beta,r_gamma,__orphaned__') {
+      fail(
+        `the Runs table drew rows [${ids.join(', ')}], expected the four runs of runs-edge in ` +
+          'capture order.',
+      );
+    }
+    originalIssueCounts = Object.fromEntries(
+      rows.map((row) => [row.runId, cellOf(row, 'issues')?.text ?? 'MISSING']),
+    );
+
+    /* --- the columns are columns ---------------------------------------- */
+    const headers = await headerColumns(session.page);
+    if (headers.map((header) => header.column).join(',') !== 'run,thread,agent,outcome,duration,ttft,events,issues') {
+      fail(
+        `the Runs header reads [${headers.map((header) => header.column).join(', ')}], expected ` +
+          '§9.2’s columns behind the run id.',
+      );
+    }
+    const first = rows[0];
+    if (first === undefined) {
+      fail('the Runs table drew no rows at all on the runs-edge capture.');
+    } else {
+      const ordered = first.cells.every(
+        (cell, i) => i === 0 || cell.left > (first.cells[i - 1]?.left ?? Infinity),
+      );
+      if (!ordered) {
+        fail(
+          `a Runs row's cells are not laid out left to right: lefts ` +
+            `[${first.cells.map((cell) => Math.round(cell.left)).join(', ')}]. Cells that share an ` +
+            'x are a table whose grid never reached it.',
+        );
+      }
+      // The header and the rows share one column declaration. If they stop agreeing, every
+      // heading sits over the wrong data — worse than no heading at all.
+      for (const cell of first.cells) {
+        const header = headers.find((candidate) => candidate.column === cell.column);
+        if (header === undefined || Math.abs(header.left - cell.left) > 1) {
+          fail(
+            `the "${cell.column}" heading sits at x=${String(Math.round(header?.left ?? -1))} but ` +
+              `its cells at x=${String(Math.round(cell.left))}.`,
+          );
+        }
+      }
+    }
+
+    /* --- R3: it is the virtual list doing this --------------------------- */
+    const sizer = await session.page.$eval('.agui-runs__body .agui-vlist__sizer', (el) =>
+      Math.round(el.getBoundingClientRect().height),
+    ).catch(() => -1);
+    if (sizer !== 4 * 24) {
+      fail(
+        `the Runs body's virtual-list sizer is ${String(sizer)}px for 4 rows of 24px. R3 requires ` +
+          'the table go through common/virtual-list, whose sizer carries the whole scroll height.',
+      );
+    }
+
+    /* --- R1: the values are real ----------------------------------------- */
+    const alpha = rowOf(rows, 'r_alpha');
+    const expected: [string, string][] = [
+      ['thread', 't_alpha'],
+      ['agent', 'weather-agent'],
+      ['outcome', 'finished'],
+      ['duration', '200ms'],
+      ['ttft', '140ms'],
+      ['events', '5'],
+      ['issues', '0'],
+    ];
+    for (const [column, want] of expected) {
+      const got = cellOf(alpha, column)?.text ?? 'MISSING';
+      if (got !== want) {
+        fail(`r_alpha's ${column} cell reads ${JSON.stringify(got)}, expected ${JSON.stringify(want)}.`);
+      }
+    }
+
+    /*
+     * THE ASSERTION THIS TAB EXISTS FOR.
+     *
+     * The comparison has to be against a cell in the SAME COLUMN. Measured, by deleting the
+     * `[data-known='false']` rule and re-running this gate: an unknown cell reverts to the row's
+     * own colour, which still differs from the muted heading and from the toned issue count — so
+     * comparing against anything else passes a panel in which an absence is drawn exactly like a
+     * measurement. r_alpha's duration is a number; the orphan's is not.
+     */
+    const knownDuration = cellOf(alpha, 'duration');
+    const absentDuration = cellOf(rowOf(rows, '__orphaned__'), 'duration');
+    if (knownDuration === undefined || absentDuration === undefined) {
+      fail('the Runs table has no duration cell to compare a known value against an absent one.');
+    } else {
+      if (absentDuration.text !== 'no run start') {
+        fail(
+          `the orphaned run's duration reads ${JSON.stringify(absentDuration.text)}. It has no ` +
+            'RUN_STARTED, so there is no start to measure from — and no number to print.',
+        );
+      }
+      if (
+        absentDuration.colour === knownDuration.colour &&
+        absentDuration.fontStyle === knownDuration.fontStyle
+      ) {
+        fail(
+          `a cell reporting an ABSENCE is drawn ${absentDuration.colour} / ` +
+            `${absentDuration.fontStyle}, exactly like the measured duration in the same column. ` +
+            'R1 asks for the absence rendered honestly; a cell that looks like every other is ' +
+            'read as a value the panel computed.',
+        );
+      }
+      if (absentDuration.colour === 'rgba(0, 0, 0, 0)') {
+        fail('the absent-value rule paints a transparent colour — it did not reach the document.');
+      }
+    }
+
+    // The other two absences, in words, on screen.
+    const shown = await session.page.$eval('.agui-runs', (el) => (el as HTMLElement).innerText);
+    if (!shown.includes('no text')) {
+      fail(
+        'no run reports "no text" for TTFT. r_beta ran a tool and emitted no token at all, and ' +
+          'the honest report of that is not 0ms.',
+      );
+    }
+    if (!shown.includes('not reported')) {
+      fail('no run reports its agent as "not reported"; three of the four carried no agentId.');
+    }
+
+    /* --- the outcomes are distinguishable -------------------------------- */
+    const outcomes = rows.map((row) => cellOf(row, 'outcome')).filter((cell) => cell !== undefined);
+    if (outcomes.map((cell) => cell.text).join(',') !== 'finished,error,aborted,orphaned') {
+      fail(
+        `the outcome column reads [${outcomes.map((cell) => cell.text).join(', ')}], expected ` +
+          'finished, error, aborted, orphaned.',
+      );
+    }
+    const finishedOutcome = outcomes[0];
+    const errorOutcome = outcomes[1];
+    if (
+      finishedOutcome !== undefined &&
+      errorOutcome !== undefined &&
+      finishedOutcome.colour === errorOutcome.colour
+    ) {
+      fail(
+        `a run that ERRORED is painted ${errorOutcome.colour}, exactly like one that finished. ` +
+          'The outcome column is the first thing a reader scans.',
+      );
+    }
+
+    /* --- the issue count is toned by the worst issue on the run ---------- */
+    const cleanIssues = cellOf(alpha, 'issues');
+    const brokenIssues = cellOf(rowOf(rows, 'r_gamma'), 'issues');
+    if (cleanIssues === undefined || brokenIssues === undefined) {
+      fail('the Runs table drew no issue cells to compare.');
+    } else {
+      if (brokenIssues.text !== '2' || cleanIssues.text !== '0') {
+        fail(
+          `the issue counts read r_alpha=${cleanIssues.text}, r_gamma=${brokenIssues.text}, ` +
+            'expected 0 and 2.',
+        );
+      }
+      if (brokenIssues.colour === cleanIssues.colour) {
+        fail(
+          `a run carrying two validator issues has its count painted ${brokenIssues.colour}, ` +
+            'exactly like a clean run’s zero. The count is the reason to click the row.',
+        );
+      }
+    }
+
+    /* --- R2: clicking a row really lands on Timeline, scoped ------------- */
+    await session.page.click('[data-testid="run-row-r_gamma"]');
+    await session.page.waitForSelector('.agui-timeline');
+    const selected = await seqsOf(session.page, '.agui-event-row[aria-selected="true"]');
+    if (selected.join(',') !== '11') {
+      fail(
+        `clicking the r_gamma row selected seqs [${selected.join(', ')}] in Timeline, expected ` +
+          '[11] — its first record (R2).',
+      );
+    }
+    const scope = (await session.page.textContent('.agui-run-selector__trigger'))?.trim() ?? '';
+    if (!scope.includes('r_gamma')) {
+      fail(
+        `clicking a Runs row left the scope reading ${JSON.stringify(scope)}. R2 is "scopes to ` +
+          'that run AND switches to Timeline"; without the scope the other three runs are still ' +
+          'on screen.',
+      );
+    }
+    const listed = await seqsOf(session.page, '.agui-event-row');
+    if (listed.join(',') !== '11,12,13') {
+      fail(
+        `the Timeline the click landed on lists seqs [${listed.join(', ')}], expected r_gamma's ` +
+          'three records and nothing else.',
+      );
+    }
+    await session.page.screenshot({ path: join(outDir, 'runs-located.png'), fullPage: true });
+
+    // Back on Runs, the row that is now the scope says so.
+    await openRuns(session.page);
+    const scoped = (await runTable(session.page)).filter((row) => row.current);
+    if (scoped.map((row) => row.runId).join(',') !== 'r_gamma') {
+      fail(
+        `after scoping to r_gamma the Runs table marks [${scoped.map((row) => row.runId).join(', ')}] ` +
+          'as current. This table is the scope picker, so it has to show which run is in force.',
+      );
+    }
+    if ((await runTable(session.page)).length !== 4) {
+      fail(
+        'the Runs table filtered itself to the scoped run. The tab whose job is choosing a run ' +
+          'must keep showing the choices.',
+      );
+    }
+    await session.page.screenshot({ path: join(outDir, 'runs-scoped.png'), fullPage: true });
+
+    if (session.errors.length > 0) {
+      fail(`Runs on an imported capture logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+
+  /* --- a redacted capture, produced by the real export and re-imported ---- */
+  {
+    const producer = await openPanel(browser, origin, 'light');
+    await importFixture(producer.page, join(fixtureDir, 'runs-edge.agui.jsonl'));
+    await producer.page.click('button[role="tab"][id="agui-tab-session"]');
+    await producer.page.waitForSelector('.agui-export');
+    await producer.page.click('.agui-export__groups button:has-text("Redact everything")');
+    const saved = await clickAndSave(
+      producer.page,
+      'button:has-text("Download capture")',
+      'Runs (redacted)',
+    );
+    await producer.close();
+    if (saved === null) return;
+
+    const redactedPath = join(outDir, 'runs-redacted.agui.jsonl');
+    writeFileSync(redactedPath, saved.text, 'utf8');
+
+    const session = await openPanel(browser, origin, 'light');
+    await importFixture(session.page, redactedPath);
+    await openRuns(session.page);
+    await session.page.screenshot({ path: join(outDir, 'runs-redacted.png'), fullPage: true });
+
+    const rows = await runTable(session.page);
+    /*
+     * Count first, and count for real.
+     *
+     * Every assertion below this line is over `rows`, and `[].every(...)` is `true` — so a
+     * selector that stopped matching would let the whole redaction phase pass having examined
+     * nothing at all. That is the exact way a gate stops being a gate.
+     */
+    if (rows.length !== 4) {
+      fail(
+        `the redacted capture drew ${String(rows.length)} Runs rows, expected 4. Nothing below ` +
+          'this line asserts anything about a table that is not there.',
+      );
+      await session.close();
+      return;
+    }
+    if (!rows.every((row) => row.redacted)) {
+      fail(
+        `only [${rows.filter((row) => row.redacted).map((row) => row.runId).join(', ')}] of the ` +
+          'redacted capture’s rows are marked redacted. Every value in this file is a placeholder.',
+      );
+    }
+    const flag = await session.page
+      .$eval('.agui-runs__redacted-flag', (el) => getComputedStyle(el).backgroundColor)
+      .catch(() => 'MISSING');
+    if (flag === 'MISSING' || flag === 'rgba(0, 0, 0, 0)') {
+      fail(
+        `the per-row redaction mark has background ${flag} — a redacted run is drawn exactly ` +
+          'like a live one, on the surface a colleague opening a bug report reads first.',
+      );
+    }
+    const note = (await session.page.textContent('[data-testid="runs-redacted"]'))?.trim() ?? '';
+    if (!/redacted/i.test(note)) {
+      fail('a redacted capture does not say so on the Runs tab.');
+    }
+
+    /*
+     * REDACTION REMOVES EVIDENCE; IT MUST NOT ADD FINDINGS.
+     *
+     * Reported as the real counts on both sides rather than as a bare pass, because a selector
+     * that stopped matching would otherwise let this assert nothing at all.
+     */
+    for (const row of rows) {
+      const before = originalIssueCounts[row.runId];
+      const after = cellOf(row, 'issues')?.text ?? 'MISSING';
+      if (before === undefined || after === 'MISSING') {
+        fail(`could not compare issue counts for ${row.runId} (before=${String(before)}, after=${after}).`);
+      } else if (Number(after) > Number(before)) {
+        fail(
+          `${row.runId} reports ${after} issues after redaction and ${before} before it. ` +
+            'Redaction destroys evidence; a finding it invented is a finding about the exporter ' +
+            'presented as one about the user’s agent.',
+        );
+      }
+    }
+    // §11 keeps ids, structure, ordering and timing, so every measurement in this table survives.
+    const alpha = rowOf(rows, 'r_alpha');
+    for (const [column, want] of [
+      ['duration', '200ms'],
+      ['ttft', '140ms'],
+      ['agent', 'weather-agent'],
+      ['events', '5'],
+    ] as [string, string][]) {
+      const got = cellOf(alpha, column)?.text ?? 'MISSING';
+      if (got !== want) {
+        fail(
+          `r_alpha's ${column} reads ${JSON.stringify(got)} after redaction, expected ` +
+            `${JSON.stringify(want)}. §11 replaces values, not timing, ids or structure — and ` +
+            'this table shows none of the things redaction removes.',
+        );
+      }
+    }
+
+    if (session.errors.length > 0) {
+      fail(`Runs on a redacted capture logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Phase 3 — does a real click produce a real file? (design decision E1)       */
 /* -------------------------------------------------------------------------- */
 
@@ -1263,6 +1706,7 @@ async function main(): Promise<void> {
     if (failures.length === 0) await checkFixtures(browser, server.origin);
     if (failures.length === 0) await checkMessages(browser, server.origin);
     if (failures.length === 0) await checkState(browser, server.origin);
+    if (failures.length === 0) await checkRuns(browser, server.origin);
     if (failures.length === 0) await checkExport(browser, server.origin);
   } finally {
     await browser.close();
@@ -1320,6 +1764,24 @@ async function main(): Promise<void> {
   console.log(
     `  redacted: placeholders, paths kept, the same two failures still marked in place — ` +
       `${outDir}/state-redacted.png`,
+  );
+  console.log('Runs renders in every state design §8 names:');
+  console.log(`  empty: says so rather than drawing a bare header — ${outDir}/runs-empty.png`);
+  console.log(
+    `  imported: 4 runs in 8 aligned columns through the virtual list; absent duration and TTFT ` +
+      `drawn apart from measured ones — ${outDir}/runs-edge.png`,
+  );
+  console.log(
+    `  issues: the error outcome and the toned issue count are painted apart from a clean run — ` +
+      `${outDir}/runs-edge.png`,
+  );
+  console.log(
+    `  R2: clicking r_gamma scopes the panel and leaves Timeline on seqs 11-13, seq 11 selected — ` +
+      `${outDir}/runs-located.png, ${outDir}/runs-scoped.png`,
+  );
+  console.log(
+    `  redacted: every row marked, no run gains an issue, every measurement survives — ` +
+      `${outDir}/runs-redacted.png`,
   );
   console.log('the post-grant Reload control is styled (.agui-app__note-action).');
   console.log('panel issued no off-origin requests (requirements §11).');
