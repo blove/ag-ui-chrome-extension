@@ -164,7 +164,7 @@ describe('installEventSourcePatch — capture (§5.3)', () => {
     uninstall();
   });
 
-  it('re-serializes a delivered frame into canonical SSE text', () => {
+  it('reports the delivered payload as raw, with no frame syntax added', () => {
     const { posted, scope, uninstall } = setup();
     const source = new scope.EventSource('/sse');
     (source as FakeEventSource).deliver('{"type":"RUN_STARTED","threadId":"t1"}');
@@ -177,34 +177,34 @@ describe('installEventSourcePatch — capture (§5.3)', () => {
       {
         kind: 'event',
         tMs: expect.any(Number),
-        raw: 'data: {"type":"RUN_STARTED","threadId":"t1"}\n',
+        raw: '{"type":"RUN_STARTED","threadId":"t1"}',
       },
     ]);
     uninstall();
   });
 
-  it('includes the id line only when the browser reports one', () => {
+  it('reports the same raw whether or not the browser supplies an event id', () => {
     const { posted, scope, uninstall } = setup();
     const source = new scope.EventSource('/sse');
     (source as FakeEventSource).deliver('{"type":"A"}', '42');
-    (source as FakeEventSource).deliver('{"type":"B"}');
+    (source as FakeEventSource).deliver('{"type":"A"}');
 
     const raws = posted.flatMap((message) =>
       message.kind === 'frames' ? message.frames.map((frame) => frame.raw) : [],
     );
-    expect(raws).toEqual(['id: 42\ndata: {"type":"A"}\n', 'data: {"type":"B"}\n']);
+    // `raw` is the payload, so an `id:` on the wire cannot change it. The id is not captured at
+    // all today; if it is ever needed it gets its own field rather than being spliced in here.
+    expect(raws).toEqual(['{"type":"A"}', '{"type":"A"}']);
     uninstall();
   });
 
-  it('splits multi-line data back into one data line each', () => {
+  it('keeps multi-line data as the payload the browser assembled', () => {
     const { posted, scope, uninstall } = setup();
     const source = new scope.EventSource('/sse');
     (source as FakeEventSource).deliver('{"a":1,\n"b":2}');
 
     const message = posted[1];
-    expect(message?.kind === 'frames' && message.frames[0]?.raw).toBe(
-      'data: {"a":1,\ndata: "b":2}\n',
-    );
+    expect(message?.kind === 'frames' && message.frames[0]?.raw).toBe('{"a":1,\n"b":2}');
     uninstall();
   });
 

@@ -3,12 +3,13 @@
  *
  * DIFFERENT CODE PATH, on purpose: `EventSource` frames arrive *already parsed* by the browser.
  * There is no response body to tee and no text to slice, so `core/sse/parser` is not used here at
- * all — the `MessageEvent` hands us `data`, `lastEventId` and the event type, and this module
- * re-serializes them into the canonical frame text `WireFrame.raw` carries. That re-serialization
- * is the only place in the capture layer where `raw` is a reconstruction rather than a copy of
- * what crossed the wire: the browser consumed the wire text before we could see it.
+ * all — the `MessageEvent` hands us `data`, and that string is exactly what `WireFrame.raw` is
+ * defined to carry, so it is passed through unchanged. This is the one transport where `raw` is
+ * assembled by the browser rather than read off the wire: `data` is already the payload with its
+ * `data:` prefixes stripped and its lines joined by `\n`, which is what the other two transports
+ * produce from the wire text themselves.
  *
- * Two consequences worth stating rather than absorbing:
+ * Three consequences worth stating rather than absorbing:
  *  - A frame's `tMs` is when the browser *dispatched* the event, not when its first byte landed
  *    (§5.5). Comparable to XHR's fidelity, better than nothing, worse than `fetch`.
  *  - Only the default `message` type is mirrored. A named `event:` frame reaches the page through
@@ -17,8 +18,13 @@
  *    transport §5.3 already calls rare because `EventSource` cannot send a POST body and AG-UI's
  *    `RunAgentInput` has to go somewhere. Named frames are simply not captured; they are not
  *    silently mislabelled.
+ *  - Keepalive comments are invisible here. The browser consumes `: ping` frames to keep the
+ *    connection alive and never surfaces them, so an `EventSource` capture has no keepalive
+ *    frames at all — not zero-length ones, none. §8's gap metrics are correspondingly blind on
+ *    this transport.
  */
-import { AGUI_DT_SOURCE, PROTOCOL_VERSION, type InjectMessage, type WireFrame } from './protocol';
+import { AGUI_DT_SOURCE, PROTOCOL_VERSION, type InjectMessage } from './protocol';
+import { eventFrame } from './wire-frame';
 
 /** The slice of `EventSource` this patch touches. Keeps the tests free of a real one. */
 export interface EventSourceLike extends EventTarget {
@@ -47,14 +53,6 @@ export interface EventSourcePatchOptions {
 
 function isMessageEvent(event: Event): event is MessageEvent<unknown> {
   return 'data' in event;
-}
-
-/** Canonical SSE text for a frame the browser already parsed. */
-function toRaw(data: string, lastEventId: string): string {
-  const lines: string[] = [];
-  if (lastEventId !== '') lines.push(`id: ${lastEventId}`);
-  for (const dataLine of data.split('\n')) lines.push(`data: ${dataLine}`);
-  return `${lines.join('\n')}\n`;
 }
 
 /**
@@ -121,9 +119,10 @@ export function installEventSourcePatch(options: EventSourcePatchOptions): () =>
       super.addEventListener('message', (event: Event): void => {
         try {
           if (!isMessageEvent(event)) return;
+          // `raw` is the payload and nothing else, so `lastEventId` is deliberately not folded
+          // into it — a frame carrying an id must produce the same `raw` as one without.
           const data = typeof event.data === 'string' ? event.data : String(event.data);
-          const lastEventId = typeof event.lastEventId === 'string' ? event.lastEventId : '';
-          const frame: WireFrame = { kind: 'event', tMs: now(), raw: toRaw(data, lastEventId) };
+          const frame = eventFrame(data, now());
           emit({
             source: AGUI_DT_SOURCE,
             v: PROTOCOL_VERSION,

@@ -180,8 +180,8 @@ describe('relay — forwarding', () => {
       kind: 'frames',
       connId: 'c1',
       frames: [
-        { kind: 'event', tMs: 1, raw: 'data: {"type":"RUN_STARTED"}\n' },
-        { kind: 'keepalive', tMs: 2, raw: ':ping\n', comment: 'ping' },
+        { kind: 'event', tMs: 1, raw: '{"type":"RUN_STARTED"}' },
+        { kind: 'keepalive', tMs: 2, raw: ':ping\n\n', comment: 'ping' },
       ],
     });
     expect(delivered(chromeHarness)).toEqual([
@@ -190,8 +190,8 @@ describe('relay — forwarding', () => {
         kind: 'frames',
         connId: 'c1',
         frames: [
-          { kind: 'event', tMs: 1, raw: 'data: {"type":"RUN_STARTED"}\n' },
-          { kind: 'keepalive', tMs: 2, raw: ':ping\n', comment: 'ping' },
+          { kind: 'event', tMs: 1, raw: '{"type":"RUN_STARTED"}' },
+          { kind: 'keepalive', tMs: 2, raw: ':ping\n\n', comment: 'ping' },
         ],
       },
     ]);
@@ -235,7 +235,7 @@ describe('relay — forwarding', () => {
       v: PROTOCOL_VERSION,
       kind: 'frames',
       connId: 'c1',
-      frames: [{ kind: 'event', tMs: 1, raw: 'data: {}\n', stolen: 'secret' }],
+      frames: [{ kind: 'event', tMs: 1, raw: '{}', stolen: 'secret' }],
     });
 
     const [open, frames] = delivered(chromeHarness) as Record<string, unknown>[];
@@ -327,7 +327,7 @@ describe('relay — hostile input is dropped silently', () => {
           v: PROTOCOL_VERSION,
           kind: 'frames',
           connId: 'c1',
-          frames: [{ kind: 'keepalive', tMs: 1, raw: ':x\n' }],
+          frames: [{ kind: 'keepalive', tMs: 1, raw: ':x\n\n' }],
         }),
     ],
     [
@@ -338,7 +338,7 @@ describe('relay — hostile input is dropped silently', () => {
           v: PROTOCOL_VERSION,
           kind: 'frames',
           connId: 'c1',
-          frames: [{ kind: 'event', tMs: 1, raw: 'data: {}\n' }, null],
+          frames: [{ kind: 'event', tMs: 1, raw: '{}' }, null],
         }),
     ],
     ['a bare string', () => post('data: {"type":"RUN_STARTED"}')],

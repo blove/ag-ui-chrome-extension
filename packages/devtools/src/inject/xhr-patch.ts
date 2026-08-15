@@ -12,9 +12,10 @@
  * this ("Lower fidelity on timing than fetch; acceptable") — this comment is here so nobody later
  * reads a flat-looking XHR waterfall as a finding about the server.
  */
-import { createSseParser, type SseFrame, type SseParser } from '../core/sse/parser';
+import { createSseParser, type SseParser } from '../core/sse/parser';
 
 import { AGUI_DT_SOURCE, PROTOCOL_VERSION, type InjectMessage, type WireFrame } from './protocol';
+import { sseFrameToWireFrame } from './wire-frame';
 
 /** The slice of `XMLHttpRequest` this patch touches. Keeps the tests free of a real XHR. */
 export interface XhrLike extends EventTarget {
@@ -115,19 +116,6 @@ export function snapshotXhrBody(body: unknown): unknown {
   return '[unreadable body]';
 }
 
-/** Canonical SSE text for a parsed frame. See the `raw` note in the plan's contract gaps. */
-export function frameToWireFrame(frame: SseFrame, tMs: number): WireFrame {
-  if (frame.kind === 'keepalive') {
-    return { kind: 'keepalive', tMs, raw: `:${frame.comment}\n`, comment: frame.comment };
-  }
-  const lines: string[] = [];
-  if (frame.eventName !== undefined) lines.push(`event: ${frame.eventName}`);
-  if (frame.id !== undefined) lines.push(`id: ${frame.id}`);
-  if (frame.retry !== undefined) lines.push(`retry: ${frame.retry}`);
-  for (const dataLine of frame.data.split('\n')) lines.push(`data: ${dataLine}`);
-  return { kind: 'event', tMs, raw: `${lines.join('\n')}\n` };
-}
-
 function byteLength(response: unknown, responseText: string): number {
   if (response instanceof ArrayBuffer) return response.byteLength;
   if (ArrayBuffer.isView(response)) return response.byteLength;
@@ -198,10 +186,10 @@ export function installXhrPatch(options: XhrPatchOptions): () => void {
     const tMs = now();
     const frames: WireFrame[] = [];
     if (chunk !== '') {
-      for (const frame of parser.push(chunk)) frames.push(frameToWireFrame(frame, tMs));
+      for (const frame of parser.push(chunk)) frames.push(sseFrameToWireFrame(frame, tMs));
     }
     if (final) {
-      for (const frame of parser.flush()) frames.push(frameToWireFrame(frame, tMs));
+      for (const frame of parser.flush()) frames.push(sseFrameToWireFrame(frame, tMs));
     }
     if (frames.length === 0) return;
     emit({

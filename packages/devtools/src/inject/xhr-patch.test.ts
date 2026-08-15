@@ -229,8 +229,8 @@ describe('installXhrPatch — readyState 3 slicing (§5.2)', () => {
     const frameMessages = posted.filter((message) => message.kind === 'frames');
     expect(frameMessages).toHaveLength(2);
     expect(framesOf(posted)).toEqual([
-      'data: {"type":"RUN_STARTED"}\n',
-      'data: {"type":"TEXT_MESSAGE_START"}\n',
+      '{"type":"RUN_STARTED"}',
+      '{"type":"TEXT_MESSAGE_START"}',
     ]);
   });
 
@@ -245,7 +245,7 @@ describe('installXhrPatch — readyState 3 slicing (§5.2)', () => {
     expect(posted.filter((message) => message.kind === 'frames')).toHaveLength(0);
     xhr.chunk('AGE_CONTENT","delta":"hi"}\n\n');
 
-    expect(framesOf(posted)).toEqual(['data: {"type":"TEXT_MESSAGE_CONTENT","delta":"hi"}\n']);
+    expect(framesOf(posted)).toEqual(['{"type":"TEXT_MESSAGE_CONTENT","delta":"hi"}']);
   });
 
   it('records keepalive comments as keepalive frames', () => {
@@ -261,13 +261,13 @@ describe('installXhrPatch — readyState 3 slicing (§5.2)', () => {
     expect(frames[0]).toEqual({
       kind: 'keepalive',
       tMs: expect.any(Number),
-      raw: ':ping\n',
+      raw: ':ping\n\n',
       comment: 'ping',
     });
     expect(frames[1]?.kind).toBe('event');
   });
 
-  it('preserves event name, id and multi-line data in the reconstructed frame text', () => {
+  it('reports multi-line data as the payload, without the frame syntax around it', () => {
     const { posted, create } = setup();
     const xhr = create();
     xhr.open('POST', '/run');
@@ -275,7 +275,10 @@ describe('installXhrPatch — readyState 3 slicing (§5.2)', () => {
     xhr.headersReceived(SSE);
     xhr.chunk('event: message\nid: 7\ndata: {"a":1,\ndata: "b":2}\n\n');
 
-    expect(framesOf(posted)).toEqual(['event: message\nid: 7\ndata: {"a":1,\ndata: "b":2}\n']);
+    // `raw` is what `JSON.parse` consumes: data lines joined by \n, no `data:` prefixes, and no
+    // `event:`/`id:` lines. Dropping those is the contract, not an oversight — see `WireFrame`.
+    expect(framesOf(posted)).toEqual(['{"a":1,\n"b":2}']);
+    expect(JSON.parse(framesOf(posted)[0] ?? '')).toEqual({ a: 1, b: 2 });
   });
 
   it('gives every frame from one slice the same timestamp — the §5.2 fidelity limit', () => {
@@ -301,7 +304,7 @@ describe('installXhrPatch — readyState 3 slicing (§5.2)', () => {
     expect(framesOf(posted)).toEqual([]);
     xhr.finish();
 
-    expect(framesOf(posted)).toEqual(['data: {"type":"RUN_FINISHED"}\n']);
+    expect(framesOf(posted)).toEqual(['{"type":"RUN_FINISHED"}']);
     expect(kinds(posted)).toEqual(['conn-open', 'frames', 'conn-close']);
   });
 
