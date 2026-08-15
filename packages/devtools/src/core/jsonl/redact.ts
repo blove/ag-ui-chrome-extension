@@ -78,22 +78,79 @@ function redactEvent(event: unknown, groups: ReadonlySet<RedactionGroup>): unkno
     }
   }
 
+  /*
+   * `RUN_STARTED` is a lifecycle event that can nonetheless carry a full payload: `input` is an
+   * optional protocol field (@ag-ui/core `RunStartedEventSchema`) echoing the whole
+   * `RunAgentInput` — the user's messages, the app's state, the forwarded props.
+   *
+   * Found by Tier B recording against a live agent. Every hand-written fixture omits `input`,
+   * so the suite had agreed this event carries nothing to protect, while a real deployment
+   * sends it on every run. Redacting the request body and not this one protects nothing: the
+   * same prompt ships in the export either way.
+   */
+  if (type === 'RUN_STARTED' && 'input' in src) {
+    return { ...src, input: redactInput(src.input, groups) };
+  }
+
   return event;
 }
 
-function redactInput(input: unknown): unknown {
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) return input;
-  const src = input as Record<string, unknown>;
-  if (!Array.isArray(src.messages)) return { ...src };
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
-  const messages = src.messages.map((message) => {
-    if (message === null || typeof message !== 'object' || Array.isArray(message)) return message;
-    const msg = message as Record<string, unknown>;
-    if (!('content' in msg)) return { ...msg };
-    return { ...msg, content: redactDeep(msg.content) };
-  });
+/**
+ * One message of a `RunAgentInput.messages` array.
+ *
+ * Group ownership is per field rather than per line. A message's `content` is authored text
+ * except on a `tool`-role message, where it is a tool result — so `toolResults` owns it there
+ * and `text` must not reach it, or deselecting `toolResults` could not protect it.
+ */
+function redactMessage(message: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
+  if (!isPlainObject(message)) return message;
+  const out: Record<string, unknown> = { ...message };
 
-  return { ...src, messages };
+  const contentGroup: RedactionGroup = message.role === 'tool' ? 'toolResults' : 'text';
+  if ('content' in message && groups.has(contentGroup)) {
+    out.content = redactDeep(message.content);
+  }
+
+  // An assistant message replays its tool calls, arguments included, as a JSON string.
+  if (groups.has('toolArgs') && Array.isArray(message.toolCalls)) {
+    out.toolCalls = message.toolCalls.map((call) => {
+      if (!isPlainObject(call) || !isPlainObject(call.function)) return call;
+      const fn = call.function;
+      if (!('arguments' in fn)) return call;
+      return { ...call, function: { ...fn, arguments: redactLeaf(fn.arguments) } };
+    });
+  }
+
+  return out;
+}
+
+/**
+ * A `RunAgentInput`, wherever it appears — the captured request body, or the copy the protocol
+ * echoes back in `RUN_STARTED.input`.
+ *
+ * `tools` deliberately survives: a tool schema is developer-authored structure, no §11 group
+ * owns it, and it is most of what makes a captured run legible.
+ */
+function redactInput(input: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
+  if (!isPlainObject(input)) return input;
+  const out: Record<string, unknown> = { ...input };
+
+  if (Array.isArray(input.messages)) {
+    out.messages = input.messages.map((message) => redactMessage(message, groups));
+  }
+
+  // App-supplied payloads, all of which can carry anything the page had in scope.
+  if (groups.has('state')) {
+    for (const key of ['state', 'context', 'forwardedProps']) {
+      if (key in input) out[key] = redactDeep(input[key]);
+    }
+  }
+
+  return out;
 }
 
 /**
@@ -109,8 +166,9 @@ export function redactLine(line: JsonlLine, groups: RedactionGroup[]): JsonlLine
     return { ...line, event: redactEvent(line.event, set) };
   }
   if (line.kind === 'request') {
-    if (!set.has('state')) return line;
-    return { ...line, input: redactInput(line.input) };
+    // Gated per field inside `redactInput`, not wholesale on `state`. Gating the whole body on
+    // one group meant selecting `text` left the user's own messages verbatim.
+    return { ...line, input: redactInput(line.input, set) };
   }
   // `header` and `keepalive` fall through unchanged. Requirements §11's five groups are
   // text/reasoning/toolArgs/toolResults/state and none covers either kind: a keepalive

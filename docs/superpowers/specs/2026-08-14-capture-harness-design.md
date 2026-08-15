@@ -114,10 +114,39 @@ first green test. Every subsequent capture commit turns more of that assertion p
 
 ## 9. Open questions
 
-1. **aimock's `AGUIMock` is unproven for us.** The types have been read, not run. Twenty minutes
-   standing it up with one fixture should precede planning.
-2. **What real agent does Tier B record from?** Candidates: the Threadplane `examples/ag-ui/python`
-   LangGraph backend, the AG-UI Dojo (`~/repos/ag-ui/apps/dojo`, named in D6), or the production
-   deployment. The Dojo is the most neutral for an MIT repo; production is the most representative.
+1. ~~**aimock's `AGUIMock` is unproven for us.**~~ Resolved during planning: stood up, and two
+   limits found (F1) — it cannot emit SSE comments or a non-`text/event-stream` content type, so
+   the harness server writes those two scenarios itself.
+2. ~~**What real agent does Tier B record from?**~~ **Resolved: the AG-UI Dojo**, `builtin`
+   integration → `BuiltInAgent` (`openai/gpt-5-mini`) at
+   `/api/copilotkitnext/builtin/agent/default/run`. No Python backend, no second process — just
+   `OPENAI_API_KEY` (F6). Recorded 2026-08-15; see `packages/harness/fixtures/recorded/`.
 3. **How much rendering does the harness page need?** Enough to compare against the Messages tab is
    more than enough to test capture. Start minimal; grow only if the comparison earns it.
+
+## 10. What Tier B found on its first run
+
+Recorded 2026-08-15. The recording was **refused**: the H7 redaction gate caught a payload string
+surviving `redact.ts`, wrote nothing, and named the file to fix. The defect behind it:
+
+**`RUN_STARTED` carries an optional `input` field** (`@ag-ui/core`'s `RunStartedEventSchema`) that
+echoes the whole `RunAgentInput` back over the wire — the user's messages, the app's state, its
+forwarded props. `redact.ts` handled that payload on the captured *request* line and had no case
+for it on the *event*, so the identical content shipped unredacted from a different field.
+
+This is the failure mode §1 predicts, arriving exactly as predicted: all three hand-written golden
+fixtures omit `input`, so 355 core tests agreed that lifecycle events carry nothing to protect,
+while a real deployment sends it on every run. Nothing in the suite could have found it, because
+the suite and the fixtures shared one assumption.
+
+A second hole surfaced in the same function while fixing the first: the captured request body was
+gated wholesale on the `state` group, so selecting `text` — the group whose plain meaning is "my
+prompts" — still exported the user's own messages verbatim. Group ownership is now per field:
+message content → `text`, a `tool`-role message body → `toolResults`, tool call arguments →
+`toolArgs`, and `state`/`context`/`forwardedProps` → `state`. A tool *schema* survives under every
+group: it is developer-authored structure, no §11 group owns it, and it is most of what makes a
+captured run legible.
+
+The harness's own leak checker shared the blind spot — it deliberately restates §11 rather than
+importing `redact.ts`, but it restated the same incomplete list — so `payloadStrings` in
+`record.ts` now covers `RUN_STARTED.input` too.

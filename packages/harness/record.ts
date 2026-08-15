@@ -114,6 +114,33 @@ function payloadStrings(event: unknown): string[] {
         for (const op of event.delta) if (isObject(op)) stringLeaves(op.value, out);
       }
       break;
+    /*
+     * `RUN_STARTED.input` echoes the whole `RunAgentInput` — the user's messages, the app's
+     * state, its forwarded props. A live recording is what revealed the redactor was missing
+     * it; this gate would have said nothing, because it shared the same blind spot.
+     *
+     * Only the payload fields are listed. `id`, `role`, `threadId`, `tools` and a tool call's
+     * `name` survive redaction by design, so treating them as payload would report a leak on
+     * every clean recording.
+     */
+    case 'RUN_STARTED': {
+      const input = event.input;
+      if (!isObject(input)) break;
+      if (Array.isArray(input.messages)) {
+        for (const message of input.messages) {
+          if (!isObject(message)) continue;
+          stringLeaves(message.content, out);
+          if (!Array.isArray(message.toolCalls)) continue;
+          for (const call of message.toolCalls) {
+            if (isObject(call) && isObject(call.function)) stringLeaves(call.function.arguments, out);
+          }
+        }
+      }
+      stringLeaves(input.state, out);
+      stringLeaves(input.context, out);
+      stringLeaves(input.forwardedProps, out);
+      break;
+    }
     default:
       break;
   }

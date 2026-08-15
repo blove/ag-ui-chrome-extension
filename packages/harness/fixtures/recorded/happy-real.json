@@ -1,0 +1,135 @@
+{
+  "fixtures": [
+    {
+      "match": {
+        "message": "In one short sentence, what is the AG-UI protocol?"
+      },
+      "events": [
+        {
+          "type": "RUN_STARTED",
+          "threadId": "t_639889f7",
+          "runId": "r_039e6de3",
+          "input": {
+            "threadId": "t_639889f7",
+            "runId": "r_039e6de3",
+            "state": {},
+            "messages": [
+              {
+                "id": "u1",
+                "role": "user",
+                "content": "«redacted: 50 chars»"
+              }
+            ],
+            "tools": [],
+            "context": [],
+            "forwardedProps": {}
+          }
+        },
+        {
+          "type": "TEXT_MESSAGE_START",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "role": "assistant"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 3 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 3 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 1 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 2 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 9 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 7 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 8 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 10 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 4 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 9 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 3 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 5 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 11 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 8 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 11 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 5 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 9 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca",
+          "delta": "«redacted: 1 chars»"
+        },
+        {
+          "type": "TEXT_MESSAGE_END",
+          "messageId": "msg_02675991e69fd947006a807d396d5c8198b6fd83c63ed24dca"
+        },
+        {
+          "type": "RUN_FINISHED",
+          "threadId": "t_639889f7",
+          "runId": "r_039e6de3"
+        }
+      ]
+    }
+  ]
+}
