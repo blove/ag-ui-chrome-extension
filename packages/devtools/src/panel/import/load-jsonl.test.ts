@@ -130,6 +130,68 @@ describe('loadJsonl: bad input', () => {
   it('returns empty everything for an empty string', () => {
     const loaded = loadJsonl('');
 
-    expect(loaded).toEqual({ runs: [], records: [], issues: [], decodeErrors: [] });
+    expect(loaded).toEqual({
+      runs: [],
+      records: [],
+      requests: [],
+      issues: [],
+      header: null,
+      decodeErrors: [],
+    });
+  });
+});
+
+describe('loadJsonl: what an export has to put back', () => {
+  it('keeps the request lines, which hold the RunAgentInput no record carries', () => {
+    const loaded = loadJsonl(fixture('happy-run.agui.jsonl'));
+
+    expect(loaded.requests).toEqual([
+      {
+        connId: 'c1',
+        tMs: 0,
+        method: 'POST',
+        url: '/api/copilotkit/agent/default/run',
+        input: {
+          threadId: 't_happy',
+          runId: 'r_happy',
+          state: { counter: 0 },
+          messages: [{ id: 'm_user_1', role: 'user', content: 'What is the weather in Paris?' }],
+          tools: [],
+          context: [],
+          forwardedProps: {},
+        },
+      },
+    ]);
+  });
+
+  it('keeps the header, which is where E3 reads what was already redacted', () => {
+    const loaded = loadJsonl(fixture('happy-run.agui.jsonl'));
+
+    expect(loaded.header).toEqual({
+      kind: 'header',
+      schemaVersion: 1,
+      tool: 'ag-ui-devtools@0.1.0',
+      capturedAt: '2026-08-13T10:00:00.000Z',
+      url: 'http://localhost:3000/',
+      framework: 'react/copilotkit',
+      transport: 'sse',
+      redacted: [],
+    });
+  });
+
+  it('reports no header rather than inventing one when the file has none', () => {
+    const loaded = loadJsonl(
+      '{"kind":"event","connId":"c1","seq":1,"tMs":0,"event":{"type":"RUN_STARTED","threadId":"t","runId":"r"}}\n',
+    );
+
+    expect(loaded.header).toBeNull();
+  });
+
+  it('takes the FIRST header, because line 1 is the one the format specifies', () => {
+    const two =
+      '{"kind":"header","schemaVersion":1,"tool":"a","capturedAt":"1","url":"u1","transport":"sse","redacted":["text"]}\n' +
+      '{"kind":"header","schemaVersion":1,"tool":"b","capturedAt":"2","url":"u2","transport":"sse","redacted":[]}\n';
+
+    expect(loadJsonl(two).header?.url).toBe('u1');
   });
 });
