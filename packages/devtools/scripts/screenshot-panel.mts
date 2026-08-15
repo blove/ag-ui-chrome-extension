@@ -388,6 +388,250 @@ async function checkFixtures(browser: Browser, origin: string): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Phase 2b — Messages (§9.4, design decisions M1–M5)                          */
+/* -------------------------------------------------------------------------- */
+
+/** Open the Messages tab and wait for it. */
+async function openMessages(page: Page): Promise<void> {
+  await page.click('button[role="tab"][id="agui-tab-messages"]');
+  await page.waitForSelector('.agui-messages');
+}
+
+/** `kind:id` for every conversation row, in DOM order — M1's ordering, as rendered. */
+function messageRows(page: Page): Promise<string[]> {
+  return page.$$eval('[data-item-id]', (els) =>
+    els.map(
+      (el) =>
+        `${el.getAttribute('data-item-kind') ?? '?'}:${el.getAttribute('data-item-id') ?? '?'}`,
+    ),
+  );
+}
+
+/**
+ * Messages renders, in every state the design's §8 names.
+ *
+ * The unit tests already assert the markup. What only a browser can say is whether any of it is
+ * VISIBLE: this project shipped a panel with no stylesheet at all, and a tab that renders nothing
+ * is indistinguishable from a tab that renders correctly to every gate but this one. So the
+ * assertions below are deliberately about paint — that the M2 verdict has a background of its
+ * own, that a failed row is tinted differently from the row above it — rather than about the DOM.
+ *
+ * Live capture is the one §8 state not reachable here: it needs `chrome.runtime.connect` and a
+ * service worker feeding records, which this harness has no way to produce. It is covered in
+ * `messages.test.tsx` instead, which drives the tab with `source.kind === 'live'`.
+ */
+async function checkMessages(browser: Browser, origin: string): Promise<void> {
+  /* --- empty: it explains itself rather than showing a blank pane --------- */
+  {
+    const session = await openPanel(browser, origin, 'light');
+    await openMessages(session.page);
+    const text = (await session.page.textContent('.agui-messages'))?.trim() ?? '';
+    if (!/no runs to show/i.test(text)) {
+      fail(`the empty Messages tab reads ${JSON.stringify(text)}, expected it to say so.`);
+    }
+    await session.page.screenshot({ path: join(outDir, 'messages-empty.png'), fullPage: true });
+    if (session.errors.length > 0) {
+      fail(`the empty Messages tab logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+
+  /* --- an imported capture: order, content, and the jump to Timeline ------ */
+  {
+    const session = await openPanel(browser, origin, 'light');
+    await importFixture(session.page, join(fixtureDir, 'happy-run.agui.jsonl'));
+    await openMessages(session.page);
+    await session.page.screenshot({ path: join(outDir, 'messages-happy.png'), fullPage: true });
+
+    const rows = await messageRows(session.page);
+    if (rows.join(',') !== 'input:m_user_1,message:m_1,tool:tc_1') {
+      fail(
+        `Messages rendered rows [${rows.join(', ')}], expected the request turn, then m_1, then ` +
+          'tc_1 at its position in time (M1).',
+      );
+    }
+
+    // The reconstructed text, on screen. `innerText` rather than `textContent`: it is what a
+    // reader can actually see, so a rule that hid the body would fail here.
+    const shown = await session.page.$eval('.agui-messages', (el) => (el as HTMLElement).innerText);
+    if (!shown.includes('The weather in Paris is sunny and 24 degrees.')) {
+      fail('the assistant message is not visible in Messages — its text did not render.');
+    }
+    if (!shown.includes('arguments parsed')) {
+      fail('the M2 arguments verdict is not visible on a clean tool call.');
+    }
+
+    // M5: the whole workflow, driven end to end.
+    await session.page.click('button[aria-label="Show m_1 in Timeline"]');
+    await session.page.waitForSelector('.agui-timeline');
+    const selected = await seqsOf(session.page, '.agui-event-row[aria-selected="true"]');
+    if (selected.join(',') !== '3') {
+      fail(
+        `clicking through from m_1 selected seqs [${selected.join(', ')}] in Timeline, expected ` +
+          '[3] — the first of its contentSeqs (M5).',
+      );
+    }
+    const scope = (await session.page.textContent('.agui-run-selector__trigger'))?.trim() ?? '';
+    if (!scope.includes('r_happy')) {
+      fail(
+        `the jump from Messages left the run scope reading ${JSON.stringify(scope)}. Without the ` +
+          'scope the frame can be filtered off screen the moment the user arrives.',
+      );
+    }
+    await session.page.screenshot({
+      path: join(outDir, 'messages-located.png'),
+      fullPage: true,
+    });
+
+    if (session.errors.length > 0) {
+      fail(`Messages on an imported capture logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+
+  /* --- a run carrying issues: M2's failure, M3's reasoning, M4's streaming - */
+  {
+    const session = await openPanel(browser, origin, 'dark');
+    await importFixture(session.page, join(fixtureDir, 'messages-edge.agui.jsonl'));
+    await openMessages(session.page);
+    await session.page.screenshot({ path: join(outDir, 'messages-edge.png'), fullPage: true });
+
+    /*
+     * Every helper here is an inline arrow passed straight to `map`. A named local — even
+     * `const read = (el) => …` — is rewritten by esbuild's `keepNames` into a call to `__name`,
+     * which does not exist in the page. `checkUnreachableControls` above hit the same wall.
+     */
+    const [failedRow, chipBackground, plainRow, flagBackground] = await session.page.evaluate(() =>
+      [
+        '[data-args="failed"]',
+        '[data-args="failed"] .agui-tool__status',
+        '.agui-msg',
+        '.agui-msg__flag[data-flag="streaming"]',
+      ].map((selector) => {
+        const el = document.querySelector(selector);
+        return el === null ? 'MISSING' : getComputedStyle(el).backgroundColor;
+      }),
+    );
+    const [chipColour, bodyColour] = await session.page.evaluate(() =>
+      ['[data-args="failed"] .agui-tool__status', 'body'].map((selector) => {
+        const el = document.querySelector(selector);
+        return el === null ? 'MISSING' : getComputedStyle(el).color;
+      }),
+    );
+    const paint = {
+      failedRow: failedRow ?? 'MISSING',
+      chipBackground: chipBackground ?? 'MISSING',
+      chipColour: chipColour ?? 'MISSING',
+      plainRow: plainRow ?? 'MISSING',
+      flagBackground: flagBackground ?? 'MISSING',
+      bodyColour: bodyColour ?? 'MISSING',
+    };
+
+    if (paint.failedRow === 'MISSING') {
+      fail('no tool call is marked [data-args="failed"] on the messages-edge capture (M2).');
+    } else if (paint.failedRow === paint.plainRow) {
+      fail(
+        `a tool call whose arguments never parsed is drawn on ${paint.failedRow}, exactly like ` +
+          'the message row above it. M2 calls this "the bug this tab exists to make obvious"; ' +
+          'an untinted row is not obvious at all.',
+      );
+    }
+    if (paint.chipBackground === 'rgba(0, 0, 0, 0)' || paint.chipColour === paint.bodyColour) {
+      fail(
+        `the "arguments never parsed" chip is unstyled (background ${paint.chipBackground}, ` +
+          `colour ${paint.chipColour} against body ${paint.bodyColour}).`,
+      );
+    }
+    if (paint.flagBackground === 'MISSING' || paint.flagBackground === 'rgba(0, 0, 0, 0)') {
+      fail(
+        `M4's streaming flag has background ${paint.flagBackground} — a message that never ` +
+          'closed is rendered exactly like a complete one.',
+      );
+    }
+
+    const collapsed = await session.page.$eval('.agui-messages', (el) => (el as HTMLElement).innerText);
+    if (!collapsed.includes('arguments never parsed') || !collapsed.includes('streaming')) {
+      fail('M2 and M4 do not state themselves in the collapsed rows.');
+    }
+    // M3: the reasoning body is not merely hidden, it is not built.
+    if (collapsed.includes('The user asked for Paris')) {
+      fail('the reasoning body is rendered before it is asked for (M3 collapses it by default).');
+    }
+    await session.page.click('button[aria-label="Reasoning m_think"]');
+    await session.page.waitForSelector('[data-testid="content-m_think"]');
+    const expanded = await session.page.$eval('.agui-messages', (el) => (el as HTMLElement).innerText);
+    if (!expanded.includes('The user asked for Paris')) {
+      fail('expanding the reasoning message did not reveal its content.');
+    }
+    await session.page.screenshot({
+      path: join(outDir, 'messages-edge-expanded.png'),
+      fullPage: true,
+    });
+
+    if (session.errors.length > 0) {
+      fail(`Messages on a run carrying issues logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+
+  /* --- a redacted capture, produced by the real export and re-imported ---- */
+  {
+    const producer = await openPanel(browser, origin, 'light');
+    await importFixture(producer.page, join(fixtureDir, 'happy-run.agui.jsonl'));
+    await producer.page.click('button[role="tab"][id="agui-tab-session"]');
+    await producer.page.waitForSelector('.agui-export');
+    await producer.page.click('.agui-export__groups button:has-text("Redact everything")');
+    const saved = await clickAndSave(
+      producer.page,
+      'button:has-text("Download capture")',
+      'Messages (redacted)',
+    );
+    await producer.close();
+    if (saved === null) return;
+
+    const redactedPath = join(outDir, 'messages-redacted.agui.jsonl');
+    writeFileSync(redactedPath, saved.text, 'utf8');
+
+    const session = await openPanel(browser, origin, 'dark');
+    await importFixture(session.page, redactedPath);
+    await openMessages(session.page);
+    await session.page.screenshot({ path: join(outDir, 'messages-redacted.png'), fullPage: true });
+
+    const shown = await session.page.$eval('.agui-messages', (el) => (el as HTMLElement).innerText);
+    if (shown.includes('The weather in Paris')) {
+      fail('a redacted capture renders the original message text in Messages.');
+    }
+    if (!shown.includes('«redacted:')) {
+      fail(
+        'a redacted capture shows no placeholder in Messages — a turn drawn blank is ' +
+          'indistinguishable from a turn that was never sent.',
+      );
+    }
+    if (!shown.includes('get_weather')) {
+      fail('a redacted capture lost the tool name; §11 keeps structure, ids and ordering.');
+    }
+    /*
+     * The single most important thing this tab must not do to a shared bug report.
+     *
+     * `«redacted: 16 chars»` is not JSON, so a redacted capture's tool arguments genuinely do
+     * not parse. Reporting that as "arguments never parsed" would send the colleague the file
+     * was shared with hunting a protocol bug the redactor caused.
+     */
+    if (!shown.includes('arguments redacted') || shown.includes('arguments never parsed')) {
+      fail(
+        'a redacted capture reports its tool arguments as a parse failure. That is a finding ' +
+          'about the exporter, presented as a finding about the user’s agent.',
+      );
+    }
+
+    if (session.errors.length > 0) {
+      fail(`Messages on a redacted capture logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Phase 3 — does a real click produce a real file? (design decision E1)       */
 /* -------------------------------------------------------------------------- */
 
@@ -651,6 +895,7 @@ async function main(): Promise<void> {
     // not already said, and buries the diagnosis under consequential failures.
     if (failures.length === 0) await checkUnreachableControls(browser, server.origin);
     if (failures.length === 0) await checkFixtures(browser, server.origin);
+    if (failures.length === 0) await checkMessages(browser, server.origin);
     if (failures.length === 0) await checkExport(browser, server.origin);
   } finally {
     await browser.close();
@@ -677,6 +922,20 @@ async function main(): Promise<void> {
   );
   console.log(
     `  partial decode: warned on import and after a tab switch — ${outDir}/partial-import.png`,
+  );
+  console.log('Messages renders in every state design §8 names:');
+  console.log(`  empty: says so rather than showing a blank pane — ${outDir}/messages-empty.png`);
+  console.log(
+    `  imported: request turn, m_1, tc_1 in order; the jump selects seq 3 scoped to r_happy — ` +
+      `${outDir}/messages-happy.png`,
+  );
+  console.log(
+    `  issues: the failed-args row is tinted apart from its neighbour, reasoning is collapsed, ` +
+      `streaming is flagged — ${outDir}/messages-edge.png`,
+  );
+  console.log(
+    `  redacted: placeholders, structure kept, arguments reported redacted rather than broken — ` +
+      `${outDir}/messages-redacted.png`,
   );
   console.log('the post-grant Reload control is styled (.agui-app__note-action).');
   console.log('panel issued no off-origin requests (requirements §11).');

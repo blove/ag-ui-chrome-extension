@@ -15,15 +15,19 @@ import { RunSelector } from './shell/run-selector';
 import { TabStrip, tabPanelId } from './shell/tab-strip';
 import { Toolbar } from './shell/toolbar';
 import { Timeline } from './tabs/timeline/timeline';
+import { Messages } from './tabs/messages/messages';
 import { Session } from './tabs/session/session';
 
-/** Which milestone of the design's §7 sequencing each unbuilt tab belongs to. */
-const COMING_NEXT: Record<'runs' | 'state' | 'messages', string> = {
-  runs: 'Runs is milestone 2 of the design §7 sequencing (Runs, then State, then Messages), built against the same imported fixtures as Timeline.',
+/**
+ * Which milestone of the sequencing each unbuilt tab belongs to.
+ *
+ * The order is the one set out in the export-and-remaining-tabs design §9: Export, then Messages,
+ * then State, then Runs. Export and Messages have shipped, so these two are what is left.
+ */
+const COMING_NEXT: Record<'runs' | 'state', string> = {
+  runs: 'Runs is the last milestone of the sequencing, after State. It is a table of runs — thread, agent, outcome, duration, TTFT, event and issue counts — clicking through to Timeline scoped to that run.',
   state:
-    'State is milestone 2 of the design §7 sequencing, after Runs. It renders the reconstructed document with a scrubber over Run.stateTimeline.',
-  messages:
-    'Messages is milestone 2 of the design §7 sequencing, after State. It renders the conversation as the client would.',
+    'State is the next milestone, after Messages. It renders the reconstructed document as a JSON tree with a scrubber over Run.stateTimeline, marking failed patches red at their position.',
 };
 
 /**
@@ -209,7 +213,7 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
       body = <ComingNext title="State" detail={COMING_NEXT.state} />;
       break;
     case 'messages':
-      body = <ComingNext title="Messages" detail={COMING_NEXT.messages} />;
+      body = <Messages store={store} />;
       break;
   }
 
@@ -273,7 +277,7 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
 
       <main class="agui-app__body">
         {/*
-         * `tabIndex` because three of the five tab panels contain nothing focusable: without it a
+         * `tabIndex` because two of the five tab panels contain nothing focusable: without it a
          * keyboard user tabbing off the tab strip leaves the panel entirely and never reads the
          * content the tab they just selected is about.
          */}
