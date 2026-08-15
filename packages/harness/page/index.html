@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AG-UI harness</title>
+  </head>
+  <body>
+    <h1>AG-UI capture harness</h1>
+    <form id="run-form">
+      <input id="prompt" name="prompt" value="hello" size="40" />
+      <button id="run" type="submit">Run</button>
+    </form>
+    <p>status: <output id="status">idle</output></p>
+    <p id="error" hidden></p>
+    <ul id="messages"></ul>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
