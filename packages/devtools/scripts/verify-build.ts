@@ -251,7 +251,11 @@ function main(): void {
     {
       world: 'MAIN',
       role: 'MAIN-world content script',
-      // The presence marker is the entire observable behaviour of src/inject/inject.ts today.
+      // The presence marker. `checkEntry` requires every token to appear verbatim in the entry
+      // SOURCE file as well as the bundle, so the capture layer cannot be asserted from here:
+      // inject.ts reaches the message tag through the `AGUI_DT_SOURCE` identifier, and
+      // identifiers do not survive minification. The literal is asserted on the relay entry,
+      // whose own source contains it.
       required: ['__AGUI_DEVTOOLS__'],
       // MAIN world is the page's own world: chrome.* is undefined there.
       forbidden: ['chrome.runtime'],
