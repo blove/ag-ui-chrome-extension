@@ -2150,9 +2150,11 @@ code {
   align-items: center;
   box-sizing: border-box;
   width: 100%;
+  /* Exactly the header's padding, and no border of its own: the two share one column
+     declaration, so any box difference between them slides every heading off its column. The
+     visual gate measures that — it caught a 3px transparent border here. */
   padding: 0 12px;
   border: 0;
-  border-left: 3px solid transparent;
   background: transparent;
   color: var(--agui-fg);
   font: inherit;
