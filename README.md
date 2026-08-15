@@ -10,18 +10,22 @@ the wire: every event in order, grouped into runs, with the protocol violations 
 
 ## Status
 
-**Pre-release, and it does not capture anything yet.**
+**Pre-release, and phase 1 is functionally complete.** Not yet on the Chrome Web Store.
 
-What is implemented and unit-tested (355 tests) is the `core/` layer: the generated event table and
-shape checking, the incremental SSE frame parser, AG-UI connection detection, chunk expansion, the
-run model, the validator rules, run metrics, the RFC 6902 JSON Patch state timeline, and the
-`.agui.jsonl` codec with redaction. `core/` is Chrome-free and runs under Node.
+Capture works end to end: `src/inject/` patches `fetch`, `XMLHttpRequest`, and `EventSource` in the
+page's own world, tees the SSE bodies, and relays them across the world boundary to a service-worker
+ring buffer that the panel reads live. All five panel tabs are real — **Timeline**, **Runs**,
+**State**, **Messages**, **Session** — with protocol issues annotated inline and a toolbar issue
+count that doubles as a filter. Captures export and re-import as `.agui.jsonl`, redacted or not.
 
-What is **not** implemented: the capture layer. `src/inject/` (the MAIN-world hook that would patch
-`fetch`, `XMLHttpRequest`, and `EventSource`), `src/relay/`, `src/sw/`, and the panel UI are stubs.
-The extension builds, loads unpacked, and opens an empty **AG-UI** DevTools panel that says
-"No capture yet". No page API is patched, no events are buffered, and the five panel tabs of the
-spec (Timeline, Session, Messages, State, Issues) do not exist yet. That is the next milestone.
+Underneath, `core/` is Chrome-free and runs under Node: the generated event table and shape
+checking, the incremental SSE frame parser, connection detection, chunk expansion, the run model,
+the validator rules, run metrics, the RFC 6902 JSON Patch state timeline, and the `.agui.jsonl`
+codec with redaction. 1,369 tests, plus a Playwright harness that drives the extension in a real
+browser against real sockets.
+
+What is not done: the Chrome Web Store submission itself. The listing pipeline is built and two of
+its five screenshots are still blocked — see [Store listing assets](#store-listing-assets).
 
 ## Privacy
 
@@ -43,13 +47,11 @@ The tool sits on the wire where prompts and completions flow, so its posture is 
 - **Redaction on export**, on by default for bug-report bundles: text deltas, reasoning content,
   tool arguments, tool results, and state values become `«redacted: 412 chars»`. Structure, types,
   ordering, sizes, and timings survive — which is what a protocol bug report actually needs. The
-  export header records exactly what was redacted. This part is implemented and tested today, in
-  `src/core/jsonl/`.
+  export header records exactly what was redacted. Unredacted export exists and is labelled as such.
 - **Bounded memory.** The capture buffer caps at a configurable default of 5k events / 8 MB, oldest
   dropped.
 
-Points that describe capture behaviour are the design the capture layer must meet; the current
-build has no capture path at all, so it reads nothing from any page.
+The full policy, including how to verify each claim yourself, is in [PRIVACY.md](./PRIVACY.md).
 
 ## Development
 
@@ -104,8 +106,9 @@ sides of `pnpm build`. Run each command on its own line rather than chaining wit
 
 Copy lives in `packages/devtools/listing/copy.md`; the generated upload set lands in
 `packages/devtools/listing/out/`. `pnpm listing:assets` fails while any storyboard shot's subject is
-unreachable — one of the five shots today, the per-origin capture grant, which needs a live granted
-origin the harness cannot produce — see
+unreachable, rather than quietly shipping a short gallery. **Four of five shots render today.** The
+one that does not is the privacy shot, whose subject is the per-origin capture grant prompt — that
+needs a live, granted origin, which this harness cannot produce. See
 [the listing design](docs/superpowers/specs/2026-08-15-chrome-web-store-listing-design.md).
 
 ### Tests
@@ -156,11 +159,20 @@ errors, so a protocol addition degrades gracefully between regenerations.
 
 ## Releases
 
-CI runs typecheck, lint, test, build, `verify:build`, and `screenshot:panel` on every push and pull
-request. `screenshot:panel` is the gate that catches an unstyled or blank panel — the whole of the
+CI runs typecheck, lint, test, build, `verify:build`, `verify:listing`, and `screenshot:panel` on
+every push and pull request. `screenshot:panel` is the gate that catches an unstyled or blank panel — the whole of the
 rest of that list once passed on a `dist/` whose panel had no stylesheet at all. Pushing a
 `v*` tag runs the same checks and attaches `ag-ui-devtools-<version>.zip` to a GitHub release.
 Chrome Web Store upload is manual.
+
+## Contributing
+
+Pull requests welcome — start with [CONTRIBUTING.md](./CONTRIBUTING.md), which covers the setup, the
+gates CI runs, and the four conventions that explain most review comments here. Participation is
+governed by the [Code of Conduct](./CODE_OF_CONDUCT.md).
+
+Found a security problem? Please follow [SECURITY.md](./SECURITY.md) rather than opening a public
+issue.
 
 ## License
 
