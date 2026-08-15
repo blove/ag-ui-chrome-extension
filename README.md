@@ -103,9 +103,9 @@ sides of `pnpm build`. Run each command on its own line rather than chaining wit
     pnpm verify:listing
 
 Copy lives in `packages/devtools/listing/copy.md`; the generated upload set lands in
-`packages/devtools/listing/out/`. `pnpm listing:assets` fails while any storyboard shot's UI is
-still a placeholder — three of the five shots today, on the State tab, export, and the per-origin
-capture grant — see
+`packages/devtools/listing/out/`. `pnpm listing:assets` fails while any storyboard shot's subject is
+unreachable — one of the five shots today, the per-origin capture grant, which needs a live granted
+origin the harness cannot produce — see
 [the listing design](docs/superpowers/specs/2026-08-15-chrome-web-store-listing-design.md).
 
 ### Tests

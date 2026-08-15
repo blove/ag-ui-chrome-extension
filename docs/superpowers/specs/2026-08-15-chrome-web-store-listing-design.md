@@ -144,25 +144,41 @@ Five screenshots, one message each, hero first.
 | 1 | Every AG-UI event, decoded and in order | Timeline with the waterfall and an event detail pane open on a tool call | ✅ |
 | 2 | Protocol violations, named and located | The flagged row selected in context, detail showing the rule | ✅ |
 | 3 | Watch state rebuild, patch by patch | State tab, RFC 6902 patch timeline | ✅ since the State tab shipped |
-| 4 | Record a run. Replay it anywhere. | Import/export of `.agui.jsonl` | ⏳ export shipped; the harness shim still blocks it |
+| 4 | Record a run. Replay it anywhere. | The export panel: §11's five redaction groups, and the `.agui.jsonl` download | ✅ since the export panel shipped |
 | 5 | No network egress. Ever. | Per-origin capture grant | ⏳ needs a live, granted source |
 
-**This table has been wrong twice, in both directions.** It first claimed 4 and 5 were renderable
-and building them proved otherwise; it then listed 3 as blocked and the State tab shipped, at which
-point the generator produced that shot with no change to this pipeline at all. Both corrections are
-recorded rather than smoothed away, because this is the table someone reads to plan the submission —
-and because the second one is the evidence that L1 works: the gallery filled itself in as the
-product caught up.
+**This table has been wrong three times, in both directions.** It first claimed 4 and 5 were
+renderable and building them proved otherwise; it then listed 3 as blocked and the State tab
+shipped, at which point the generator produced that shot with no change to this pipeline at all;
+then it recorded shot 4 as blocked on harness work that could never have unblocked it. Every
+correction is kept rather than smoothed away, because this is the table someone reads to plan the
+submission — and because the second one is the evidence that L1 works: the gallery filled itself in
+as the product caught up.
 
-Shot 4's caption promises a round trip the Session tab in the same image reports it cannot do. Two
-independent things blocked it, and the generator's failure message predicted that shipping export
-would clear only the first — which is exactly what happened. Export landed and the shot still
-refuses, because the harness boots the panel under a shim with no `chrome.devtools`, so capture
-reports `unavailable in this build` regardless of what the product ships. **Unblocking shot 4 is now
-harness work, not product work**: a shim rich enough to report a real capture source. Shot 5's subject is the
-grant prompt itself — privacy here is a choice the user is offered, not a sentence in a caption —
-and that banner is suppressed for an imported source, which is what every shot in this storyboard
-loads.
+**Shot 4's blocker was mis-diagnosed, not merely unfinished.** This document previously said the one
+thing still refusing it was the harness shim, which leaves capture reporting `unavailable in this
+build` no matter what the product ships. That analysis was incomplete. The shot was gated by a scan
+for unbuilt-capability wording *anywhere* in the Session tab, and two of the strings tripping it are
+hardcoded rows — `Endpoints` and `Agents` both read `ships with the capture layer`
+(`session.tsx:154,156`) — so no shim, however rich, could ever have cleared that gate. The scan was
+over-broad for this caption besides: endpoint and `/info` discovery say nothing about export or
+replay, so they were never a contradiction of it.
+
+The fix was to re-subject the shot, and needed no new product work. It now frames the **export
+panel** — §11's five redaction groups, the summary of what the file will contain, and the
+`.agui.jsonl` download — and gates on that panel actually offering an export: no
+`.agui-export__blocked`, an enabled download button labelled with the extension, and all five group
+checkboxes enabled. The tab is scrolled with the panel's own scroller so the export section, not the
+status rows, fills the card. That framing also made this shot byte-reproducible for the first time,
+because the Source row's `(imported 11:36:29 AM)` wall clock now sits above the fold. Its sub-caption
+was rewritten to describe the redaction choice that is now on screen; the headline still carries the
+round trip.
+
+Shot 5 keeps the whole-tab scan, where it is the right test: its caption *is* a claim about the
+whole tab, and a column of "not detected" under "No network egress. Ever." reads as a broken product
+rather than a deliberate one. Its own subject is the grant prompt — privacy here is a choice the
+user is offered, not a sentence in a caption — and that banner is suppressed for an imported source,
+which is what every shot in this storyboard loads.
 
 `listing-assets.mts` **fails loudly** when a storyboard entry's required UI is absent, and a
 refused shot deletes its own stale asset, so the directory can never claim a delivery the run
