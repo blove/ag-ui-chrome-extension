@@ -29,11 +29,26 @@ export type ConversationItem =
  * is *supposed* not to parse yet. Reporting that as a failure would put a red verdict on every
  * tool call in a live capture.
  */
-export type ToolArgsStatus = 'streaming' | 'none' | 'parsed' | 'failed';
+export type ToolArgsStatus = 'streaming' | 'none' | 'parsed' | 'failed' | 'redacted';
 
-export function toolArgsStatus(call: ToolCallRecord): ToolArgsStatus {
+export interface ToolArgsContext {
+  /**
+   * True when the capture's own header declares `toolArgs` redacted.
+   *
+   * A redacted export replaces every args delta with `«redacted: N chars»`, which is not JSON —
+   * so the arguments of a shared bug report genuinely do not parse. Reporting that as `failed`
+   * would send the colleague the file was shared with hunting a protocol bug the redactor
+   * caused. The evidence is gone, so the honest answer is that there is no verdict.
+   */
+  argsRedacted?: boolean;
+}
+
+export function toolArgsStatus(call: ToolCallRecord, context: ToolArgsContext = {}): ToolArgsStatus {
   if (!call.closed) return 'streaming';
+  // `redactString('')` returns the empty string by design, so "streamed no arguments at all"
+  // survives redaction intact and is still worth saying.
   if (call.argsText.trim() === '') return 'none';
+  if (context.argsRedacted === true) return 'redacted';
   // The recorded error, not the presence of `args`: arguments that are the literal `null` parse
   // successfully to `undefined`-looking data, and calling that a failure would be a lie.
   return call.argsParseError === undefined ? 'parsed' : 'failed';

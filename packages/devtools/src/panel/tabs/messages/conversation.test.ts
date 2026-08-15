@@ -151,6 +151,42 @@ describe('toolArgsStatus (M2)', () => {
     expect(toolArgsStatus(toolCall({ toolCallId: 'tc_1', argsText: '  \n ' }))).toBe('none');
   });
 
+  it('reports arguments the exporter replaced as redacted, never as a parse failure', () => {
+    /*
+     * `«redacted: 16 chars»` is not JSON, so a redacted capture's arguments genuinely do not
+     * parse — and saying "arguments never parsed" would send the colleague the file was shared
+     * with hunting a protocol bug the redactor caused. The file no longer contains the evidence,
+     * so the honest verdict is that there is no verdict.
+     */
+    const status = toolArgsStatus(
+      toolCall({
+        toolCallId: 'tc_1',
+        argsText: '«redacted: 16 chars»',
+        argsParseError: 'Unexpected token',
+      }),
+      { argsRedacted: true },
+    );
+
+    expect(status).toBe('redacted');
+  });
+
+  it('still reports an open redacted call as streaming, which redaction does not obscure', () => {
+    const status = toolArgsStatus(
+      toolCall({ toolCallId: 'tc_1', argsText: '«redacted: 4 chars»', closed: false }),
+      { argsRedacted: true },
+    );
+
+    expect(status).toBe('streaming');
+  });
+
+  it('still reports a redacted call that streamed no arguments as none', () => {
+    // `redactString('')` returns the empty string by design — there is no content in a
+    // zero-length string to protect — so this fact survives redaction intact.
+    expect(toolArgsStatus(toolCall({ toolCallId: 'tc_1', argsText: '' }), { argsRedacted: true })).toBe(
+      'none',
+    );
+  });
+
   it('reports a closed call with arguments and no recorded error as parsed', () => {
     // `args` is legitimately `undefined` when the arguments were the literal `null`, so the
     // verdict reads the recorded error rather than the presence of a parsed value.

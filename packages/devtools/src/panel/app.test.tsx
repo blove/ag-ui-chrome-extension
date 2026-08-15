@@ -141,11 +141,17 @@ describe('App', () => {
   it.each<[TabId, RegExp]>([
     ['runs', /Runs — not built yet/],
     ['state', /State — not built yet/],
-    ['messages', /Messages — not built yet/],
   ])('names the milestone for the %s placeholder', (tab, heading) => {
     render(<App store={createPanelStore({ ...initialPanelState(), tab })} />);
     expect(screen.getByRole('heading', { name: heading })).toBeTruthy();
     expect(screen.getByText(/milestone 2 of the design §7 sequencing/i)).toBeTruthy();
+  });
+
+  it('renders Messages on the messages tab', () => {
+    render(<App store={createPanelStore({ ...initialPanelState(), tab: 'messages' })} />);
+    expect(screen.getByRole('region', { name: 'Messages' })).toBeTruthy();
+    // Not the placeholder: an empty Messages tab explains itself in its own words.
+    expect(screen.queryByText(/not built yet/i)).toBeNull();
   });
 
   it('renders Session on the session tab', () => {

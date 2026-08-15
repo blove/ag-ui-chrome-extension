@@ -1468,3 +1468,278 @@ code {
 .agui-json-node__value[data-type='other'] {
   color: var(--agui-fg-muted);
 }
+
+/* ---------------------------------------------------------------------------
+ * Messages tab (requirements §9.4, design decisions M1–M5).
+ *
+ * The colours carry claims, so each is stated in both schemes and none of them
+ * is the only signal: every tinted row also carries a phrase. `data-args` is
+ * the M2 verdict and `data-flag="streaming"` is M4's, and both were measured
+ * against the surface they sit on — the weakest pair is the streaming flag at
+ * 4.68:1 (light) and 5.21:1 (dark).
+ * ------------------------------------------------------------------------- */
+
+.agui-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.agui-messages__empty {
+  margin: 0;
+  color: var(--agui-fg-muted);
+}
+
+.agui-messages__run {
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  background: var(--agui-surface);
+}
+
+.agui-messages__run-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  margin: 0;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--agui-border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agui-messages__run-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.agui-messages__run-thread {
+  color: var(--agui-fg-muted);
+  font-weight: 400;
+}
+
+.agui-messages__run-outcome {
+  padding: 0 6px;
+  border: 1px solid var(--agui-border);
+  border-radius: 8px;
+  font-weight: 400;
+}
+
+/* A run that never terminated must not read like one that finished. */
+.agui-messages__run-outcome[data-outcome='error'],
+.agui-messages__run-outcome[data-outcome='aborted'] {
+  border-color: var(--agui-severity-error);
+  color: var(--agui-severity-error);
+}
+
+.agui-messages__run-issues {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--agui-severity-warning-bg);
+  color: var(--agui-severity-warning);
+  font-weight: 400;
+}
+
+.agui-messages__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--agui-border);
+}
+
+.agui-msg,
+.agui-tool {
+  padding: 6px 8px;
+  background: var(--agui-surface-raised);
+}
+
+.agui-msg__head,
+.agui-tool__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.agui-msg__role,
+.agui-tool__name {
+  font-weight: 600;
+}
+
+.agui-msg__id,
+.agui-tool__id,
+.agui-tool__parent {
+  color: var(--agui-fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.agui-msg__time,
+.agui-msg__frames {
+  color: var(--agui-fg-muted);
+  font-size: 11px;
+}
+
+/* A turn read out of the request body, not off the stream. Attribution is the
+   tab's subject, so the two are never drawn alike. */
+.agui-msg--input {
+  border-left: 3px solid var(--agui-bar-run);
+}
+
+.agui-msg__origin {
+  padding: 0 6px;
+  border: 1px dashed var(--agui-border);
+  border-radius: 8px;
+  color: var(--agui-fg-muted);
+  font-size: 11px;
+}
+
+/* M4. A message still open is a real state and says so in words as well as tint. */
+.agui-msg[data-streaming='true'] {
+  border-left: 3px solid var(--agui-severity-info);
+}
+
+.agui-msg__flag[data-flag='streaming'] {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+  font-size: 11px;
+}
+
+.agui-msg__locate {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: var(--agui-surface);
+  color: var(--agui-fg);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agui-msg__locate:hover:not(:disabled) {
+  background: var(--agui-row-hover);
+}
+
+.agui-msg__locate:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The message itself. `pre-wrap` because the wire's newlines are data: a panel
+   that collapses them cannot answer "does this match my UI?". */
+.agui-msg__content {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agui-msg__absent,
+.agui-tool__absent {
+  margin: 4px 0 0;
+  color: var(--agui-fg-muted);
+  font-style: italic;
+}
+
+.agui-msg__pre {
+  margin: 4px 0 0;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--agui-surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* M3: reasoning is visually distinct and collapsed by default. */
+.agui-msg[data-kind='reasoning'] {
+  border-left: 3px solid var(--agui-bar-step);
+  background: var(--agui-surface);
+}
+
+.agui-msg__disclosure,
+.agui-tool__toggle {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--agui-fg-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agui-msg__disclosure:hover,
+.agui-tool__toggle:hover {
+  color: var(--agui-fg);
+}
+
+.agui-tool__caret {
+  width: 10px;
+}
+
+.agui-tool__pane {
+  padding-left: 16px;
+}
+
+/* M2. The verdict on the streamed arguments, always visible in the collapsed
+   row — a verdict a reader has to click to find is one most readers miss. */
+.agui-tool__status {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--agui-track);
+  color: var(--agui-fg-muted);
+  font-size: 11px;
+}
+
+.agui-tool__status[data-status='parsed'] {
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+}
+
+.agui-tool__status[data-status='failed'] {
+  background: var(--agui-severity-error-bg);
+  color: var(--agui-severity-error);
+  font-weight: 600;
+}
+
+.agui-tool__status[data-status='streaming'] {
+  background: var(--agui-severity-warning-bg);
+  color: var(--agui-severity-warning);
+}
+
+/* Arguments that never parsed are the bug this tab exists to make obvious, so
+   the whole row is marked, not just the chip. */
+.agui-tool[data-args='failed'] {
+  border-left: 3px solid var(--agui-severity-error);
+  background: var(--agui-severity-error-bg);
+}
+
+.agui-tool[data-args='streaming'] {
+  border-left: 3px solid var(--agui-severity-warning);
+}
+
+.agui-tool__error {
+  margin: 4px 0 0;
+  color: var(--agui-severity-error);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+/* Not an error: the file no longer carries the evidence, and saying so is the
+   difference between a finding about the agent and one about the exporter. */
+.agui-tool__note {
+  margin: 4px 0 0;
+  color: var(--agui-fg-muted);
+}
