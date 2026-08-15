@@ -52,7 +52,7 @@ Three refinements found while mapping the code. Each is a smaller change than it
 | `packages/devtools/scripts/screenshot-panel.mts` | Delete the extracted helpers, import them from `panel-harness.ts`. No behaviour change. |
 | `packages/devtools/manifest.config.ts` | Add the `icons` block. |
 | `packages/devtools/scripts/verify-build.ts` | Assert the four icon PNGs exist in `dist/icons/` and the manifest points at them. |
-| `packages/devtools/vitest.config.ts` | Add a fourth project, `listing`, covering `scripts/**/*.test.ts`. |
+| `packages/devtools/vitest.config.ts` | Add a fourth project, `scripts`, covering `scripts/**/*.test.ts`. |
 | `packages/devtools/package.json` | Add `icons`, `listing:assets`, `listing:fixture`, `verify:listing` scripts. |
 | `packages/devtools/public/icons/README.md` | Rewrite: the icons are now wired, and here is what regenerates them. |
 
@@ -273,7 +273,7 @@ PANEL_DIST=/tmp/unstyled pnpm screenshot:panel; echo "exit=$?"
 
 Expected: `exit=1`, with a failure mentioning `body has no background colour`. If it exits 0, the extraction broke the shim or the server and the gate is now blind.
 
-- [ ] **Step 6: Add the `listing` vitest project**
+- [ ] **Step 6: Add the `scripts` vitest project**
 
 In `packages/devtools/vitest.config.ts`, add a fourth entry to `test.projects`, after the `capture` entry:
 
@@ -283,7 +283,7 @@ In `packages/devtools/vitest.config.ts`, add a fourth entry to `test.projects`, 
           // The listing generators live in `scripts/` because that is what tsconfig.json
           // includes; `listing/` holds only data and assets. They are plain Node — no DOM, no
           // `chrome` — so they belong beside `core` rather than in either jsdom project.
-          name: 'listing',
+          name: 'scripts',
           environment: 'node',
           include: ['scripts/**/*.test.ts'],
         },
@@ -296,7 +296,7 @@ In `packages/devtools/vitest.config.ts`, add a fourth entry to `test.projects`, 
 cd packages/devtools && pnpm test
 ```
 
-Expected: all existing tests pass. The `listing` project reports no test files, which is fine at this point.
+Expected: all existing tests pass. The `scripts` project reports no test files, which is fine at this point.
 
 - [ ] **Step 8: Commit**
 
@@ -639,7 +639,7 @@ describe('buildDemoFixture', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 ```bash
-cd packages/devtools && pnpm vitest run --project listing scripts/build-demo-fixture.test.ts
+cd packages/devtools && pnpm vitest run --project scripts scripts/build-demo-fixture.test.ts
 ```
 
 Expected: FAIL — `Failed to resolve import "./build-demo-fixture"`.
@@ -828,7 +828,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]).endsWith('build-de
 - [ ] **Step 4: Run the test**
 
 ```bash
-cd packages/devtools && pnpm vitest run --project listing scripts/build-demo-fixture.test.ts
+cd packages/devtools && pnpm vitest run --project scripts scripts/build-demo-fixture.test.ts
 ```
 
 Expected: all six tests PASS.
@@ -1593,7 +1593,7 @@ describe('checkCopy', () => {
 - [ ] **Step 2: Run it to verify it fails**
 
 ```bash
-cd packages/devtools && pnpm vitest run --project listing scripts/verify-listing-copy.test.ts
+cd packages/devtools && pnpm vitest run --project scripts scripts/verify-listing-copy.test.ts
 ```
 
 Expected: FAIL — `Failed to resolve import "./verify-listing-copy"`.
@@ -1784,7 +1784,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]).endsWith('verify-l
 - [ ] **Step 4: Run the test**
 
 ```bash
-cd packages/devtools && pnpm vitest run --project listing scripts/verify-listing-copy.test.ts
+cd packages/devtools && pnpm vitest run --project scripts scripts/verify-listing-copy.test.ts
 ```
 
 Expected: all nine tests PASS.
