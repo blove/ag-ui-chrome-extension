@@ -26,6 +26,7 @@ import { startHarnessServer, type HarnessServer } from '../server/agui-server.js
 
 import {
   clearCapture,
+  foldAsLatePanel,
   launchWithExtension,
   readCapture,
   readSettledCapture,
@@ -274,6 +275,54 @@ test.describe('the malformed scenario, captured live', () => {
     // Not `run-started-without-input`: the request line was captured, so the only findings are
     // the three that are genuinely in the stream.
     expect(issues.map((issue) => issue.code)).not.toContain('run-started-without-input');
+  });
+
+  /**
+   * THE REAL ORDERING: the run is over, and only then does a panel arrive.
+   *
+   * Every assertion above folds the buffer the way an IMPORT would. This one folds the exact
+   * `snapshot` message the worker builds for a panel subscribing now, through the panel's own
+   * `createLiveSession` — the code that used to finalise nothing, because the snapshot said
+   * nothing about connections ending. The panel UI is unreachable from Playwright (H4/H5), so
+   * the fold beneath it is driven directly, with the worker's real state as its input.
+   *
+   * `readSettledCapture` in the `beforeAll` above is what makes "after the run" a real claim
+   * rather than a hope: it returns once the connection has actually closed, not after a timeout.
+   */
+  test('a panel that subscribes only AFTER the run finalises it, as import does', () => {
+    // Not vacuous: the worker really did see a close, and it really does carry a time. A build
+    // where `closes` came back empty, or with a placeholder, would satisfy nothing below by
+    // accident — it would fail here first, naming the value it actually got.
+    expect(malformed.closes).toHaveLength(1);
+    const close = malformed.closes[0];
+    if (!close) throw new Error('no close was captured');
+    expect(close.connId).toEqual(expect.any(String));
+    expect(Number.isFinite(close.tMs)).toBe(true);
+    expect(close.tMs).toBeGreaterThan(0);
+
+    const late = foldAsLatePanel(malformed);
+
+    // The run is FINISHED WITH, not still running. `malformed` has no terminal event, so the
+    // honest outcome is `aborted` — and `running` is precisely the silent under-report this
+    // whole test exists to catch.
+    expect(late.runs.length).toBe(1);
+    expect(late.runs[0]?.outcome).toBe('aborted');
+
+    // And it reports the same findings the identical bytes produce on the import path, which is
+    // the disagreement itself: what the tool tells you must not depend on when you opened it.
+    const offline = reconstruct(malformed);
+    const fingerprint = (issues: { code: string; seq: number }[]): string[] =>
+      [...issues].map((issue) => `${issue.code}@${String(issue.seq)}`).sort();
+
+    expect(fingerprint(offline.issues)).toEqual([
+      'empty-text-delta@5',
+      'run-never-terminated@10',
+      'state-patch-failed@9',
+    ]);
+    expect(fingerprint(late.issues)).toEqual(fingerprint(offline.issues));
+    // The run-end issue is anchored at the close the worker retained — the page-side time from
+    // the `conn-close` frame — not at a number the panel chose for itself.
+    expect(late.issues.find((issue) => issue.code === 'run-never-terminated')?.tMs).toBe(close.tMs);
   });
 });
 

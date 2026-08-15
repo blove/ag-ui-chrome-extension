@@ -48,6 +48,23 @@ export interface RequestLine {
   input: unknown;
 }
 
+/**
+ * One connection that has ended, and WHEN it ended.
+ *
+ * The timestamp is the load-bearing half. Closing a connection is what runs `finalizeRules`, and
+ * every run-end issue it emits — `run-never-terminated`, `unclosed-message`, `unclosed-tool-call`,
+ * a leftover-open `unbalanced-steps` — carries the close time in `Issue.tMs`. An id on its own is
+ * enough to say "this stream is over" and not enough to finalise it: the reader would have to
+ * invent a time, which misplaces every one of those issues.
+ *
+ * `tMs` is the page-side close time copied from the `conn-close` frame, the same number the
+ * `closed` push message carries — never a clock read at the worker or the panel.
+ */
+export interface ClosedConn {
+  connId: string;
+  tMs: number;
+}
+
 /* -------------------------------------------------------------------------- */
 /* The panel leg                                                                */
 /* -------------------------------------------------------------------------- */
@@ -72,6 +89,22 @@ export type SwMessage =
       kind: 'snapshot';
       records: CaptureRecord[];
       requests: RequestLine[];
+      /**
+       * Connections that had already ended when this snapshot was taken, with the time each
+       * ended at.
+       *
+       * NOT optional, and not derivable from the records. Closing is the sole trigger for
+       * `finalizeRules`, so a snapshot without this leaves every finished run sitting in
+       * `outcome: 'running'` with none of its run-end issues — the panel would then disagree
+       * with the file exported from the very same bytes, and the disagreement is silent: a
+       * missing issue looks exactly like a clean run. The streaming path has always replayed
+       * these (`live-session.ts`'s `closed`); this is the same fact for a panel that arrived
+       * after the run, which is the ordinary case for a tool you open when something went wrong.
+       *
+       * Required rather than optional on purpose: a producer that forgets it is the defect, and
+       * a compile error is how that gets caught.
+       */
+      closed: ClosedConn[];
       droppedBefore: number;
       /**
        * Whether any document in this tab has reported that its capture hooks are installed.
@@ -95,7 +128,12 @@ export type SwMessage =
       droppedBefore?: number;
     }
   | { kind: 'request'; request: RequestLine }
-  | { kind: 'closed'; connId: string; tMs: number }
+  /**
+   * A connection just ended. Spelled as `ClosedConn` so the streamed fact and the one retained
+   * on `snapshot` cannot drift apart — they are the same fact, delivered to whoever is listening
+   * at the time and to whoever arrives later.
+   */
+  | ({ kind: 'closed' } & ClosedConn)
   /**
    * Requirements §5.4: a binary transport is DETECTED and LABELLED, never decoded in this
    * phase. It carries no records, so without this arm a protobuf stream would reach the panel

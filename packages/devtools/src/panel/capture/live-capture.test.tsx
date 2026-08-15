@@ -192,6 +192,7 @@ describe('panel live wiring', () => {
         kind: 'snapshot',
         records: [RUN_STARTED, TEXT_START],
         requests: [REQUEST],
+        closed: [],
         droppedBefore: 0,
         instrumented: true,
       });
@@ -222,6 +223,7 @@ describe('panel live wiring', () => {
         kind: 'snapshot',
         records: [RUN_STARTED],
         requests: [REQUEST],
+        closed: [],
         droppedBefore: 12,
         instrumented: true,
       });
@@ -246,6 +248,7 @@ describe('panel live wiring', () => {
         kind: 'snapshot',
         records: [RUN_STARTED],
         requests: [REQUEST],
+        closed: [],
         droppedBefore: 0,
         instrumented: true,
       });
@@ -443,6 +446,7 @@ describe('panel live wiring', () => {
           kind: 'snapshot',
           records: [],
           requests: [],
+          closed: [],
           droppedBefore: 0,
           instrumented: false,
         });
@@ -467,6 +471,7 @@ describe('panel live wiring', () => {
           kind: 'snapshot',
           records: [],
           requests: [],
+          closed: [],
           droppedBefore: 0,
           instrumented: false,
         });
@@ -645,6 +650,7 @@ describe('panel live wiring', () => {
           eventRecord(2, { type: 'RUN_FINISHED', threadId: 't1', runId: 'r1' }),
         ],
         requests: [REQUEST],
+        closed: [],
         droppedBefore: 0,
         instrumented: true,
       });
@@ -680,7 +686,7 @@ describe('panel live wiring', () => {
       eventRecord(i, { type: 'CUSTOM', name: 'n', value: i }),
     );
     act(() => {
-      port.emit({ kind: 'snapshot', records, requests: [REQUEST], droppedBefore: 0, instrumented: true });
+      port.emit({ kind: 'snapshot', records, requests: [REQUEST], closed: [], droppedBefore: 0, instrumented: true });
     });
 
     // Following means the window has moved to the tail: the last row is rendered, the first is

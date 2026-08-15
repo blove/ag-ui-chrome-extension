@@ -352,6 +352,95 @@ describe('service worker', () => {
     expect(snapshot.records.map((record) => record.seq)).toEqual([1]);
     expect(snapshot.requests.map((request) => request.url)).toEqual(['/agent']);
     expect(snapshot.droppedBefore).toBe(0);
+    // Nothing has closed yet, and the snapshot says so rather than omitting the question.
+    expect(snapshot.closed).toEqual([]);
+  });
+
+  /**
+   * The whole point of the replay, for a run that is already over.
+   *
+   * Closing is the sole trigger for `finalizeRules`, which is the sole owner of every run-end
+   * issue. A snapshot that carried records and requests but not the closes left a panel opened
+   * after the run unable to finalise it: the run sat in `outcome: 'running'` and
+   * `run-never-terminated` was silently missing, while the same bytes exported and re-imported
+   * reported it. See `panel/capture/late-panel-parity.test.ts` for that comparison.
+   */
+  it('replays the closes to a late panel, with the time each connection ended', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, connOpen('c1'));
+    send(relay, {
+      v: 1,
+      kind: 'frames',
+      connId: 'c1',
+      frames: [eventFrame(12, { type: 'RUN_STARTED' })],
+    });
+    send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 88, reason: 'complete' });
+
+    // Subscribing only NOW — the ordinary case, since DevTools is opened when something looks
+    // wrong, which is after the run.
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+
+    // The time, not just the id: every run-end issue is anchored to it, so an id alone would
+    // force the panel to invent one.
+    expect(snapshotOf(panel).closed).toEqual([{ connId: 'c1', tMs: 88 }]);
+    // And no `closed` push was needed to learn it — this panel was not there for that message.
+    expect(messagesOfKind(panel, 'closed')).toEqual([]);
+  });
+
+  it('reports only the closes of the tab the panel is watching', () => {
+    const seven = relayPort(7);
+    const nine = relayPort(9);
+    stub.connect(seven);
+    stub.connect(nine);
+    send(seven, connOpen('c1'));
+    send(nine, connOpen('c2'));
+    send(seven, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 10, reason: 'complete' });
+    send(nine, { v: 1, kind: 'conn-close', connId: 'c2', tMs: 20, reason: 'complete' });
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 9 });
+
+    expect(snapshotOf(panel).closed).toEqual([{ connId: 'c2', tMs: 20 }]);
+  });
+
+  it('keeps the first close time when a connection reports closing twice', () => {
+    // The moment a connection ended does not change. Letting a repeat overwrite it would move an
+    // anchor the panel has already been told about.
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, connOpen('c1'));
+    send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 40, reason: 'complete' });
+    send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 900, reason: 'error' });
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+
+    expect(snapshotOf(panel).closed).toEqual([{ connId: 'c1', tMs: 40 }]);
+  });
+
+  it('drops the closes from the snapshot when the buffer is cleared', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, connOpen('c1'));
+    send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 40, reason: 'complete' });
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    send(panel, { kind: 'clear' });
+
+    const later = panelPort();
+    stub.connect(later);
+    send(later, { kind: 'subscribe', tabId: 7 });
+
+    // A clear empties the records, so a close left behind would finalise a run that is no longer
+    // there — and would answer for the NEXT scenario's connection if it reused the id.
+    expect(snapshotOf(later).closed).toEqual([]);
   });
 
   it('appends to the subscribed panel only, never to a panel watching another tab', () => {
@@ -626,6 +715,7 @@ describe('service worker', () => {
             },
           ],
           requests: [],
+          closed: [],
           droppedBefore: 4,
           nextSeq: 51,
           recording: true,
@@ -698,10 +788,12 @@ describe('service worker — connections that have closed', () => {
     });
     // A request line and a frame, and the stream is still open: this is precisely the state a
     // reader must not mistake for a finished capture.
-    expect(testHook().closedConns()).toEqual([]);
+    expect(testHook().closes()).toEqual([]);
 
     send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 99, reason: 'complete' });
-    expect(testHook().closedConns()).toEqual(['c1']);
+    // The TIME rides along with the id. Closing is what runs `finalizeRules`, and every run-end
+    // issue it emits is anchored to this number, so an id on its own is not a usable close.
+    expect(testHook().closes()).toEqual([{ connId: 'c1', tMs: 99 }]);
   });
 
   it('records a close per connection, not per tab', () => {
@@ -713,10 +805,13 @@ describe('service worker — connections that have closed', () => {
     send(second, connOpen('c2'));
     send(first, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 1, reason: 'complete' });
 
-    expect(testHook().closedConns()).toEqual(['c1']);
+    expect(testHook().closes()).toEqual([{ connId: 'c1', tMs: 1 }]);
 
     send(second, { v: 1, kind: 'conn-close', connId: 'c2', tMs: 2, reason: 'error' });
-    expect([...testHook().closedConns()].sort()).toEqual(['c1', 'c2']);
+    expect([...testHook().closes()].sort((a, b) => a.connId.localeCompare(b.connId))).toEqual([
+      { connId: 'c1', tMs: 1 },
+      { connId: 'c2', tMs: 2 },
+    ]);
   });
 
   it('forgets closes on clear, so a finished stream cannot answer for the next one', () => {
@@ -724,10 +819,10 @@ describe('service worker — connections that have closed', () => {
     stub.connect(relay);
     send(relay, connOpen('c1'));
     send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 1, reason: 'complete' });
-    expect(testHook().closedConns()).toEqual(['c1']);
+    expect(testHook().closes()).toEqual([{ connId: 'c1', tMs: 1 }]);
 
     testHook().clear();
-    expect(testHook().closedConns()).toEqual([]);
+    expect(testHook().closes()).toEqual([]);
   });
 
   it('survives the worker being terminated, because the stream did not reopen', async () => {
@@ -750,7 +845,7 @@ describe('service worker — connections that have closed', () => {
 
     // Without this the connection would read as still open forever: the close has already been
     // delivered and will never be sent again.
-    expect(testHook().closedConns()).toEqual(['c1']);
+    expect(testHook().closes()).toEqual([{ connId: 'c1', tMs: 40 }]);
   });
 });
 
@@ -998,6 +1093,81 @@ describe('service worker restore after termination', () => {
       frames: [eventFrame(90, { type: 'RUN_STARTED' })],
     });
     expect(appendedRecords(panel).map((record) => record.seq)).toEqual([3]);
+  });
+
+  /**
+   * The two mitigations compose: the worker is terminated at ~30 s idle (§15), and the panel is
+   * opened after that. Neither the close nor the time it happened at is in memory any more, and
+   * neither will ever be re-sent — the stream ended before the restart. Only the mirror can
+   * answer, and a mirror holding bare ids could not: the panel would have to invent the anchor
+   * for every run-end issue.
+   */
+  it('restores the closes WITH their times, so a late panel can still finalise the run', async () => {
+    const session = new Map<string, unknown>();
+
+    let stub = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, connOpen('c1'));
+    send(relay, {
+      v: 1,
+      kind: 'frames',
+      connId: 'c1',
+      frames: [eventFrame(12, { type: 'RUN_STARTED' })],
+    });
+    send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 40, reason: 'complete' });
+    await settle();
+
+    // ---- terminated at ~30 s idle; a new incarnation reads the mirror ----
+    stub = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+
+    expect(snapshotOf(panel).closed).toEqual([{ connId: 'c1', tMs: 40 }]);
+  });
+
+  /**
+   * A mirror written by an older build holds bare id strings. There is no true close time in it,
+   * so none is claimed: the entry is dropped and the connection reads as still open — exactly
+   * what that build already did — rather than being finalised at a number this worker made up.
+   * An invented anchor misplaces every run-end issue, which is a quieter version of the bug this
+   * change fixes rather than a fix for it. The next capture writes the current shape.
+   */
+  it('declines a mirrored close that carries no time, rather than inventing one', async () => {
+    const session = new Map<string, unknown>([
+      [
+        'agui-dt:tab:7',
+        {
+          v: 1,
+          records: [],
+          requests: [],
+          droppedBefore: 0,
+          nextSeq: 1,
+          recording: true,
+          instrumentedFrames: [],
+          // The pre-fix shape: ids, no times.
+          closedConns: ['c1'],
+        },
+      ],
+    ]);
+
+    const stub = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+
+    expect(snapshotOf(panel).closed).toEqual([]);
+    expect(testHook().closes()).toEqual([]);
   });
 
   /*
