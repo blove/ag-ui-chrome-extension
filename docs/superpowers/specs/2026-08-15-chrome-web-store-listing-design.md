@@ -217,3 +217,13 @@ Per L7 and L8:
   current build, so screenshots cannot go stale against the UI they depict.
 
 The first is sequenced. The second and third are scope choices, and both remain good ideas.
+
+Added during implementation, from review of §6:
+
+- **A `status:` field in `copy.md` that the validator refuses to let be `draft` at submission.**
+  The copy deliberately describes the finished product — export, State, Messages, metrics — while
+  several of those do not exist yet. That is L1 working as designed, and the *asset* generator
+  already refuses loudly. But `verify-listing-copy.ts` will print "within every Chrome Web Store
+  limit" forever without ever knowing that the document it blessed describes software that has not
+  shipped, and nothing in `copy.md` records the gap either. One field would close the loop. It is a
+  new requirement rather than a defect, so it is recorded here rather than built.
