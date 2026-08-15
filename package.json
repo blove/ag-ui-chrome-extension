@@ -18,6 +18,10 @@
     "gen:events": "pnpm -r gen:events",
     "verify:build": "pnpm --filter ag-ui-devtools verify:build",
     "screenshot:panel": "pnpm --filter ag-ui-devtools screenshot:panel",
+    "icons": "pnpm --filter ag-ui-devtools icons",
+    "listing:fixture": "pnpm --filter ag-ui-devtools listing:fixture",
+    "listing:assets": "pnpm --filter ag-ui-devtools listing:assets",
+    "verify:listing": "pnpm --filter ag-ui-devtools verify:listing",
     "test:e2e": "pnpm --filter ag-ui-harness run test:e2e"
   },
   "pnpm": {

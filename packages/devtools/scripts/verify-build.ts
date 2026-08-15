@@ -31,8 +31,10 @@
  *
  * Run against a real `dist/`: `pnpm build && pnpm verify:build`.
  */
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, posix, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import manifestConfig from '../manifest.config';
 
@@ -377,6 +379,48 @@ function checkIcons(manifest: Rec): void {
   }
 }
 
+/**
+ * The icons are generated and committed, so they can go stale against `listing/icon.svg` with no
+ * signal at all — `checkIcons` above only asserts the files exist in `dist/`, never that their
+ * bytes still match the source that made them. The same gap hides cross-version drift: the PNGs
+ * are antialiased Chromium output, so a Playwright/Chromium upgrade changes the committed bytes
+ * and nothing says so either. Re-render to a throwaway directory via `ICON_OUT`
+ * (`render-icons.mts` honours it for exactly this) and diff against what is committed.
+ */
+function checkIconsAreFresh(): void {
+  const rendered = mkdtempSync(join(tmpdir(), 'agui-icons-'));
+  const result = spawnSync('pnpm', ['icons'], {
+    cwd: packageRoot,
+    env: { ...process.env, ICON_OUT: rendered },
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    fail(
+      'icon freshness check could not run',
+      `\`pnpm icons\` failed while re-rendering to a scratch directory: ${result.stderr}`,
+    );
+    return;
+  }
+  for (const size of ICON_SIZES) {
+    const name = `icon-${size}.png`;
+    const committedPath = join(packageRoot, 'public/icons', name);
+    if (!existsSync(committedPath)) {
+      // checkIcons (run against dist/) already reports the manifest-facing version of this; this
+      // guard only needs to not crash comparing against a file that was never committed.
+      continue;
+    }
+    const committed = readFileSync(committedPath);
+    const fresh = readFileSync(join(rendered, name));
+    if (!committed.equals(fresh)) {
+      fail(
+        'committed icon is stale',
+        `public/icons/${name} does not match a fresh render of listing/icon.svg. Run ` +
+          '`pnpm icons` and commit the result.',
+      );
+    }
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 
 function main(): void {
@@ -611,6 +655,7 @@ function main(): void {
   // script and a human Chrome Web Store reviewer would ever notice missing.
 
   checkIcons(distManifest);
+  checkIconsAreFresh();
 
   for (const html of ['src/panel/panel.html', 'src/panel/devtools.html']) {
     if (!existsSync(join(distDir, html))) {

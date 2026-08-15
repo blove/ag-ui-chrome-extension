@@ -66,6 +66,10 @@ pnpm verify:build     # assert dist/ is correct (run after pnpm build)
 pnpm screenshot:panel # render dist/ in a real browser and assert it is not blank
 pnpm package          # → packages/devtools/ag-ui-devtools-<version>.zip
 pnpm gen:events       # regenerate the AG-UI event table from @ag-ui/core
+pnpm icons            # listing/icon.svg → public/icons/*.png (run BEFORE build)
+pnpm listing:fixture  # regenerate the demo capture the screenshots use
+pnpm listing:assets   # → packages/devtools/listing/out/*.png (run AFTER build)
+pnpm verify:listing   # assert the store copy fits every CWS field limit
 ```
 
 `pnpm package` requires an existing `dist/`, so the release sequence is
@@ -82,6 +86,19 @@ pnpm gen:events       # regenerate the AG-UI event table from @ag-ui/core
 
 Chrome 111+ is required: the manifest declares a `world: 'MAIN'` content script, which older Chrome
 silently ignores.
+
+### Store listing assets
+
+Everything the Chrome Web Store form needs is generated from the build, in this order — icons are
+*source* (Vite copies `public/` into `dist/`), screenshots read `dist/`, so they sit on opposite
+sides of `pnpm build`:
+
+    pnpm icons && pnpm build && pnpm listing:assets && pnpm verify:listing
+
+Copy lives in `packages/devtools/listing/copy.md`; the generated upload set lands in
+`packages/devtools/listing/out/`. `pnpm listing:assets` fails while any storyboard shot's UI is
+still a placeholder — see
+[the listing design](docs/superpowers/specs/2026-08-15-chrome-web-store-listing-design.md).
 
 ### Tests
 
