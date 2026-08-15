@@ -18,9 +18,8 @@
  */
 import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
-import type { Run } from '../../../core/model/types';
 import type { InputMessage } from '../../../core/model/input-messages';
-import type { ReconstructedMessage, ToolCallRecord } from '../../../core/model/types';
+import type { ReconstructedMessage, Run, ToolCallRecord } from '../../../core/model/types';
 import { JsonTree } from '../../common/json-tree';
 import { formatDuration } from '../../common/format';
 import type { PanelState } from '../../model/panel-types';
