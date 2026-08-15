@@ -65,20 +65,42 @@ function isFile(path: string): boolean {
   }
 }
 
-/** Serve a directory over HTTP. ES modules will not load over `file://`. */
-export function startServer(root: string): Promise<StaticServer> {
+/**
+ * Serve a directory over HTTP. ES modules will not load over `file://`.
+ *
+ * `mounts` maps a URL path prefix to another directory. The listing generator needs the composing
+ * frame served from the SAME origin as the panel — a cross-origin iframe cannot be driven by
+ * `frameLocator` — so it mounts `listing/` at `/listing/` beside `dist/`. It defaults to `{}`, so
+ * the gate's single-argument `startServer(distDir)` call serves exactly what it always did.
+ */
+export function startServer(
+  root: string,
+  mounts: Record<string, string> = {},
+): Promise<StaticServer> {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    const rel = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
-    const file = join(root, rel);
+    let base = root;
+    let rel = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
+    // Prefix match on the *normalized* path, not on `req.url`: matching before normalizing would
+    // let `/listing/../../etc` select the mount and then resolve outside it. `rel` always starts
+    // with `/`, so the slice leaves the remainder still rooted — `/listing/frames/x` becomes
+    // `/frames/x` under the mounted directory.
+    for (const [prefix, dir] of Object.entries(mounts)) {
+      if (rel.startsWith(`/${prefix}/`)) {
+        base = dir;
+        rel = rel.slice(prefix.length + 1);
+        break;
+      }
+    }
+    const file = join(base, rel);
     // `url.pathname` is always absolute (it starts with `/`), and `normalize` treats a leading
     // `/` as unclimbable — `normalize('/../x')` is `/x`, not `/x` escaped one level up — so `rel`
-    // is already confined under `root` by the time it reaches here. That makes `startsWith(root)`
+    // is already confined under `base` by the time it reaches here. That makes `startsWith(base)`
     // unreachable defence-in-depth as this code stands: no traversal payload can make it fail
     // while `normalize` runs first. It stays because `normalize` running first is an invariant of
     // this function, not of the type system — nothing stops a future edit from reordering these
     // two lines, and the day that happens this is the check that saves it.
-    if (!file.startsWith(root) || !isFile(file)) {
+    if (!file.startsWith(base) || !isFile(file)) {
       res.writeHead(404).end('not found');
       return;
     }
