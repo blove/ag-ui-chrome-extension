@@ -60,10 +60,11 @@ export function CaptureBanner({ store, onEnable }: CaptureBannerProps): JSX.Elem
   if (capture.kind === 'unsupported') {
     return (
       <div class="agui-banner agui-banner--info" role="status">
-        <p class="agui-banner__head">Live capture is not available in this build.</p>
+        <p class="agui-banner__head">Live capture only runs inside the DevTools panel.</p>
         <p class="agui-banner__body">
-          The capture layer lands in a later milestone. Import a <code>.agui.jsonl</code> capture
-          from the Session tab to inspect a stream now — that is the same path a shared bug report
+          This page has no inspected origin to attach to — there is no <code>chrome.devtools</code>{' '}
+          to ask, which is what happens outside DevTools. Import a <code>.agui.jsonl</code> capture
+          from the Session tab to inspect a stream here — that is the same path a shared bug report
           takes, and every tab works against it.
         </p>
       </div>

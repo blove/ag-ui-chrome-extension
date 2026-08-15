@@ -83,7 +83,7 @@ describe('CaptureBanner', () => {
 
   it('explains that this build has no capture layer rather than showing nothing', () => {
     render(<CaptureBanner store={storeWith({ kind: 'unsupported' })} onEnable={vi.fn()} />);
-    expect(screen.getByText(/live capture is not available in this build/i)).toBeTruthy();
+    expect(screen.getByText(/only runs inside the DevTools panel/i)).toBeTruthy();
     expect(screen.getByText(/\.agui\.jsonl/)).toBeTruthy();
   });
 

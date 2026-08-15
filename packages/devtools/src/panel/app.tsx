@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import type { JSX } from 'preact';
 import type { PanelStore } from './model/store';
 import { raiseSignal, selectTab, setCapture, setFramework } from './model/store';
+import { useLiveCapture, type EnableStatus } from './capture/use-live-capture';
 import { usePanelState } from './model/use-panel-state';
 import { applyLoaded } from './import/apply-loaded';
 import { DropZone } from './import/drop-zone';
@@ -58,6 +59,25 @@ function resolveOrigin(onOrigin: (origin: string) => void): void {
   });
 }
 
+/**
+ * Why Enable did not turn capture on.
+ *
+ * Each branch names the actual cause. "Something went wrong" would put the user back where the
+ * capture banner started them — unable to tell a refusal from a broken extension.
+ */
+function enableFailure(status: Exclude<EnableStatus, null>): string {
+  switch (status.kind) {
+    case 'denied':
+      return 'Access to this origin was declined, so capture stayed off. Press Enable again to retry, or import a .agui.jsonl capture from the Session tab.';
+    case 'unavailable':
+      return 'This panel is not running inside DevTools, so there is no origin to grant. Import a .agui.jsonl capture from the Session tab instead.';
+    case 'error':
+      return `Chrome refused the permission request: ${status.message}`;
+    case 'granted':
+      return '';
+  }
+}
+
 /** The bytes an imported capture was decoded from, kept so a re-decode is possible. */
 interface RetainedSource {
   text: string;
@@ -74,9 +94,7 @@ interface RetainedSource {
  */
 export function App({ store }: { store: PanelStore }): JSX.Element {
   const state = usePanelState(store);
-  // Phase 1 has no capture layer, so Enable cannot turn capture on. Saying that when the button
-  // is pressed is the honest alternative to a button that silently does nothing.
-  const [enableBlocked, setEnableBlocked] = useState(false);
+  const live = useLiveCapture(store);
 
   /*
    * The raw JSONL behind the current capture.
@@ -205,7 +223,12 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
           <RunSelector store={store} />
         </div>
         <TabStrip store={store} />
-        <Toolbar store={store} onImport={() => store.update((s) => selectTab(s, 'session'))} />
+        <Toolbar
+          store={store}
+          onImport={() => store.update((s) => selectTab(s, 'session'))}
+          onSetRecording={live.setRecording}
+          onClear={live.clearBuffer}
+        />
       </div>
 
       {/*
@@ -221,18 +244,30 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
         </p>
       )}
 
-      <CaptureBanner
-        store={store}
-        onEnable={() => {
-          setEnableBlocked(true);
-          store.update((s) => selectTab(s, 'session'));
-        }}
-      />
+      <CaptureBanner store={store} onEnable={live.enable} />
 
-      {enableBlocked && state.source.kind !== 'imported' && (
+      {/*
+       * What Enable did, and what to do next.
+       *
+       * The grant is only half of turning capture on: the hooks install ahead of the page's own
+       * scripts, so nothing is captured until the page reloads. A panel that granted and then
+       * sat there would look broken to a user watching an already-running page — which is
+       * exactly the failure the capture banner's reload note exists to prevent, so the button
+       * is offered here rather than leaving the user to find it.
+       */}
+      {live.awaitingReload && (
         <p class="agui-app__note" role="status">
-          Capture cannot be enabled in this build — the capture layer lands in a later milestone.
-          Import a <code>.agui.jsonl</code> capture from the Session tab instead.
+          Capture is on. It takes effect on the next page load — the hooks install before the
+          page&rsquo;s own scripts run.{' '}
+          <button type="button" class="agui-app__note-action" onClick={live.reloadInspectedPage}>
+            Reload the inspected page
+          </button>
+        </p>
+      )}
+
+      {live.status !== null && live.status.kind !== 'granted' && (
+        <p class="agui-app__note" role="alert">
+          {enableFailure(live.status)}
         </p>
       )}
 

@@ -1203,13 +1203,28 @@ li[data-severity='warning'] .agui-detail__severity {
   font-weight: 600;
 }
 
-/* The "Enable cannot do anything in this build" note. An explanation, not a fault. */
+/* The panel's own status line — what Enable did, and the reload it now needs. */
 .agui-app__note {
   margin: 0;
   padding: 6px 12px;
   border-bottom: 1px solid var(--agui-border);
   background: var(--agui-surface);
   color: var(--agui-fg-muted);
+}
+
+/* Matches .agui-banner__action, minus its top margin: this one sits inline in a sentence. */
+.agui-app__note-action {
+  font: inherit;
+  padding: 1px 8px;
+  border: 1px solid var(--agui-accent);
+  border-radius: 3px;
+  background: var(--agui-surface-raised);
+  color: var(--agui-accent);
+  cursor: pointer;
+}
+
+.agui-app__note-action:hover {
+  background: var(--agui-hover);
 }
 
 /* --- Empty and not-yet-built states -------------------------------------- */
