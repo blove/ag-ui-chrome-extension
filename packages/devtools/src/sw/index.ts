@@ -636,7 +636,9 @@ function attachRelayPort(port: chrome.runtime.Port): void {
 /* Panel port                                                                   */
 /* -------------------------------------------------------------------------- */
 
-function snapshotFor(tabId: number): SwMessage {
+type Snapshot = Extract<SwMessage, { kind: 'snapshot' }>;
+
+function snapshotFor(tabId: number): Snapshot {
   const state = ensureTab(tabId);
   return {
     kind: 'snapshot',
@@ -832,28 +834,43 @@ chrome.permissions.onRemoved.addListener((permissions: chrome.permissions.Permis
 });
 
 /**
+ * Every tab's snapshot — literally the message `subscribe` sends a panel, built by the same
+ * function.
+ *
+ * READ THROUGH `snapshotFor`, NOT OUT OF THE STATE BESIDE IT. The harness's whole claim is that
+ * what it asserts on is what a panel is told; a hook that assembled its own view of the same
+ * state could keep passing while the panel's message lost a field, which is exactly the defect
+ * this hook is now used to hold. Measured: with the hook reading state directly, deleting
+ * `closed` from `snapshotFor` left the entire e2e green.
+ */
+function everySnapshot(): Snapshot[] {
+  return [...tabs.keys()].map(snapshotFor);
+}
+
+/**
  * Aggregated across tabs: the hook's signature takes no `tabId`, and the harness drives exactly
  * one page. Ordering is per tab — `seq` is per tab too — so a multi-tab read is a concatenation,
  * not an interleave.
  */
 globalThis.__AGUI_DT_TEST__ = {
   records(): CaptureRecord[] {
-    return [...tabs.values()].flatMap((state) => state.buffer.records());
+    return everySnapshot().flatMap((snapshot) => snapshot.records);
   },
   requests(): RequestLine[] {
-    return [...tabs.values()].flatMap((state) => state.buffer.requests());
+    return everySnapshot().flatMap((snapshot) => snapshot.requests);
   },
   droppedBefore(): number {
-    return [...tabs.values()].reduce((total, state) => total + droppedFor(state), 0);
+    return everySnapshot().reduce((total, snapshot) => total + snapshot.droppedBefore, 0);
   },
   bytes(): number {
+    // The one figure no panel is sent: it describes the buffer's own occupancy, not the capture.
     return [...tabs.values()].reduce((total, state) => total + state.buffer.bytes(), 0);
   },
   instrumented(): boolean {
-    return [...tabs.values()].some(instrumentedFor);
+    return everySnapshot().some((snapshot) => snapshot.instrumented);
   },
   closes(): ClosedConn[] {
-    return [...tabs.values()].flatMap(closesFor);
+    return everySnapshot().flatMap((snapshot) => snapshot.closed);
   },
   clear(): void {
     for (const [tabId, state] of tabs) clearTab(tabId, state);
