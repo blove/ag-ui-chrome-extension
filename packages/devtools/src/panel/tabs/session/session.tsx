@@ -47,8 +47,6 @@ function describeCapture(capture: CaptureStatus): string {
       switch (capture.signal.level) {
         case 'stream':
           return `off for ${capture.origin} — an event stream was seen here`;
-        case 'markers':
-          return `off for ${capture.origin} — ${capture.signal.detail}`;
         case 'none':
           return `off for ${capture.origin} — nothing on the wire yet, which is normal before the first message`;
       }
@@ -102,7 +100,18 @@ export function Session({ store, onLoaded }: SessionProps): JSX.Element {
 
       <h3 class="agui-session__heading">Detected</h3>
       <dl class="agui-session__grid">
-        <Row label="Framework" value="not detected — detection ships with the capture layer" />
+        {/*
+         * The one row that IS answered before the capture layer exists.
+         *
+         * Requirements §4.3 puts the framework fingerprint here and only here: it labels the
+         * session, never gates capture. It says how the app was built, which is useful when
+         * reading a bug report and says nothing whatsoever about whether the app speaks AG-UI —
+         * AG-UI is a wire protocol with no DOM footprint.
+         */}
+        <Row
+          label="Framework"
+          value={state.framework ?? 'not identified — no framework fingerprint in the page'}
+        />
         <Row label="Endpoints" value="not detected — detection ships with the capture layer" />
         <Row
           label="Transport"

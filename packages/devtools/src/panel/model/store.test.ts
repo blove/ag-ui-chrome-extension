@@ -10,6 +10,7 @@ import {
   selectSeq,
   selectTab,
   setCapture,
+  setFramework,
   setTextFilter,
   toggleExpandChunks,
   toggleIssuesOnly,
@@ -246,31 +247,18 @@ describe('setCapture', () => {
 /**
  * P11's monotonic rule.
  *
- * Two independent detectors write this field — a page-load probe and a network watcher — and
- * neither knows what the other found. Without a rule that the level only ever moves UP, a probe
- * that resolves late would overwrite "a stream was seen" with the weaker "this looks like an AG-UI
- * app", and the panel would quietly walk back a claim it had already earned.
+ * Detection only ever strengthens the offer, so the level must only ever move UP. The rule is
+ * cheap to keep and the alternative is a panel that visibly walks back a claim it had already
+ * earned: `observeNetwork` fires once per subscription, and a re-subscribe on navigation would
+ * otherwise be able to reset a stream that was genuinely seen.
  */
 describe('raiseSignal', () => {
   function off(signal: DetectionSignal): PanelState {
     return { ...loadedState(), capture: { kind: 'off', origin: 'https://example.test', signal } };
   }
 
-  it('raises none to markers', () => {
-    const next = expectPure(off({ level: 'none' }), (s) =>
-      raiseSignal(s, { level: 'markers', detail: 'ag-ui-shell element' }),
-    );
-    expect(next.capture).toEqual({
-      kind: 'off',
-      origin: 'https://example.test',
-      signal: { level: 'markers', detail: 'ag-ui-shell element' },
-    });
-  });
-
-  it('raises markers to stream', () => {
-    const next = raiseSignal(off({ level: 'markers', detail: 'Angular 21.1.6' }), {
-      level: 'stream',
-    });
+  it('raises none to stream', () => {
+    const next = expectPure(off({ level: 'none' }), (s) => raiseSignal(s, { level: 'stream' }));
     expect(next.capture).toEqual({
       kind: 'off',
       origin: 'https://example.test',
@@ -278,20 +266,16 @@ describe('raiseSignal', () => {
     });
   });
 
-  it('never lets markers arriving later downgrade a stream that was already seen', () => {
+  it('never downgrades a stream that was already seen', () => {
     const seen = off({ level: 'stream' });
-    const next = raiseSignal(seen, { level: 'markers', detail: 'ag-ui-shell element' });
-    expect(next).toBe(seen);
+    expect(raiseSignal(seen, { level: 'none' })).toBe(seen);
   });
 
-  it('ignores a repeat of the level already held, detail and all', () => {
-    const held = off({ level: 'markers', detail: 'ag-ui-shell element' });
-    expect(raiseSignal(held, { level: 'markers', detail: 'Angular 21.1.6' })).toBe(held);
-  });
-
-  it('ignores a level of none, which can never be an upgrade', () => {
-    const held = off({ level: 'none' });
-    expect(raiseSignal(held, { level: 'none' })).toBe(held);
+  it('ignores a repeat of the level already held', () => {
+    const held = off({ level: 'stream' });
+    expect(raiseSignal(held, { level: 'stream' })).toBe(held);
+    const quiet = off({ level: 'none' });
+    expect(raiseSignal(quiet, { level: 'none' })).toBe(quiet);
   });
 
   it('leaves a capture that is not off alone — there is no offer to strengthen', () => {
@@ -300,6 +284,33 @@ describe('raiseSignal', () => {
 
     const unsupported = loadedState();
     expect(raiseSignal(unsupported, { level: 'stream' })).toBe(unsupported);
+  });
+});
+
+/**
+ * The framework label is session metadata, not a capture signal.
+ *
+ * Requirements §4.3: a framework fingerprint labels the session, never gates capture. It lives
+ * beside the capture status rather than inside it for exactly that reason — nothing about the
+ * offer, the banner, or the signal may read it.
+ */
+describe('setFramework', () => {
+  it('records the label without mutating the input', () => {
+    const next = expectPure(loadedState(), (s) => setFramework(s, 'Angular 21.1.6'));
+    expect(next.framework).toBe('Angular 21.1.6');
+  });
+
+  it('leaves the capture status untouched', () => {
+    const s: PanelState = {
+      ...loadedState(),
+      capture: { kind: 'off', origin: 'https://example.test', signal: { level: 'none' } },
+    };
+    expect(setFramework(s, 'Angular 21.1.6').capture).toBe(s.capture);
+  });
+
+  it('clears back to null', () => {
+    const labelled = setFramework(loadedState(), 'Angular 21.1.6');
+    expect(setFramework(labelled, null).framework).toBeNull();
   });
 });
 

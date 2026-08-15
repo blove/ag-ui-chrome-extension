@@ -19,13 +19,16 @@ export type PanelSource =
  * Design decision P11 replaces P5's detect-then-offer with always-offer: measured against a real
  * deployment, a production AG-UI app emits no AG-UI traffic at all until the user sends a message,
  * so at the moment the panel first opens there is nothing on the wire to see. A detector that
- * gated the Enable button would therefore hide it exactly when it is most needed. These three
- * levels only ever change what the banner SAYS.
+ * gated the Enable button would therefore hide it exactly when it is most needed. These levels
+ * only ever change what the banner SAYS.
+ *
+ * There are two of them, and there cannot be a third from the page: AG-UI is a WIRE protocol and
+ * specifies nothing in the DOM, so no markup — no custom element, no framework attribute — can
+ * support a claim about whether an origin speaks it. That is precisely why requirements §4.1
+ * chose content-based detection, so the tool works on a custom endpoint in a framework nobody has
+ * heard of. Traffic is the only evidence there is.
  */
-export type DetectionSignal =
-  | { level: 'none' }
-  | { level: 'markers'; detail: string }
-  | { level: 'stream' };
+export type DetectionSignal = { level: 'none' } | { level: 'stream' };
 
 /**
  * Capture availability for the inspected origin. Phase 1 never reaches 'on'.
@@ -53,6 +56,15 @@ export interface EventFilter {
 export interface PanelState {
   source: PanelSource;
   capture: CaptureStatus;
+  /**
+   * The inspected page's framework, e.g. `Angular 21.1.6`. `null` when none was identified.
+   *
+   * Session metadata and nothing more. Requirements §4.3: a framework fingerprint labels the
+   * session, never gates capture — which is why it sits BESIDE `capture` rather than inside it.
+   * Knowing the page is Angular says nothing about whether it speaks AG-UI, so no capture
+   * decision, banner, or signal may read this field.
+   */
+  framework: string | null;
   tab: TabId;
   scope: RunScope;
   filter: EventFilter;
@@ -82,6 +94,7 @@ export function initialPanelState(): PanelState {
   return {
     source: { kind: 'empty' },
     capture: { kind: 'unsupported' },
+    framework: null,
     tab: 'timeline',
     scope: null,
     filter: { text: '', issuesOnly: false },

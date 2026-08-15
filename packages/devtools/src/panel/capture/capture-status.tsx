@@ -33,13 +33,16 @@ function ReloadNote(): JSX.Element {
 /**
  * The three honest capture states of design §5, plus phase 1's fourth.
  *
- * Design decision P11: **always offer, never claim nothing is there.** Every capture-off branch
- * below carries the same Enable button, and the detection signal changes only the wording. That
- * is a correction, not a preference — P5 shipped detect-then-offer, and measured against a real
+ * Design decision P11: **always offer, never claim nothing is there.** Both capture-off branches
+ * below carry the same Enable button, and the detection signal changes only the wording. That is
+ * a correction, not a preference — P5 shipped detect-then-offer, and measured against a real
  * deployment it was misleading: a production AG-UI app emits no AG-UI traffic at all until the
  * user sends a message, so the detector has nothing to see at exactly the moment the user first
  * opens the panel. "No AG-UI stream detected on this origin" was true, useless, and read as a
  * verdict on the page.
+ *
+ * Nothing here reads `state.framework`. The fingerprint labels the session (requirements §4.3);
+ * it is not evidence about AG-UI, which has no DOM footprint to fingerprint.
  *
  * Renders nothing once an imported capture is on screen — the user is looking at data and does
  * not need to be told about a capture layer they are not using — and nothing once live records
@@ -103,30 +106,18 @@ export function CaptureBanner({ store, onEnable }: CaptureBannerProps): JSX.Elem
     );
   }
 
-  // Page-load markers (design §4a). Quoting `detail` rather than asserting a framework keeps the
-  // claim checkable: the user can look for `ag-ui-shell` in the Elements panel and agree or not.
-  if (capture.signal.level === 'markers') {
-    return (
-      <div class="agui-banner agui-banner--offer" role="status">
-        <p class="agui-banner__head">
-          This looks like an AG-UI app — {capture.signal.detail}.
-        </p>
-        <p class="agui-banner__body">
-          Those are page-load markers, not traffic: capture is off for {capture.origin}, so nothing
-          on the wire has been read. Enabling capture grants access to {capture.origin} and{' '}
-          <ReloadNote />
-        </p>
-        {enable}
-      </div>
-    );
-  }
-
   /*
    * Nothing seen — and this is the branch P11 exists for.
    *
    * It may not say "nothing detected". A production AG-UI app is silent until the user sends a
    * message, so on first open this state carries no information about the page whatsoever. The
    * only honest thing to report is the panel's own ignorance, and then to offer anyway.
+   *
+   * There is no third, in-between state to reach for, and looking for one is what P11's first
+   * attempt got wrong: AG-UI is a wire protocol and specifies nothing in the DOM, so no page-load
+   * markup can raise the panel's confidence. The framework fingerprint on the Session tab is not
+   * a weaker version of this signal — it is a different fact, about how the app was built rather
+   * than about what it speaks.
    */
   return (
     <div class="agui-banner agui-banner--offer" role="status">

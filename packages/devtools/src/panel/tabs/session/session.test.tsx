@@ -57,19 +57,11 @@ describe('Session', () => {
     expect(value.textContent).not.toMatch(/nothing detected/i);
   });
 
-  it('quotes the page-load markers behind a capture-off origin', () => {
-    const store = createPanelStore({
-      ...initialPanelState(),
-      capture: {
-        kind: 'off',
-        origin: 'https://app.example',
-        signal: { level: 'markers', detail: 'ag-ui-shell element · Angular 21.1.6' },
-      },
-    });
+  it('labels the session with the framework the page probe found', () => {
+    const store = createPanelStore({ ...initialPanelState(), framework: 'Angular 21.1.6' });
     render(<Session store={store} />);
-    expect(
-      screen.getByText('off for https://app.example — ag-ui-shell element · Angular 21.1.6'),
-    ).toBeTruthy();
+    expect(screen.getByText('Framework')).toBeTruthy();
+    expect(screen.getByText('Angular 21.1.6')).toBeTruthy();
   });
 
   it('reports undetected framework and endpoints rather than omitting them', () => {
@@ -79,6 +71,7 @@ describe('Session', () => {
     expect(
       screen.getAllByText(/not detected — detection ships with the capture layer/).length,
     ).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/no framework fingerprint in the page/)).toBeTruthy();
   });
 
   it('summarizes issues by severity', () => {

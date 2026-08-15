@@ -30,23 +30,6 @@ describe('CaptureBanner', () => {
     expect(onEnable).toHaveBeenCalledTimes(1);
   });
 
-  it('quotes the page-load markers it found, and still offers Enable', () => {
-    render(
-      <CaptureBanner
-        store={storeWith({
-          kind: 'off',
-          origin: 'https://app.example',
-          signal: { level: 'markers', detail: 'ag-ui-shell element · Angular 21.1.6' },
-        })}
-        onEnable={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText(/looks like an AG-UI app/i)).toBeTruthy();
-    expect(screen.getByText(/ag-ui-shell element · Angular 21\.1\.6/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: /enable capture for/i })).toBeTruthy();
-  });
-
   /*
    * The whole point of P11.
    *
@@ -129,22 +112,30 @@ describe('CaptureBanner', () => {
     act(() => {
       store.update((s) => ({
         ...s,
-        capture: {
-          kind: 'off',
-          origin: 'https://app.example',
-          signal: { level: 'markers', detail: 'ag-ui-shell element' },
-        },
-      }));
-    });
-    expect(screen.getByText(/looks like an AG-UI app/i)).toBeTruthy();
-
-    act(() => {
-      store.update((s) => ({
-        ...s,
         capture: { kind: 'off', origin: 'https://app.example', signal: { level: 'stream' } },
       }));
     });
     expect(screen.getByText(/event stream was seen/i)).toBeTruthy();
     expect(screen.getByRole('button', { name: /enable capture for/i })).toBeTruthy();
+  });
+
+  /*
+   * The banner never mentions the framework, and this test is here to keep it that way.
+   *
+   * A framework fingerprint is a DOM heuristic, and AG-UI is a wire protocol that specifies
+   * nothing in the DOM — so no markup can support a claim about whether this page speaks AG-UI.
+   * Requirements §4.3: the fingerprint labels the session (it is on the Session tab), never gates
+   * or colours capture.
+   */
+  it('says nothing about the framework, however confident the panel is about it', () => {
+    const store = storeWith({
+      kind: 'off',
+      origin: 'https://app.example',
+      signal: { level: 'none' },
+    });
+    store.update((s) => ({ ...s, framework: 'Angular 21.1.6' }));
+    render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+
+    expect(screen.getByRole('status').textContent).not.toMatch(/angular/i);
   });
 });

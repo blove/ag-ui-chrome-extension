@@ -132,19 +132,23 @@ capture." So it belongs in the Session tab as metadata, not in the capture banne
 
 ## 5. Capture-off and first run
 
-Three honest states, never a silent empty one. Under P11 all three of the capture-off states offer
-Enable; the detection signal changes only the wording:
+Three honest states, never a silent empty one. Under P11 both capture-off states offer Enable; the
+detection signal changes only the wording:
 
 - **An event stream was seen** (strongest) — names the origin, and says only what the network log
-  can support: an SSE response finished here, contents unknown
-- **This looks like an AG-UI app** — quotes the page-load markers of §4a, e.g. `ag-ui-shell element ·
-  Angular 21.1.6`, and says they are markup rather than traffic
+  can support: an SSE response finished here, contents unknown. Deliberately not "an AG-UI stream":
+  `chrome.devtools.network` sees finished responses, never a frame, so it cannot tell an AG-UI
+  stream from a progress-bar one
 - **Capture is off for this origin** — says that AG-UI traffic often only appears once the user
   sends a message, so the panel cannot tell yet. It may NOT say "nothing detected": that reads as a
-  verdict on the page when it is only an absence of evidence
+  verdict on the page when it is only an absence of evidence. Per §4a there is no third, stronger
+  pre-traffic state to reach for
 - **Capture on, idle** — waiting for a run
 
-All four explain the reload requirement, and the first three carry the same Enable button.
+All three explain the reload requirement, and the two capture-off ones carry the same Enable button.
+
+The framework label of §4a appears on the **Session** tab (`Framework: Angular 21.1.6`) and never in
+this banner — it is a fact about how the app was built, not about what it speaks.
 
 Import is first-class here rather than a fallback. Dropping a `.agui.jsonl` on a panel with no
 capture loads it read-only with every tab working, which is the shareable-bug-report workflow from

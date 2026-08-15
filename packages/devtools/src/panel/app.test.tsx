@@ -300,9 +300,9 @@ describe('App', () => {
     expect(screen.getByText(/event stream was seen/i)).toBeTruthy();
   });
 
-  it('raises the signal to markers from the page-load probe', async () => {
+  it('records the framework label the page probe reports, on the Session tab', async () => {
     const stub = stubEval('https://app.example');
-    const store = createPanelStore();
+    const store = createPanelStore({ ...initialPanelState(), tab: 'session' });
     render(<App store={store} />);
 
     expect(store.get().capture).toEqual({
@@ -312,25 +312,23 @@ describe('App', () => {
     });
 
     await act(async () => {
-      stub.answerProbe({ agui: 'ag-ui-shell', ngVersion: '21.1.6' });
+      stub.answerProbe('21.1.6');
     });
 
-    expect(store.get().capture).toEqual({
-      kind: 'off',
-      origin: 'https://app.example',
-      signal: { level: 'markers', detail: 'ag-ui-shell element · Angular 21.1.6' },
-    });
-    expect(screen.getByText(/ag-ui-shell element · Angular 21\.1\.6/)).toBeTruthy();
+    expect(store.get().framework).toBe('Angular 21.1.6');
+    expect(screen.getByText('Angular 21.1.6')).toBeTruthy();
   });
 
   /*
-   * P11's monotonic rule, end to end.
+   * Requirements §4.3, enforced end to end: the fingerprint labels the session, never gates
+   * capture.
    *
-   * The two detectors race: the page-load probe is one `inspectedWindow.eval` round trip, and a
-   * stream can finish before it answers. Whichever order they land in, the panel must never walk
-   * back from "a stream was seen" to the weaker "this looks like an AG-UI app".
+   * AG-UI is a wire protocol and specifies nothing in the DOM, so no page markup — a framework
+   * attribute least of all — can support a claim about whether this origin speaks AG-UI. The
+   * probe must therefore leave the capture signal exactly where it found it, whichever order the
+   * two land in.
    */
-  it('never lets a late marker probe downgrade a stream already seen', async () => {
+  it('never lets the framework probe touch the capture signal', async () => {
     const stub = stubEval('https://app.example');
     const store = createPanelStore();
     render(<App store={store} />);
@@ -338,21 +336,19 @@ describe('App', () => {
     act(() => {
       emitEventStream();
     });
-    expect(store.get().capture).toEqual({
+    const afterStream = store.get().capture;
+    expect(afterStream).toEqual({
       kind: 'off',
       origin: 'https://app.example',
       signal: { level: 'stream' },
     });
 
     await act(async () => {
-      stub.answerProbe({ agui: 'ag-ui-shell', ngVersion: '21.1.6' });
+      stub.answerProbe('21.1.6');
     });
 
-    expect(store.get().capture).toEqual({
-      kind: 'off',
-      origin: 'https://app.example',
-      signal: { level: 'stream' },
-    });
+    expect(store.get().capture).toBe(afterStream);
+    expect(store.get().framework).toBe('Angular 21.1.6');
     expect(screen.getByText(/event stream was seen/i)).toBeTruthy();
   });
 

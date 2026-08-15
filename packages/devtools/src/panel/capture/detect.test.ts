@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { observeNetwork, probePageMarkers } from './detect';
+import { observeNetwork, probeFramework } from './detect';
 
 type Listener = (request: chrome.devtools.network.Request) => void;
 
@@ -111,16 +111,16 @@ function installEval(fn: (expression: string, callback?: EvalCallback) => void):
  * Install an `inspectedWindow.eval` that REALLY evaluates the expression, against this file's
  * jsdom document.
  *
- * The expression is the half of `probePageMarkers` that runs inside the inspected page, so a stub
- * handing back canned objects would exercise the ranking and leave the DOM query — the part that
- * has to find `ag-ui-shell` and `ng-version` on a real page — completely untested. The JSON round
- * trip stands in for the real API's serialization boundary: whatever the page computes reaches the
- * panel as plain data.
+ * The expression is the half of `probeFramework` that runs inside the inspected page, so a stub
+ * handing back canned strings would exercise the parsing and leave the DOM read — the part that
+ * has to find `ng-version` on a real page — completely untested. The JSON round trip stands in
+ * for the real API's serialization boundary: whatever the page computes reaches the panel as
+ * plain data.
  */
 function installLiveEval(): void {
   installEval((expression, callback) => {
     const value: unknown = new Function(`return (${expression});`)();
-    callback?.(JSON.parse(JSON.stringify(value)) as unknown);
+    callback?.(JSON.parse(JSON.stringify(value ?? null)) as unknown);
   });
 }
 
@@ -135,7 +135,16 @@ interface WeakMarkers {
   __REACT_DEVTOOLS_GLOBAL_HOOK__?: unknown;
 }
 
-describe('probePageMarkers', () => {
+/**
+ * `probeFramework` labels the session and nothing else.
+ *
+ * It is deliberately NOT an AG-UI signal. AG-UI is a wire protocol: it specifies nothing in the
+ * DOM, so there is no pre-traffic markup that means "this app speaks AG-UI" — which is exactly
+ * why requirements §4.1 chose content-based detection, so the tool works on a custom endpoint in
+ * a framework nobody has heard of. Requirements §4.3 puts the framework fingerprint in its place:
+ * it labels the session, never gates capture.
+ */
+describe('probeFramework', () => {
   afterEach(() => {
     document.body.innerHTML = '';
     const weak = globalThis as WeakMarkers;
@@ -144,41 +153,20 @@ describe('probePageMarkers', () => {
     delete weak.__REACT_DEVTOOLS_GLOBAL_HOOK__;
   });
 
-  it('reports the ag-ui custom element ahead of the Angular version', async () => {
+  it('reads the Angular version off the ng-version attribute', async () => {
     installLiveEval();
-    document.body.innerHTML =
-      '<app-root ng-version="21.1.6"><ag-ui-shell></ag-ui-shell></app-root>';
+    document.body.innerHTML = '<app-root ng-version="21.1.6"><div>hi</div></app-root>';
 
-    await expect(probePageMarkers()).resolves.toEqual({
-      level: 'markers',
-      detail: 'ag-ui-shell element · Angular 21.1.6',
-    });
+    await expect(probeFramework()).resolves.toBe('Angular 21.1.6');
   });
 
-  it('names whichever ag-ui element it actually found', async () => {
-    installLiveEval();
-    document.body.innerHTML = '<div><ag-ui-thread-view></ag-ui-thread-view></div>';
-
-    await expect(probePageMarkers()).resolves.toEqual({
-      level: 'markers',
-      detail: 'ag-ui-thread-view element',
-    });
-  });
-
-  it('reports Angular alone when no ag-ui element is on the page', async () => {
-    installLiveEval();
-    document.body.innerHTML = '<app-root ng-version="21.1.6"></app-root>';
-
-    await expect(probePageMarkers()).resolves.toEqual({
-      level: 'markers',
-      detail: 'Angular 21.1.6',
-    });
-  });
-
-  // Design §4a, measured: the React DevTools hook was present on a production ANGULAR app, and
-  // `window.ng` / `getAllAngularRootElements` are stripped from production builds. Neither may
-  // stand alone, and nothing ranks below them, so alone is all they can ever be — hence null.
-  it('resolves null when the only markers are the React hook and the Angular globals', async () => {
+  /*
+   * Design §4a, measured on a production Angular app: `window.ng` and
+   * `getAllAngularRootElements` are stripped from production builds, and the React DevTools hook
+   * was PRESENT — reporting from it would have labelled that app React. `ng-version` is the only
+   * fingerprint that survived the measurement, so it is the only one read.
+   */
+  it('ignores the framework globals and the React hook, which measured unreliable', async () => {
     installLiveEval();
     const weak = globalThis as WeakMarkers;
     weak.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { renderers: new Map() };
@@ -186,14 +174,14 @@ describe('probePageMarkers', () => {
     weak.getAllAngularRootElements = () => [];
     document.body.innerHTML = '<div id="root"></div>';
 
-    await expect(probePageMarkers()).resolves.toBeNull();
+    await expect(probeFramework()).resolves.toBeNull();
   });
 
-  it('resolves null on a page with no markers at all', async () => {
+  it('resolves null on a page carrying no fingerprint', async () => {
     installLiveEval();
     document.body.innerHTML = '<main><p>hello</p></main>';
 
-    await expect(probePageMarkers()).resolves.toBeNull();
+    await expect(probeFramework()).resolves.toBeNull();
   });
 
   it('resolves null when the DevTools APIs are absent', async () => {
@@ -203,19 +191,19 @@ describe('probePageMarkers', () => {
       configurable: true,
     });
 
-    await expect(probePageMarkers()).resolves.toBeNull();
+    await expect(probeFramework()).resolves.toBeNull();
   });
 
   it('resolves null when the page threw', async () => {
     installCannedEval(undefined, { isError: true, code: 'E_PROTOCOLERROR' });
 
-    await expect(probePageMarkers()).resolves.toBeNull();
+    await expect(probeFramework()).resolves.toBeNull();
   });
 
   it('resolves null when the expression itself raised inside the page', async () => {
     installCannedEval(undefined, { isException: true, value: 'ReferenceError: document' });
 
-    await expect(probePageMarkers()).resolves.toBeNull();
+    await expect(probeFramework()).resolves.toBeNull();
   });
 
   /*
@@ -226,24 +214,21 @@ describe('probePageMarkers', () => {
    * contract. The flags are what is checked.
    */
   it('accepts a result carrying a cleared exception object', async () => {
-    installCannedEval({ agui: 'ag-ui-shell', ngVersion: null }, { isError: false });
+    installCannedEval('21.1.6', { isError: false });
 
-    await expect(probePageMarkers()).resolves.toEqual({
-      level: 'markers',
-      detail: 'ag-ui-shell element',
-    });
+    await expect(probeFramework()).resolves.toBe('Angular 21.1.6');
   });
 
-  it('resolves null when the page answers with something that is not the probe shape', async () => {
-    installCannedEval('nope');
+  // The inspected page controls this string and is not trusted: the label goes on screen.
+  it('ignores a forged attribute value that no real version could be', async () => {
+    installCannedEval('x'.repeat(400));
 
-    await expect(probePageMarkers()).resolves.toBeNull();
+    await expect(probeFramework()).resolves.toBeNull();
   });
 
-  // The inspected page controls these strings and is not trusted: `detail` goes on screen.
-  it('ignores forged marker values that no real page element could produce', async () => {
-    installCannedEval({ agui: 'not-an-ag-ui-tag', ngVersion: `${'x'.repeat(400)}` });
+  it('resolves null when the page answers with something that is not a string', async () => {
+    installCannedEval({ ngVersion: '21.1.6' });
 
-    await expect(probePageMarkers()).resolves.toBeNull();
+    await expect(probeFramework()).resolves.toBeNull();
   });
 });
