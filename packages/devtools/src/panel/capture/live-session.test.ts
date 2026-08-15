@@ -462,3 +462,53 @@ describe('createLiveSession', () => {
     });
   });
 });
+
+describe('the request lines an export has to put back', () => {
+  it('projects the request lines onto panel state, not only into the fold', () => {
+    // Export re-encodes from what `PanelState` holds. The fold keeps the request lines so it can
+    // refold; without them on the state as well, a live capture would export a run whose
+    // RunAgentInput was gone and re-import as `run-started-without-input`.
+    const session = createLiveSession();
+
+    const state = session.apply(initialPanelState(), {
+      kind: 'request',
+      request: requestLine(),
+    });
+
+    expect(state.requests).toEqual([requestLine()]);
+  });
+
+  it('replaces them on a snapshot, which is a new dataset', () => {
+    const session = createLiveSession();
+
+    let state = session.apply(initialPanelState(), { kind: 'request', request: requestLine('c9') });
+    state = session.apply(state, {
+      kind: 'snapshot',
+      records: happyRun(),
+      requests: [requestLine('c1')],
+      droppedBefore: 0,
+      instrumented: true,
+    });
+
+    expect(state.requests.map((request) => request.connId)).toEqual(['c1']);
+  });
+
+  it('drops them on cleared, along with everything else the user asked to be rid of', () => {
+    const session = createLiveSession();
+
+    let state = session.apply(initialPanelState(), { kind: 'request', request: requestLine() });
+    state = session.apply(state, { kind: 'cleared' });
+
+    expect(state.requests).toEqual([]);
+  });
+
+  it('keeps them across a refold, so Expand chunks does not lose the run input', () => {
+    const session = createLiveSession();
+
+    let state = session.apply(initialPanelState(), { kind: 'request', request: requestLine() });
+    state = session.apply(state, { kind: 'append', records: happyRun() });
+    state = session.refold(state, { expandChunks: false });
+
+    expect(state.requests).toEqual([requestLine()]);
+  });
+});
