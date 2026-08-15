@@ -23,7 +23,8 @@ is stated.
 | P2 | **No dedicated Issues tab.** Issues appear inline, plus a persistent issue count in the toolbar that doubles as a filter toggle | §9 leaves the validator homeless — inline annotations and a line in Session. A sixth tab would make issues discoverable but divorce them from surrounding events, which is where they are understood. The toolbar count costs ~80px and answers "is my stream correct?" at a glance. |
 | P3 | **Persistent run scope bar above the tab strip**, with an "all runs" option | Departs from §9, which puts the run selector inside Timeline's toolbar. State and Messages are per-run views; Session is global; Timeline is cross-run. Without a visible scope, switching Timeline → State silently carries a selection the user cannot see. ~24px of vertical beats ~96px of horizontal, and "all runs" preserves the cross-run view that concurrent connections and the orphaned-run bucket require. |
 | P4 | Timeline splits list/detail horizontally when wide; below ~600px the detail becomes a resizable bottom pane | Matches Chrome's Network panel, so it needs no explanation. DevTools docked right is commonly 400–500px — the dock most likely for a panel watched alongside a page — so a wide-only layout would exclude a large fraction of use. |
-| P5 | Capture-off origins get **detect-then-offer**, not a dead panel | D3 ships the extension inert. On a non-localhost origin the panel would otherwise open empty, indistinguishable from broken. A passive detection path via `chrome.devtools.network` turns the dead state into the tool's best discovery moment. |
+| P5 | ~~Capture-off origins get **detect-then-offer**~~ **SUPERSEDED by P11.** | D3 ships the extension inert. On a non-localhost origin the panel would otherwise open empty, indistinguishable from broken. A passive detection path via `chrome.devtools.network` turns the dead state into the tool's best discovery moment. |
+| P11 | **Always offer; never claim nothing is there.** The panel offers to enable capture on the current origin unconditionally, and uses detection only to *strengthen* the message, never to gate the offer | P5 was wrong in practice, found by testing against a real deployment (`ag-ui.threadplane.ai/embed`). A production AG-UI app emits **no AG-UI traffic at all until the user sends a message** — page load is Angular bundles, fonts, and Maps. So `chrome.devtools.network` has nothing to see precisely when the user first opens the panel, and "no AG-UI stream detected" is both true and misleading. **Two** honest levels replace it: capture is off here (always offered) → an event stream was seen. A third "page-load markers" level was drafted and then rejected — see §4a, there is no pre-traffic AG-UI marker and there cannot be one. Verified working: detection did fire once a message was sent. |
 | P6 | Live list tails while pinned to the bottom; scrolling up stops the follow | The console/terminal convention. Chosen without debate as the least surprising behaviour. |
 | P7 | The list's left gutter shows `CaptureRecord.seq`, not a row index | Filtering reorders visible rows. `seq` is stable, and it is literally what `Issue.seq` refers to, so an issue and its event stay cross-referenceable under any filter. |
 | P8 | **Build the panel against imported fixtures before the capture layer exists** | See §7. This is the highest-leverage sequencing decision in the document. |
@@ -94,13 +95,60 @@ message reads correctly here and wrong on the page, the bug is in the app.
 
 ---
 
+## 4a. Framework fingerprinting — corrections from a real deployment
+
+Measured against `https://ag-ui.threadplane.ai/embed`, a production Angular AG-UI app. These
+correct requirements §4.3, which was written from expectation rather than measurement.
+
+| Signal | §4.3 says | Measured | Verdict |
+|---|---|---|---|
+| `ng-version` attribute | framework fingerprint | `"21.1.6"`, present in the DOM at page load | **Reliable.** Readable via `inspectedWindow.eval`, no content script needed |
+| `window.ng` | framework fingerprint | **absent** — stripped in production builds | **Unreliable.** Fails on exactly the deployments that matter |
+| `window.getAllAngularRootElements` | framework fingerprint | absent | Unreliable, same reason |
+| React DevTools hook | framework fingerprint | **present on this Angular app** | **Misleading.** Would label an Angular app as React. Never use alone |
+| AG-UI custom elements (`ag-ui-*`) | not mentioned | `ag-ui-shell` present at page load | ~~Strongest pre-traffic signal~~ **REJECTED — see below** |
+
+### There is no pre-traffic AG-UI marker, and there cannot be one
+
+An earlier draft of this section treated the `ag-ui-shell` custom element as an AG-UI detection
+signal. That was wrong, and it is worth recording why rather than quietly deleting.
+
+`ag-ui-shell` is *that application's own component name*. It is not part of AG-UI, and no other
+AG-UI app will necessarily have it. The rule was generalised from a single measured deployment.
+
+The deeper reason it cannot be salvaged: **AG-UI is a wire protocol and specifies nothing in the
+DOM.** There is no markup, no global, and no custom element that an AG-UI app is obliged to
+produce. That is not an oversight in the protocol — it is what lets requirements §4.1 promise
+content-based detection that "works on a custom endpoint at `/v3/chat`, on a framework nobody has
+heard of, on an app that never imported CopilotKit." Any DOM heuristic trades that promise for a
+guess that happens to fit one codebase.
+
+So the honest position is: **nothing on this page can tell you it speaks AG-UI until it emits
+traffic.** Which is exactly why P11 always offers rather than waiting for a signal.
+
+What a page-load probe *can* honestly yield is a **framework label** — `ng-version` is reliable —
+and requirements §4.3 already says a framework fingerprint "labels the session, never gates
+capture." So it belongs in the Session tab as metadata, not in the capture banner as a claim.
+
 ## 5. Capture-off and first run
 
-Three honest states, never a silent empty one:
+Three honest states, never a silent empty one. Under P11 both capture-off states offer Enable; the
+detection signal changes only the wording:
 
-- **AG-UI detected, capture off** — names the origin, offers Enable, explains the reload requirement
-- **Nothing detected yet** — says so plainly, so the panel does not read as broken
+- **An event stream was seen** (strongest) — names the origin, and says only what the network log
+  can support: an SSE response finished here, contents unknown. Deliberately not "an AG-UI stream":
+  `chrome.devtools.network` sees finished responses, never a frame, so it cannot tell an AG-UI
+  stream from a progress-bar one
+- **Capture is off for this origin** — says that AG-UI traffic often only appears once the user
+  sends a message, so the panel cannot tell yet. It may NOT say "nothing detected": that reads as a
+  verdict on the page when it is only an absence of evidence. Per §4a there is no third, stronger
+  pre-traffic state to reach for
 - **Capture on, idle** — waiting for a run
+
+All three explain the reload requirement, and the two capture-off ones carry the same Enable button.
+
+The framework label of §4a appears on the **Session** tab (`Framework: Angular 21.1.6`) and never in
+this banner — it is a fact about how the app was built, not about what it speaks.
 
 Import is first-class here rather than a fallback. Dropping a `.agui.jsonl` on a panel with no
 capture loads it read-only with every tab working, which is the shareable-bug-report workflow from

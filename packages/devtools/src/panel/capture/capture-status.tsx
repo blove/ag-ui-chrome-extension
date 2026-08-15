@@ -5,22 +5,44 @@ import { usePanelState } from '../model/use-panel-state';
 export interface CaptureBannerProps {
   store: PanelStore;
   /**
-   * Invoked by the Enable button in the detect-then-offer state.
+   * Invoked by the Enable button, which every capture-off state carries.
    *
    * Phase 1 ships no capture layer, so a caller that cannot actually enable capture must SAY so
    * — the button may never silently do nothing, which is indistinguishable from a broken panel
-   * and is the exact failure P5 exists to prevent.
+   * and is the exact failure this banner exists to prevent.
    */
   onEnable: () => void;
 }
 
 /**
+ * The reload requirement, worded once.
+ *
+ * It is not a formality: the capture hooks install ahead of the page's own scripts, so a stream
+ * already in flight is unreachable. A user who enables capture and then waits at a page that is
+ * already running would conclude the extension is broken.
+ */
+function ReloadNote(): JSX.Element {
+  return (
+    <>
+      <strong>requires a reload of the inspected page</strong> — the capture hooks install before
+      the page&rsquo;s own scripts run, so a stream already in flight cannot be picked up.
+    </>
+  );
+}
+
+/**
  * The three honest capture states of design §5, plus phase 1's fourth.
  *
- * P5's rule is that a capture-off origin gets detect-then-offer, never a dead panel: an empty
- * panel is indistinguishable from a broken one, and the extension ships inert on every
- * non-localhost origin (D3), so that state is the common first impression rather than an edge
- * case. Every branch here therefore says something true about why nothing is on screen.
+ * Design decision P11: **always offer, never claim nothing is there.** Both capture-off branches
+ * below carry the same Enable button, and the detection signal changes only the wording. That is
+ * a correction, not a preference — P5 shipped detect-then-offer, and measured against a real
+ * deployment it was misleading: a production AG-UI app emits no AG-UI traffic at all until the
+ * user sends a message, so the detector has nothing to see at exactly the moment the user first
+ * opens the panel. "No AG-UI stream detected on this origin" was true, useless, and read as a
+ * verdict on the page.
+ *
+ * Nothing here reads `state.framework`. The fingerprint labels the session (requirements §4.3);
+ * it is not evidence about AG-UI, which has no DOM footprint to fingerprint.
  *
  * Renders nothing once an imported capture is on screen — the user is looking at data and does
  * not need to be told about a capture layer they are not using — and nothing once live records
@@ -60,31 +82,53 @@ export function CaptureBanner({ store, onEnable }: CaptureBannerProps): JSX.Elem
     );
   }
 
-  if (capture.aguiDetected) {
+  const enable = (
+    <button type="button" class="agui-banner__action" onClick={onEnable}>
+      Enable capture for {capture.origin}
+    </button>
+  );
+
+  // Strongest: something answered with an SSE response on this origin. Note what this does NOT
+  // say — `observeNetwork` sees finished responses through the DevTools network log, never a
+  // frame, so it cannot tell an AG-UI stream from a progress-bar one and this must not pretend
+  // otherwise. Saying exactly what was seen is worth more here than a stronger-sounding claim.
+  if (capture.signal.level === 'stream') {
     return (
       <div class="agui-banner agui-banner--offer" role="status">
-        <p class="agui-banner__head">An event stream was detected on {capture.origin}.</p>
+        <p class="agui-banner__head">An event stream was seen on {capture.origin}.</p>
         <p class="agui-banner__body">
-          Capture is off for this origin. Enabling it grants access to {capture.origin} and{' '}
-          <strong>requires a reload of the inspected page</strong> — the capture hooks install
-          before the page&rsquo;s own scripts run, so a stream already in flight cannot be picked
-          up.
+          Capture is off for this origin, so the panel can see that a <code>text/event-stream</code>{' '}
+          response finished here but not what it carried. Enabling capture grants access to{' '}
+          {capture.origin} and <ReloadNote />
         </p>
-        <button type="button" class="agui-banner__action" onClick={onEnable}>
-          Enable capture for {capture.origin}
-        </button>
+        {enable}
       </div>
     );
   }
 
+  /*
+   * Nothing seen — and this is the branch P11 exists for.
+   *
+   * It may not say "nothing detected". A production AG-UI app is silent until the user sends a
+   * message, so on first open this state carries no information about the page whatsoever. The
+   * only honest thing to report is the panel's own ignorance, and then to offer anyway.
+   *
+   * There is no third, in-between state to reach for, and looking for one is what P11's first
+   * attempt got wrong: AG-UI is a wire protocol and specifies nothing in the DOM, so no page-load
+   * markup can raise the panel's confidence. The framework fingerprint on the Session tab is not
+   * a weaker version of this signal — it is a different fact, about how the app was built rather
+   * than about what it speaks.
+   */
   return (
-    <div class="agui-banner agui-banner--quiet" role="status">
-      <p class="agui-banner__head">No AG-UI stream detected on {capture.origin} yet.</p>
+    <div class="agui-banner agui-banner--offer" role="status">
+      <p class="agui-banner__head">Capture is off for {capture.origin}.</p>
       <p class="agui-banner__body">
-        Nothing is wrong — the panel is watching for a <code>text/event-stream</code> response and
-        will offer to enable capture when it sees one. You can also import a{' '}
-        <code>.agui.jsonl</code> capture from the Session tab.
+        AG-UI traffic often only appears once you send a message, so the panel cannot tell yet
+        whether this page speaks AG-UI — enable capture to find out. Enabling grants access to{' '}
+        {capture.origin} and <ReloadNote /> You can also import a <code>.agui.jsonl</code> capture
+        from the Session tab.
       </p>
+      {enable}
     </div>
   );
 }

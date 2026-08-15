@@ -1,14 +1,16 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
 import type { CaptureRecord, Run } from '../../core/model/types';
-import { initialPanelState, type PanelState } from './panel-types';
+import { initialPanelState, type DetectionSignal, type PanelState } from './panel-types';
 import {
   createPanelStore,
   loadFailed,
+  raiseSignal,
   selectScope,
   selectSeq,
   selectTab,
   setCapture,
+  setFramework,
   setTextFilter,
   toggleExpandChunks,
   toggleIssuesOnly,
@@ -226,12 +228,12 @@ describe('toggleExpandChunks', () => {
 describe('setCapture', () => {
   it('replaces the capture status without mutating the input', () => {
     const next = expectPure(loadedState(), (s) =>
-      setCapture(s, { kind: 'off', origin: 'https://example.test', aguiDetected: true }),
+      setCapture(s, { kind: 'off', origin: 'https://example.test', signal: { level: 'stream' } }),
     );
     expect(next.capture).toEqual({
       kind: 'off',
       origin: 'https://example.test',
-      aguiDetected: true,
+      signal: { level: 'stream' },
     });
   });
 
@@ -239,6 +241,76 @@ describe('setCapture', () => {
     const on: PanelState = { ...loadedState(), capture: { kind: 'on', origin: 'https://a.test' } };
     const next = expectPure(on, (s) => setCapture(s, { kind: 'unsupported' }));
     expect(next.capture).toEqual({ kind: 'unsupported' });
+  });
+});
+
+/**
+ * P11's monotonic rule.
+ *
+ * Detection only ever strengthens the offer, so the level must only ever move UP. The rule is
+ * cheap to keep and the alternative is a panel that visibly walks back a claim it had already
+ * earned: `observeNetwork` fires once per subscription, and a re-subscribe on navigation would
+ * otherwise be able to reset a stream that was genuinely seen.
+ */
+describe('raiseSignal', () => {
+  function off(signal: DetectionSignal): PanelState {
+    return { ...loadedState(), capture: { kind: 'off', origin: 'https://example.test', signal } };
+  }
+
+  it('raises none to stream', () => {
+    const next = expectPure(off({ level: 'none' }), (s) => raiseSignal(s, { level: 'stream' }));
+    expect(next.capture).toEqual({
+      kind: 'off',
+      origin: 'https://example.test',
+      signal: { level: 'stream' },
+    });
+  });
+
+  it('never downgrades a stream that was already seen', () => {
+    const seen = off({ level: 'stream' });
+    expect(raiseSignal(seen, { level: 'none' })).toBe(seen);
+  });
+
+  it('ignores a repeat of the level already held', () => {
+    const held = off({ level: 'stream' });
+    expect(raiseSignal(held, { level: 'stream' })).toBe(held);
+    const quiet = off({ level: 'none' });
+    expect(raiseSignal(quiet, { level: 'none' })).toBe(quiet);
+  });
+
+  it('leaves a capture that is not off alone — there is no offer to strengthen', () => {
+    const on: PanelState = { ...loadedState(), capture: { kind: 'on', origin: 'https://a.test' } };
+    expect(raiseSignal(on, { level: 'stream' })).toBe(on);
+
+    const unsupported = loadedState();
+    expect(raiseSignal(unsupported, { level: 'stream' })).toBe(unsupported);
+  });
+});
+
+/**
+ * The framework label is session metadata, not a capture signal.
+ *
+ * Requirements §4.3: a framework fingerprint labels the session, never gates capture. It lives
+ * beside the capture status rather than inside it for exactly that reason — nothing about the
+ * offer, the banner, or the signal may read it.
+ */
+describe('setFramework', () => {
+  it('records the label without mutating the input', () => {
+    const next = expectPure(loadedState(), (s) => setFramework(s, 'Angular 21.1.6'));
+    expect(next.framework).toBe('Angular 21.1.6');
+  });
+
+  it('leaves the capture status untouched', () => {
+    const s: PanelState = {
+      ...loadedState(),
+      capture: { kind: 'off', origin: 'https://example.test', signal: { level: 'none' } },
+    };
+    expect(setFramework(s, 'Angular 21.1.6').capture).toBe(s.capture);
+  });
+
+  it('clears back to null', () => {
+    const labelled = setFramework(loadedState(), 'Angular 21.1.6');
+    expect(setFramework(labelled, null).framework).toBeNull();
   });
 });
 

@@ -6,7 +6,7 @@
  * outside the store so they can be tested without constructing one, and so a component can compose
  * two of them into a single `update` without an intermediate render.
  */
-import type { CaptureStatus, PanelState, RunScope, TabId } from './panel-types';
+import type { CaptureStatus, DetectionSignal, PanelState, RunScope, TabId } from './panel-types';
 import { initialPanelState } from './panel-types';
 
 export interface PanelStore {
@@ -95,6 +95,40 @@ export function toggleExpandChunks(s: PanelState): PanelState {
 
 export function setCapture(s: PanelState, capture: CaptureStatus): PanelState {
   return { ...s, capture };
+}
+
+/** How much a level is worth. Only the ORDER matters; the numbers are never stored or shown. */
+const SIGNAL_RANK: Record<DetectionSignal['level'], number> = { none: 0, stream: 1 };
+
+/**
+ * Strengthen the detection signal on a capture-off origin. The level only ever moves UP.
+ *
+ * Detection only ever strengthens the offer (P11), so walking one back would be a visible loss of
+ * a claim the panel had already earned, for no reason the user could see. `observeNetwork` fires
+ * once per subscription and a navigation re-subscribes, so without the rule a re-arm could reset
+ * a stream that genuinely happened.
+ *
+ * Returns the input unchanged — the same object, so a memoized subscriber sees no change — when
+ * the new signal is not stronger, or when there is no offer to strengthen because capture is not
+ * `off`.
+ */
+export function raiseSignal(s: PanelState, signal: DetectionSignal): PanelState {
+  if (s.capture.kind !== 'off') return s;
+  if (SIGNAL_RANK[signal.level] <= SIGNAL_RANK[s.capture.signal.level]) return s;
+  return { ...s, capture: { ...s.capture, signal } };
+}
+
+/**
+ * Label the session with the inspected page's framework.
+ *
+ * Deliberately a separate action from `setCapture` and `raiseSignal`, writing a separate field:
+ * requirements §4.3 says a framework fingerprint labels the session and never gates capture, and
+ * keeping it out of `CaptureStatus` is what makes that structural rather than a promise. Knowing
+ * the page is Angular says nothing about whether it speaks AG-UI — AG-UI is a wire protocol with
+ * no DOM footprint at all.
+ */
+export function setFramework(s: PanelState, framework: string | null): PanelState {
+  return { ...s, framework };
 }
 
 export function loadFailed(s: PanelState, message: string): PanelState {

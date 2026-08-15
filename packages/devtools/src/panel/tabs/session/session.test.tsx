@@ -46,6 +46,24 @@ describe('Session', () => {
     expect(screen.getByText('on for http://localhost:3000')).toBeTruthy();
   });
 
+  it('reports a capture-off origin without claiming nothing is there', () => {
+    const store = createPanelStore({
+      ...initialPanelState(),
+      capture: { kind: 'off', origin: 'https://app.example', signal: { level: 'none' } },
+    });
+    render(<Session store={store} />);
+    const value = screen.getByText(/^off for https:\/\/app\.example/);
+    expect(value.textContent).toMatch(/nothing on the wire yet/i);
+    expect(value.textContent).not.toMatch(/nothing detected/i);
+  });
+
+  it('labels the session with the framework the page probe found', () => {
+    const store = createPanelStore({ ...initialPanelState(), framework: 'Angular 21.1.6' });
+    render(<Session store={store} />);
+    expect(screen.getByText('Framework')).toBeTruthy();
+    expect(screen.getByText('Angular 21.1.6')).toBeTruthy();
+  });
+
   it('reports undetected framework and endpoints rather than omitting them', () => {
     render(<Session store={createPanelStore()} />);
     expect(screen.getByText('Framework')).toBeTruthy();
@@ -53,6 +71,7 @@ describe('Session', () => {
     expect(
       screen.getAllByText(/not detected — detection ships with the capture layer/).length,
     ).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/no framework fingerprint in the page/)).toBeTruthy();
   });
 
   it('summarizes issues by severity', () => {

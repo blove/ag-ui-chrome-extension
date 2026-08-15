@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { JSX } from 'preact';
 import type { PanelStore } from './model/store';
-import { selectTab, setCapture } from './model/store';
+import { raiseSignal, selectTab, setCapture, setFramework } from './model/store';
 import { usePanelState } from './model/use-panel-state';
 import { applyLoaded } from './import/apply-loaded';
 import { DropZone } from './import/drop-zone';
 import type { LoadedCapture } from './import/load-jsonl';
 import { loadJsonl } from './import/load-jsonl';
-import { observeNetwork } from './capture/detect';
+import { observeNetwork, probeFramework } from './capture/detect';
 import { CaptureBanner } from './capture/capture-status';
 import { ScopeBar } from './shell/scope-bar';
 import { RunSelector } from './shell/run-selector';
@@ -89,28 +89,46 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
   const retained = useRef<RetainedSource | null>(null);
   const appliedExpandChunks = useRef(state.expandChunks);
 
+  // Name the inspected origin, so the capture banner can offer to enable capture ON something.
   useEffect(() => {
+    let live = true;
     resolveOrigin((origin) => {
+      if (!live) return;
       store.update((s) =>
         s.capture.kind === 'unsupported'
-          ? setCapture(s, { kind: 'off', origin, aguiDetected: false })
+          ? setCapture(s, { kind: 'off', origin, signal: { level: 'none' } })
           : s,
       );
     });
+    return () => {
+      live = false;
+    };
   }, [store]);
 
-  // P5's weaker detection path. It can say "an event stream finished on this origin" and nothing
-  // more, so all it does is flip `aguiDetected` — the offer to enable capture. It never claims
-  // the stream is AG-UI and never produces a record.
+  /*
+   * Label the session with the page's framework — and label ONLY the session.
+   *
+   * Requirements §4.3: a framework fingerprint labels the session, never gates capture. It writes
+   * `framework`, a field no capture decision reads, because AG-UI is a wire protocol with no DOM
+   * footprint: an Angular page is no more likely to speak AG-UI than any other. Kept as its own
+   * effect for the same reason — it neither waits on the origin nor touches the signal.
+   */
+  useEffect(() => {
+    let live = true;
+    void probeFramework().then((framework) => {
+      if (live && framework !== null) store.update((s) => setFramework(s, framework));
+    });
+    return () => {
+      live = false;
+    };
+  }, [store]);
+
+  // The only detection path there is before capture is on, and it can say "an event stream
+  // finished on this origin" and nothing more — it never claims the stream is AG-UI, never
+  // decodes, and never produces a record. All it does is strengthen the wording on an offer that
+  // was already on screen.
   useEffect(
-    () =>
-      observeNetwork(() => {
-        store.update((s) =>
-          s.capture.kind === 'off' && !s.capture.aguiDetected
-            ? setCapture(s, { ...s.capture, aguiDetected: true })
-            : s,
-        );
-      }),
+    () => observeNetwork(() => store.update((s) => raiseSignal(s, { level: 'stream' }))),
     [store],
   );
 
