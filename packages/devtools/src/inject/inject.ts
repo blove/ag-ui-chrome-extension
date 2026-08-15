@@ -54,6 +54,47 @@ export interface InjectHost extends FetchHost {
 
 export const MARKER_VERSION = '0.1.0';
 
+/**
+ * Re-state `conn-open` with the first `frames` message of each connection.
+ *
+ * The ISOLATED-world relay is no longer emitted as a direct content script — it has imports, so
+ * CRXJS wraps it in a loader that `await import(...)`s its chunk, and that resolution goes
+ * through `chrome.runtime.getURL` and a web-accessible-resource fetch. Its `message` listener
+ * therefore registers slightly AFTER `document_start`, while this MAIN-world script resolves a
+ * plain relative import and usually wins the race. `EventSource` posts `conn-open` synchronously
+ * in its constructor and XHR posts at `readyState === 2`, so an inline script at the top of a
+ * page can produce a `conn-open` inside that window, when nothing is listening yet.
+ *
+ * Losing it is not one lost message: `conn-open` is the message that carries `input`, the
+ * `RunAgentInput`. Without it the service worker sees frames for a connection it never opened
+ * and the run surfaces as `run-started-without-input` — a finding that reads as a defect in the
+ * USER'S server rather than in our capture. A misattributed finding is worse than a missing one.
+ *
+ * So the open is posted again, immediately before the first batch of frames, by which time the
+ * relay is certainly listening. It is a plain `conn-open` message and goes through exactly the
+ * same guard as the first one; the service worker keys on `connId` and ignores an open for a
+ * connection it already has. Nothing is page-observable and no handshake is involved.
+ */
+function withOpenRestated(post: (message: InjectMessage) => void): (message: InjectMessage) => void {
+  /** Connections whose open has been posted but not yet re-stated. */
+  const pending = new Map<string, InjectMessage>();
+  return (message: InjectMessage): void => {
+    if (message.kind === 'conn-open') {
+      pending.set(message.connId, message);
+    } else if (message.kind === 'frames') {
+      const open = pending.get(message.connId);
+      if (open !== undefined) {
+        pending.delete(message.connId);
+        post(open);
+      }
+    } else {
+      // A connection that closed, or turned out to be binary, has no frames left to ride with.
+      pending.delete(message.connId);
+    }
+    post(message);
+  };
+}
+
 /** Requirements §5.5: one monotonic clock for every transport. */
 const monotonicNow: () => number =
   typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -89,7 +130,7 @@ export function installInject(host: InjectHost): boolean {
     // Read once, at install time, so a page that later rewrites `location` cannot retarget
     // our messages at another origin.
     const targetOrigin = host.location.origin;
-    const post = (message: InjectMessage): void => {
+    const send = (message: InjectMessage): void => {
       try {
         host.postMessage(message, targetOrigin);
       } catch {
@@ -97,6 +138,9 @@ export function installInject(host: InjectHost): boolean {
         // capture is lost; the page is not.
       }
     };
+    // One sink for all three transports, so the re-statement above happens in exactly one
+    // place rather than three times over in the patches.
+    const post = withOpenRestated(send);
     let connCounter = 0;
     const nextConnId = (): string => {
       connCounter += 1;

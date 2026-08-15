@@ -140,7 +140,16 @@ describe('installInject — the document_start entry', () => {
       expect(isInjectMessage(message)).toBe(true);
     }
     const kinds = host.sent.map((entry) => (entry.message as InjectMessage).kind);
-    expect(kinds).toEqual(['conn-open', 'frames', 'conn-close']);
+    // Two conn-opens, on purpose: the open is re-stated immediately before the first batch of
+    // frames, because the ISOLATED-world relay's listener registers a tick after
+    // `document_start` and the original may have been posted into that window with nothing
+    // listening. See `withOpenRestated`. Both copies are ordinary messages that pass the guard,
+    // and the service worker keys on `connId` and ignores the second.
+    expect(kinds).toEqual(['conn-open', 'conn-open', 'frames', 'conn-close']);
+    const opens = host.sent
+      .map((entry) => entry.message as InjectMessage)
+      .filter((message) => message.kind === 'conn-open');
+    expect(opens[0]).toEqual(opens[1]);
   });
 
   it('never throws into page code when postMessage throws', async () => {
@@ -221,8 +230,11 @@ describe('installInject — every specified transport is installed (§5.1, §5.2
 
     const messages = host.sent.map((entry) => entry.message as InjectMessage);
     expect(messages.every(isInjectMessage)).toBe(true);
-    // Three separate streams, so three conn-opens — one per transport.
-    expect(messages.filter((message) => message.kind === 'conn-open')).toHaveLength(3);
+    // Three separate streams, so three connections — and six conn-opens, because each one is
+    // re-stated before its first batch of frames (see `withOpenRestated`).
+    const opens = messages.filter((message) => message.kind === 'conn-open');
+    expect(opens).toHaveLength(6);
+    expect(new Set(opens.map((message) => message.connId)).size).toBe(3);
     expect(messages.filter((message) => message.kind === 'frames').length).toBeGreaterThanOrEqual(
       3,
     );
@@ -249,11 +261,17 @@ describe('installInject — every specified transport is installed (§5.1, §5.2
     const opens = host.sent
       .map((entry) => entry.message as InjectMessage)
       .filter((message) => message.kind === 'conn-open');
-    const ids = opens.map((message) => message.connId);
+    // Deduplicated, because a connection that produced frames also re-stated its open.
+    const ids = [...new Set(opens.map((message) => message.connId))];
     // The service worker keys per-connection state by connId alone: three transports each
     // numbering from 1 would merge three unrelated streams into one record.
-    expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toHaveLength(3);
+    for (const id of ids) {
+      // Every open for a given connection carries the same payload, so which copy the worker
+      // keeps cannot matter.
+      const forId = opens.filter((message) => message.connId === id);
+      for (const message of forId) expect(message).toEqual(forId[0]);
+    }
   });
 
   it('installs the transports a host does have when it lacks the others', () => {
@@ -284,11 +302,14 @@ describe('installInject — on the real window', () => {
     expect(installInject(window)).toBe(true);
 
     await window.fetch('http://localhost:3000/run', { method: 'POST', body: '{"threadId":"t_1"}' });
-    await settleUntil(() => received.length === 3);
+    await settleUntil(() => received.length === 4);
     window.removeEventListener('message', listener);
 
-    expect(received.length).toBe(3);
+    // Four, not three: conn-open, the re-stated conn-open that rides ahead of the first frames
+    // batch (`withOpenRestated`), frames, conn-close. A real listener validates all four.
+    expect(received.length).toBe(4);
     expect(received.every(isInjectMessage)).toBe(true);
+    expect(received[1]).toEqual(received[0]);
     const open = received[0];
     if (!isInjectMessage(open) || open.kind !== 'conn-open') throw new Error('expected conn-open');
     expect(open.input).toEqual({ threadId: 't_1' });
