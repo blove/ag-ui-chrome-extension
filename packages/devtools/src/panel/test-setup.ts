@@ -16,8 +16,8 @@ type RequestListener = (request: unknown) => void;
  *
  * `emit` is not part of Chrome's API — it is the test's way in. `App` subscribes to this event
  * through `observeNetwork`, so without a way to fire the listeners there is no way to exercise
- * the detect-then-offer path (P5) from a component test at all, and the one branch that flips
- * the capture banner from "nothing detected" to an offer would go untested.
+ * detection from a component test at all, and the branch that raises the capture banner's signal
+ * to "an event stream was seen" (P11) would go untested.
  */
 interface FakeRequestEvent {
   addListener: (listener: RequestListener) => void;

@@ -33,8 +33,9 @@ function isEventStream(request: chrome.devtools.network.Request): boolean {
  * `chrome.devtools.network`, never a live frame, so it can report "an SSE endpoint exists on
  * this origin" and NOTHING MORE — it cannot decode, cannot validate, and cannot distinguish
  * AG-UI from a progress-bar stream. Design §10 records that keeping the two paths from
- * disagreeing is a real maintenance cost P5 accepts; the mitigation is that everything this
- * function drives is an offer to enable capture, never a claim about the stream's contents.
+ * disagreeing is a real maintenance cost this accepts; the mitigation is that everything this
+ * function drives is wording on an offer to enable capture, never a claim about contents — which
+ * is why the banner it feeds says "an event stream was seen" and not "AG-UI was detected".
  *
  * It also makes no request of its own — it observes a log DevTools already keeps
  * (requirements §11, no egress).
