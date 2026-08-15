@@ -10595,6 +10595,46 @@ The chosen fix needs no handshake and nothing page-observable: the first `frames
 carries the open payload again, and the SW ignores it if it already has one. Task 12 must also add
 a test asserting a `conn-open` posted at `document_start` reaches the buffer.
 
+## BLOCKING follow-up — capture cannot start on non-localhost origins
+
+Found while implementing Task 12, and confirmed by reading the built manifest.
+
+CRXJS emits each content script as an async **loader** that dynamic-imports its real chunk, and
+scopes those chunks in `web_accessible_resources` to the localhost family only:
+
+```
+web_accessible_resources.matches: ["http://0.0.0.0/*", "http://127.0.0.1/*", "http://localhost/*"]
+content_scripts.js:               ["assets/inject.ts-loader-*.js", ...]
+```
+
+A MAIN-world script runs in the *page's* world, so on a granted `https://example.com` that import
+resolves to a chrome-extension: URL not web-accessible to that origin and is blocked. The grant
+succeeds, `permissions.onAdded` registers the scripts, and **capture silently never starts** —
+which is the exact failure F4 was written to prevent, one layer out. It also breaks D3's per-origin
+opt-in, and with it the "works on deployed environments without a code change" axis the product is
+justified by.
+
+Everything in the capture milestone is verified on **localhost**, where it genuinely works, so this
+is invisible to the harness e2e by construction.
+
+A second, related finding: a stream opened by a synchronous inline script *before* the MAIN loader
+resolves is invisible to capture entirely. The `conn-open` re-statement cannot help — the patch is
+not installed yet.
+
+**Recommended fix: make the content-script entries self-contained**, so CRXJS emits them directly
+instead of behind a loader. Configure the bundler to inline shared modules into each content-script
+entry rather than extracting a shared chunk. That is a build-config change, **not** source
+duplication — `isInjectMessage` stays one source of truth, which is why this is preferable to
+inlining the guard by hand. It removes the WAR requirement and closes the async-load window in one
+move.
+
+Rejected: widening `web_accessible_resources` to `http://*/*`/`https://*/*`. It would work, but it
+makes the extension trivially fingerprintable by any page, which §11's posture does not accept.
+`use_dynamic_url: true` mitigates that but keeps the loader indirection and its race.
+
+**This should be fixed before Tasks 13–15.** Wiring the panel to a capture layer that cannot run on
+a real site would be building on sand.
+
 ## Known gaps carried forward
 
 1. **`§5.5`'s `Date.now()` epoch anchor has no message field** — all `tMs` values are `performance.now()`-based only. Fine within a session; a captured file cannot be aligned to wall clock.
