@@ -76,13 +76,11 @@ function eventPayload(event: unknown, out: string[]): void {
   if (!isObject(event)) return;
   const type = typeof event.type === 'string' ? event.type : '';
   switch (type) {
-    // text
+    // `delta` is the payload field for three of the five groups: text, reasoning and toolArgs.
     case 'TEXT_MESSAGE_CONTENT':
     case 'TEXT_MESSAGE_CHUNK':
-    // reasoning
     case 'REASONING_MESSAGE_CONTENT':
     case 'REASONING_MESSAGE_CHUNK':
-    // toolArgs
     case 'TOOL_CALL_ARGS':
     case 'TOOL_CALL_CHUNK':
       stringLeaves(event.delta, out);
@@ -90,11 +88,9 @@ function eventPayload(event: unknown, out: string[]): void {
     case 'REASONING_ENCRYPTED_VALUE':
       stringLeaves(event.encryptedValue, out);
       break;
-    // toolResults
     case 'TOOL_CALL_RESULT':
       stringLeaves(event.content, out);
       break;
-    // state
     case 'STATE_SNAPSHOT':
       stringLeaves(event.snapshot, out);
       break;
