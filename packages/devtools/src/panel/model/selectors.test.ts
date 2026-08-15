@@ -55,6 +55,7 @@ function run(runId: string, recordSeqs: number[]): Run {
     },
     issues: [],
     recordSeqs,
+    redacted: [],
   };
 }
 

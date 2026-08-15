@@ -5,6 +5,7 @@
  * from `@ag-ui/core` — the runtime core is decoupled from the upstream package
  * (see `scripts/gen-event-table.ts`, which is the only place that touches it).
  */
+import type { RedactionGroup } from '../jsonl/redact';
 
 /** Synthetic run id used for events that arrive with no open run. */
 export const ORPHANED_RUN_ID = '__orphaned__';
@@ -302,4 +303,20 @@ export interface Run {
   metrics: RunMetrics;
   issues: Issue[];
   recordSeqs: number[];
+  /**
+   * The requirements §11 groups whose payloads were replaced with placeholders before this
+   * capture reached us — `JsonlHeader.redacted`, carried into the model.
+   *
+   * Empty for a live capture: the panel folds what the wire said, and redaction only ever
+   * happens on the way OUT. It is non-empty exactly when the run was reconstructed from an
+   * imported file whose header declares groups redacted.
+   *
+   * It lives on `Run` rather than on the panel because it is an input to VALIDATION, and
+   * `core/` is deliberately Chrome-free so a CLI or a VS Code extension can reuse it (§13). A
+   * rule that cannot see this field cannot tell "the agent emitted malformed tool arguments"
+   * from "the redactor replaced them", and every consumer of `core/` would re-inherit that
+   * confusion. Typed as `RedactionGroup[]` and not `string[]`: the set of groups is closed,
+   * and a rule asking about a group name that does not exist should not compile.
+   */
+  redacted: readonly RedactionGroup[];
 }

@@ -195,3 +195,59 @@ describe('loadJsonl: what an export has to put back', () => {
     expect(loadJsonl(two).header?.url).toBe('u1');
   });
 });
+
+/**
+ * The header is not only kept for export: it is an INPUT to the fold.
+ *
+ * `JsonlHeader.redacted` is the file's own statement about what was taken out of it, and the
+ * validator needs it to know which of its claims the file can still support. This is the wire
+ * between the two.
+ */
+describe('loadJsonl: the header tells the fold what evidence is missing', () => {
+  const header = (redacted: string): string =>
+    `{"kind":"header","schemaVersion":1,"tool":"t","capturedAt":"1","url":"u","transport":"sse","redacted":${redacted}}\n`;
+  const body =
+    '{"kind":"request","connId":"c1","tMs":0,"method":"POST","url":"/a","input":{}}\n' +
+    '{"kind":"event","connId":"c1","seq":1,"tMs":0,"event":{"type":"RUN_STARTED","threadId":"t","runId":"r"}}\n' +
+    '{"kind":"event","connId":"c1","seq":2,"tMs":10,"event":{"type":"TOOL_CALL_START","toolCallId":"tc","toolCallName":"f"}}\n' +
+    '{"kind":"event","connId":"c1","seq":3,"tMs":20,"event":{"type":"TOOL_CALL_ARGS","toolCallId":"tc","delta":"«redacted: 16 chars»"}}\n' +
+    '{"kind":"event","connId":"c1","seq":4,"tMs":30,"event":{"type":"TOOL_CALL_END","toolCallId":"tc"}}\n' +
+    '{"kind":"event","connId":"c1","seq":5,"tMs":40,"event":{"type":"RUN_FINISHED","threadId":"t","runId":"r"}}\n';
+
+  it('carries the declared groups onto every run', () => {
+    expect(loadJsonl(header('["text","toolArgs"]') + body).runs[0]?.redacted).toEqual([
+      'text',
+      'toolArgs',
+    ]);
+    expect(loadJsonl(fixture('happy-run.agui.jsonl')).runs[0]?.redacted).toEqual([]);
+  });
+
+  it('treats a file with no header as unredacted, which is the only safe reading', () => {
+    // Nothing claims anything was removed, so every rule keeps its full voice. The arguments in
+    // this file really do not parse and nobody has said otherwise.
+    const loaded = loadJsonl(body);
+
+    expect(loaded.header).toBeNull();
+    expect(loaded.runs[0]?.redacted).toEqual([]);
+    expect(key(loaded.issues)).toEqual(['tool-args-not-json@4']);
+  });
+
+  it('declines the tool-args claim when the header declares toolArgs redacted', () => {
+    expect(key(loadJsonl(header('["toolArgs"]') + body).issues)).toEqual([]);
+  });
+
+  it('still makes the claim when the header names only groups that spared the arguments', () => {
+    expect(key(loadJsonl(header('["text","reasoning","state"]') + body).issues)).toEqual([
+      'tool-args-not-json@4',
+    ]);
+  });
+
+  it('reads the header before folding, so a header out of position still counts', () => {
+    // §10 puts the header on line 1 and the export writes it there. A capture that has been
+    // concatenated or hand-edited must not quietly validate as though nothing was removed,
+    // which is what folding first and reading the header afterwards would do.
+    const late = body + header('["toolArgs"]');
+
+    expect(key(loadJsonl(late).issues)).toEqual([]);
+  });
+});

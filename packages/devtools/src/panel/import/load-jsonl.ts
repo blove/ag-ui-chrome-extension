@@ -86,19 +86,30 @@ function toKeepaliveRecord(line: JsonlKeepalive): CaptureRecord {
  */
 export function loadJsonl(text: string, options: { expandChunks?: boolean } = {}): LoadedCapture {
   const { lines, errors } = decodeJsonl(text);
-  const builder = createRunBuilder({ expandChunks: options.expandChunks ?? true });
+  /*
+   * The header is read BEFORE the fold, not during it.
+   *
+   * §10 puts it on line 1, so the loop below would reach it first in any well-formed file — but
+   * the run builder needs `redacted` at CONSTRUCTION, and a capture whose header was moved or
+   * lost must not silently validate as though nothing had been replaced. The FIRST header wins,
+   * for the same reason it does below: a second one is a concatenation artefact.
+   */
+  const header: JsonlHeader | null = lines.find((line) => line.kind === 'header') ?? null;
+  const builder = createRunBuilder({
+    expandChunks: options.expandChunks ?? true,
+    // What this file says was taken out of it. A rule whose evidence a group destroyed declines
+    // to make its claim, instead of making a finding about the redactor look like one about the
+    // agent — see `validator/rules/tool.ts`.
+    redacted: header?.redacted ?? [],
+  });
   const records: CaptureRecord[] = [];
   const requests: RequestLine[] = [];
-  let header: JsonlHeader | null = null;
   /** Every connection's last observed frame time — the moment it is closed at. */
   const lastTMsByConn = new Map<string, number>();
 
+  // A `header` line carries no record, and the one that describes this file was taken above.
   for (const line of lines) {
-    if (line.kind === 'header') {
-      // The FIRST header wins: requirements §10 puts it on line 1, so a second one is a
-      // concatenation artefact and taking it would describe the wrong capture.
-      header ??= line;
-    } else if (line.kind === 'request') {
+    if (line.kind === 'request') {
       const { connId, tMs, method, url, input } = line;
       requests.push({ connId, tMs, method, url, input });
       builder.addRequest(connId, method, url, input);
@@ -116,7 +127,6 @@ export function loadJsonl(text: string, options: { expandChunks?: boolean } = {}
       builder.addRecord(record);
       lastTMsByConn.set(line.connId, line.tMs);
     }
-    // A `header` line carries no record.
   }
 
   // Closing is what runs `finalizeRules`, so an unterminated run reports `run-never-terminated`

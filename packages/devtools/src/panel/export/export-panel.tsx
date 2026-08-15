@@ -182,10 +182,12 @@ export function ExportPanel({ store, io = DEFAULT_EXPORT_IO }: { store: PanelSto
 
       {selected.includes('toolArgs') && (
         <p class="agui-export__warning" data-testid="agui-export-args-note">
-          Redacting tool arguments makes the accumulated arguments unparseable, so the exported
-          capture will report a <code>tool-args-not-json</code> error the original did not have. No
-          per-event placeholder can compose into valid JSON across a split JSON string. Leave this
-          group unticked if the bug is about the arguments themselves.
+          Redacting tool arguments makes the accumulated arguments unparseable — no per-event
+          placeholder can compose into valid JSON across a split JSON string. The exported header
+          records the group, so whoever opens this file is told the arguments were redacted rather
+          than shown a <code>tool-args-not-json</code> error your agent never caused. The cost is
+          the other direction: arguments that really were malformed can no longer be reported
+          either. Leave this group unticked if the bug is about the arguments themselves.
         </p>
       )}
 

@@ -48,6 +48,7 @@ function run(partial: Partial<Run> = {}): Run {
     metrics: emptyMetrics(),
     issues: [],
     recordSeqs: [],
+    redacted: [],
     ...partial,
   };
 }
