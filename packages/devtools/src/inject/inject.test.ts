@@ -43,6 +43,68 @@ function fakeHost(overrides: Partial<InjectHost> = {}): FakeHost {
   };
 }
 
+/**
+ * Minimal stand-ins for the two transports jsdom cannot drive: its `XMLHttpRequest` needs a
+ * server to reach `readyState === 3`, and it has no `EventSource` at all.
+ */
+class FakeXhr extends EventTarget {
+  readyState = 0;
+  responseText = '';
+  response: unknown = '';
+  status = 0;
+  responseType: XMLHttpRequestResponseType = '';
+  private readonly headers = new Map<string, string>();
+
+  open(): void {
+    this.readyState = 1;
+  }
+
+  send(): void {
+    // The patch attaches its listeners here; the fake needs no behaviour of its own.
+  }
+
+  getResponseHeader(name: string): string | null {
+    return this.headers.get(name.toLowerCase()) ?? null;
+  }
+
+  /** Drive one whole SSE response, headers through terminal event. */
+  drive(wire: string): void {
+    this.headers.set('content-type', SSE);
+    this.status = 200;
+    this.readyState = 2;
+    this.dispatchEvent(new Event('readystatechange'));
+    this.responseText += wire;
+    this.readyState = 3;
+    this.dispatchEvent(new Event('readystatechange'));
+    this.readyState = 4;
+    this.dispatchEvent(new Event('readystatechange'));
+    this.dispatchEvent(new Event('load'));
+  }
+}
+
+class FakeEventSource extends EventTarget {
+  readonly url: string;
+  readyState = 0;
+
+  constructor(url: string | URL) {
+    super();
+    this.url = String(url);
+  }
+
+  close(): void {
+    this.readyState = 2;
+  }
+
+  deliver(payload: string): void {
+    this.readyState = 1;
+    this.dispatchEvent(new MessageEvent('message', { data: payload, lastEventId: '' }));
+  }
+}
+
+function transportHost(): FakeHost {
+  return fakeHost({ XMLHttpRequest: FakeXhr, EventSource: FakeEventSource });
+}
+
 describe('installInject — the document_start entry', () => {
   it('installs itself on import into a real window', () => {
     expect(window.__AGUI_DEVTOOLS__).toEqual({
@@ -114,6 +176,93 @@ describe('installInject — the document_start entry', () => {
     await settle();
     expect(got).toBe(plain);
     expect(host.sent).toEqual([]);
+  });
+});
+
+describe('installInject — every specified transport is installed (§5.1, §5.2, §5.3)', () => {
+  it('patches fetch, XMLHttpRequest and EventSource, not just fetch', () => {
+    const host = transportHost();
+    const originalFetch = host.fetch;
+    const originalOpen = FakeXhr.prototype.open;
+    const originalSend = FakeXhr.prototype.send;
+
+    expect(installInject(host)).toBe(true);
+
+    expect(host.fetch).not.toBe(originalFetch);
+    expect(FakeXhr.prototype.open).not.toBe(originalOpen);
+    expect(FakeXhr.prototype.send).not.toBe(originalSend);
+    expect(host.EventSource).not.toBe(FakeEventSource);
+
+    // Leave the shared prototype as it was found; nothing here uninstalls for us.
+    FakeXhr.prototype.open = originalOpen;
+    FakeXhr.prototype.send = originalSend;
+  });
+
+  it('captures a stream over each of the three transports', async () => {
+    const host = transportHost();
+    const originalOpen = FakeXhr.prototype.open;
+    const originalSend = FakeXhr.prototype.send;
+    installInject(host);
+
+    await host.fetch('http://localhost:3000/run', { method: 'POST', body: '{"threadId":"t_1"}' });
+    await settle();
+
+    const xhr = new FakeXhr();
+    xhr.open();
+    xhr.send();
+    xhr.drive(`data: ${RUN_STARTED}\n\n`);
+
+    if (host.EventSource === undefined) throw new Error('EventSource was not installed');
+    const source = new host.EventSource('http://localhost:3000/sse') as unknown as FakeEventSource;
+    source.deliver(RUN_STARTED);
+
+    FakeXhr.prototype.open = originalOpen;
+    FakeXhr.prototype.send = originalSend;
+
+    const messages = host.sent.map((entry) => entry.message as InjectMessage);
+    expect(messages.every(isInjectMessage)).toBe(true);
+    // Three separate streams, so three conn-opens — one per transport.
+    expect(messages.filter((message) => message.kind === 'conn-open')).toHaveLength(3);
+    expect(messages.filter((message) => message.kind === 'frames').length).toBeGreaterThanOrEqual(
+      3,
+    );
+  });
+
+  it('gives every transport a connection id no other transport can collide with', async () => {
+    const host = transportHost();
+    const originalOpen = FakeXhr.prototype.open;
+    const originalSend = FakeXhr.prototype.send;
+    installInject(host);
+
+    await host.fetch('http://localhost:3000/run', { method: 'POST', body: '{}' });
+    await settle();
+    const xhr = new FakeXhr();
+    xhr.open();
+    xhr.send();
+    xhr.drive(`data: ${RUN_STARTED}\n\n`);
+    if (host.EventSource === undefined) throw new Error('EventSource was not installed');
+    new host.EventSource('http://localhost:3000/sse');
+
+    FakeXhr.prototype.open = originalOpen;
+    FakeXhr.prototype.send = originalSend;
+
+    const opens = host.sent
+      .map((entry) => entry.message as InjectMessage)
+      .filter((message) => message.kind === 'conn-open');
+    const ids = opens.map((message) => message.connId);
+    // The service worker keys per-connection state by connId alone: three transports each
+    // numbering from 1 would merge three unrelated streams into one record.
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toHaveLength(3);
+  });
+
+  it('installs the transports a host does have when it lacks the others', () => {
+    const host = fakeHost();
+    expect(host.XMLHttpRequest).toBeUndefined();
+    expect(host.EventSource).toBeUndefined();
+    // jsdom has no EventSource, and a stand-in host may have neither. Missing globals are
+    // skipped rather than thrown on — a document_start script that throws is a broken page.
+    expect(installInject(host)).toBe(true);
   });
 });
 
