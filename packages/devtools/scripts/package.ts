@@ -65,7 +65,14 @@ function main(): void {
   // vite.config.ts only emits sourcemaps when mode !== 'production', so dist/ should not
   // contain any. `pnpm verify:build` asserts that independently; this exclusion means a
   // stray map from a hand-run dev build can never reach the store archive either.
-  const result = spawnSync('zip', ['-r', '-q', '-X', zipPath, '.', '-x', '*.map'], {
+  //
+  // The other two are build metadata Vite copies out of `public/` alongside the icons
+  // themselves: `icons/README.md` tells contributors how to regenerate them, and
+  // `icons/.source-sha256` is the freshness hash `verify-build.ts` compares against. Both were
+  // reaching the uploaded archive. Neither is code, and an extension review is not the place to
+  // explain why a store package contains a note to contributors.
+  const excludes = ['*.map', 'icons/README.md', 'icons/.source-sha256'];
+  const result = spawnSync('zip', ['-r', '-q', '-X', zipPath, '.', '-x', ...excludes], {
     cwd: distDir,
     stdio: 'inherit',
   });

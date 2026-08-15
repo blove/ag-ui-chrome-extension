@@ -33,6 +33,12 @@ export default defineManifest({
   manifest_version: 3,
   name: 'AG-UI DevTools',
   version: '0.1.0',
+  // Required by the Chrome Web Store, and the line Chrome shows on chrome://extensions. Kept
+  // under 132 characters because the store reuses it where its own summary field is absent, and
+  // that field's limit is 132 — `listing/copy.md`'s `summary` is the same sentence for the same
+  // reason. If you change one, change the other.
+  description:
+    'Inspect, validate, and replay AG-UI agent event streams from any page. No SDK, no code change, no data leaves your browser.',
   // Static world: 'MAIN' content scripts require Chrome 111+. On older Chrome this key is
   // silently ignored and BOTH scripts below load into ISOLATED instead — a silent failure
   // of the world-isolation design, not a loud one. Pin the floor explicitly.
