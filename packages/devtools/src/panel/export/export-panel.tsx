@@ -17,22 +17,9 @@ import { ALL_REDACTION_GROUPS, type RedactionGroup } from '../../core/jsonl/reda
 import type { PanelStore } from '../model/store';
 import { usePanelState } from '../model/use-panel-state';
 import { buildExport, exportBlockedReason, type ExportBundle, type ExportCounts } from './build';
-import { copyText, downloadText, type IoResult } from './download';
+import { DEFAULT_EXPORT_IO, type ExportIo, type IoResult } from './download';
 import { exportFilename, fixtureFilename } from './filename';
 import { toFixtureModule } from './fixture';
-
-/**
- * The two side effects, injected.
- *
- * `download.ts` is the untestable edge by design; passing it in is what lets every branch of this
- * component — including both failure branches — be exercised without a real Blob.
- */
-export interface ExportIo {
-  download: (filename: string, text: string, mime?: string) => IoResult;
-  copy: (text: string) => Promise<IoResult>;
-}
-
-export const DEFAULT_EXPORT_IO: ExportIo = { download: downloadText, copy: copyText };
 
 /** §11's five groups, with the words a user chooses by. */
 const GROUP_LABELS: Record<RedactionGroup, string> = {

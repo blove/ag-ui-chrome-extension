@@ -17,6 +17,19 @@
 
 export type IoResult = { ok: true } | { ok: false; reason: string };
 
+/**
+ * The two side effects, as an injectable pair.
+ *
+ * Both export surfaces take one of these. It is what lets every branch above this file —
+ * including both failure branches — be exercised without a real `Blob`, and it lives HERE rather
+ * than beside a component so the toolbar does not have to import the Session tab's panel to get
+ * at the default.
+ */
+export interface ExportIo {
+  download: (filename: string, text: string, mime?: string) => IoResult;
+  copy: (text: string) => Promise<IoResult>;
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -110,3 +123,6 @@ export async function copyText(text: string): Promise<IoResult> {
     return { ok: false, reason: `The browser refused the clipboard write: ${messageOf(error)}` };
   }
 }
+
+/** The real writers. Both surfaces default to this; tests pass their own. */
+export const DEFAULT_EXPORT_IO: ExportIo = { download: downloadText, copy: copyText };

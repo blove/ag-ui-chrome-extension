@@ -6,7 +6,8 @@ import { issueCounts } from '../../model/selectors';
 import { DropZone } from '../../import/drop-zone';
 import type { LoadedCapture } from '../../import/load-jsonl';
 import { applyLoaded } from '../../import/apply-loaded';
-import { ExportPanel, type ExportIo } from '../../export/export-panel';
+import { ExportPanel } from '../../export/export-panel';
+import type { ExportIo } from '../../export/download';
 
 export interface SessionProps {
   store: PanelStore;

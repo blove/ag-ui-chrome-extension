@@ -7,7 +7,7 @@ import { loadJsonl } from '../import/load-jsonl';
 import { initialPanelState, type PanelState } from '../model/panel-types';
 import { createPanelStore, selectScope, type PanelStore } from '../model/store';
 import { ExportPanel } from './export-panel';
-import type { ExportIo } from './export-panel';
+import type { ExportIo } from './download';
 
 interface Written {
   filename: string;

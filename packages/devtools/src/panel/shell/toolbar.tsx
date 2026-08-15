@@ -2,7 +2,7 @@ import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
 import { encodeJsonl } from '../../core/jsonl/codec';
 import { buildExport, exportBlockedReason } from '../export/build';
-import { DEFAULT_EXPORT_IO, type ExportIo } from '../export/export-panel';
+import { DEFAULT_EXPORT_IO, type ExportIo } from '../export/download';
 import { exportFilename } from '../export/filename';
 import { issueCounts } from '../model/selectors';
 import { initialPanelState } from '../model/panel-types';
