@@ -6,9 +6,13 @@ import { issueCounts } from '../../model/selectors';
 import { DropZone } from '../../import/drop-zone';
 import type { LoadedCapture } from '../../import/load-jsonl';
 import { applyLoaded } from '../../import/apply-loaded';
+import { ExportPanel } from '../../export/export-panel';
+import type { ExportIo } from '../../export/download';
 
 export interface SessionProps {
   store: PanelStore;
+  /** Injected in tests so the export controls' failure branches are reachable without a Blob. */
+  exportIo?: ExportIo;
   /**
    * Commit a decoded capture. `App` passes its own so that an import started here is retained
    * for re-decode exactly like one started from the Timeline empty state — otherwise Expand
@@ -106,10 +110,10 @@ function Row({ label, value }: { label: string; value: string }): JSX.Element {
  * reported as "not detected" with the reason rather than omitted — an absent row reads as "there
  * is nothing to know", which is a different and false claim.
  *
- * Design §4 also lists export controls. Phase 1 has no export, so this states that plainly
- * instead of shipping a disabled button that looks like a bug.
+ * Design §4 also lists export controls, and this is where E5 puts the full-control surface: the
+ * scope, the redaction groups, and a statement of what the file will contain.
  */
-export function Session({ store, onLoaded }: SessionProps): JSX.Element {
+export function Session({ store, onLoaded, exportIo }: SessionProps): JSX.Element {
   const state: PanelState = usePanelState(store);
   const counts = issueCounts(state);
   const scopeLabel = state.scope === null ? 'all runs' : `run ${state.scope}`;
@@ -156,8 +160,10 @@ export function Session({ store, onLoaded }: SessionProps): JSX.Element {
       <dl class="agui-session__grid">
         <Row label="Status" value={describeCapture(state.capture, state.instrumented)} />
         <Row label="Expand chunks" value={state.expandChunks ? 'on' : 'off'} />
-        <Row label="Export" value="not available in phase 1" />
       </dl>
+
+      <h3 class="agui-session__heading">Export</h3>
+      <ExportPanel store={store} io={exportIo} />
 
       <h3 class="agui-session__heading">Issues ({scopeLabel})</h3>
       <dl class="agui-session__grid">

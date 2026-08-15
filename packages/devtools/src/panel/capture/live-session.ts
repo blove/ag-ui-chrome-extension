@@ -103,6 +103,11 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
       ...s,
       runs: builder.runs(),
       records,
+      // The request lines reach panel state as well as the fold. Export re-encodes from what
+      // `PanelState` holds (E2), and a request line lives nowhere else once the builder has taken
+      // its body — so without this a live capture would export runs with no `RunAgentInput`, and
+      // the re-import would report `run-started-without-input` about the user's server.
+      requests,
       issues: builder.allIssues(),
       droppedBefore: workerDropped + panelDropped,
       binaryTransport: binary,

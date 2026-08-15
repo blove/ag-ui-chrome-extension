@@ -6,6 +6,8 @@
  * derived: derivations live in `selectors.ts` so state stays a single, comparable snapshot.
  */
 import type { Run, Issue, CaptureRecord } from '../../core/model/types';
+import type { JsonlHeader } from '../../core/jsonl/codec';
+import type { RequestLine } from '../../sw/protocol';
 
 /** Where the panel's data came from. Drives empty states and which controls are live. */
 export type PanelSource =
@@ -107,7 +109,27 @@ export interface PanelState {
   filter: EventFilter;
   runs: Run[];
   records: CaptureRecord[];
+  /**
+   * The captured request lines, one per connection.
+   *
+   * Held here rather than only inside the fold because export has to put them back. A request
+   * line is not a record — no `seq`, one per connection — and the run builder keeps only its
+   * BODY, as `Run.input`; the method, URL and arrival time exist nowhere else. A run re-imported
+   * without its request line reports `run-started-without-input`, which reads as a finding about
+   * the user's server rather than about the export that dropped it.
+   */
+  requests: RequestLine[];
   issues: Issue[];
+  /**
+   * The header of the file this capture was imported from. `null` for a live capture, and for an
+   * imported file that carried no header.
+   *
+   * Read by export alone, for one reason: E3's `header.redacted` is cumulative, so re-exporting
+   * an imported capture has to union the groups that file already had replaced. Nothing else in
+   * the panel can supply that fact, and dropping it would let an export under-report its own
+   * redaction — a claim a colleague would act on.
+   */
+  importedHeader: JsonlHeader | null;
   /** Records evicted before the earliest retained one, counted by the live session (P9). */
   droppedBefore: number;
   /**
@@ -162,7 +184,9 @@ export function initialPanelState(): PanelState {
     filter: { text: '', issuesOnly: false },
     runs: [],
     records: [],
+    requests: [],
     issues: [],
+    importedHeader: null,
     droppedBefore: 0,
     recording: true,
     preserveLog: false,

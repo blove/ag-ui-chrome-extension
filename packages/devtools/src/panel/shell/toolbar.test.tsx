@@ -4,7 +4,11 @@ import type { CaptureRecord, Issue } from '../../core/model/types';
 import { makeIssue } from '../../core/model/types';
 import { initialPanelState } from '../model/panel-types';
 import type { PanelState } from '../model/panel-types';
-import { createPanelStore, toggleIssuesOnly } from '../model/store';
+import { createPanelStore, selectScope, toggleIssuesOnly } from '../model/store';
+import type { PanelStore } from '../model/store';
+import { applyLoaded } from '../import/apply-loaded';
+import { loadJsonl } from '../import/load-jsonl';
+import happyJsonl from '../../test/fixtures/happy-run.agui.jsonl?raw';
 import { Toolbar } from './toolbar';
 
 function record(seq: number, issues: Issue[] = []): CaptureRecord {
@@ -319,5 +323,81 @@ describe('Toolbar controls', () => {
     render(<Toolbar store={store} onImport={() => undefined} />);
 
     expect(screen.queryByText(/dropped/)).toBeNull();
+  });
+});
+
+describe('Toolbar: Export (E5 — the one-click surface)', () => {
+  function importedStore(): PanelStore {
+    return createPanelStore(
+      applyLoaded(initialPanelState(), loadJsonl(happyJsonl), 'happy-run.agui.jsonl', 1000),
+    );
+  }
+
+  it('is disabled with a stated reason when there is nothing to export', () => {
+    render(<Toolbar store={createPanelStore(initialPanelState())} onImport={() => {}} />);
+
+    const button = screen.getByRole('button', { name: /Export/ }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe('Nothing has been captured yet, so there is nothing to export.');
+  });
+
+  it('SAYS it is unredacted, so a full-fidelity file is never a surprise', () => {
+    // E5: the toolbar is the developer exporting their own capture for themselves, where a
+    // silently-redacted file would be useless — and a silently-unredacted one would be a
+    // different surprise. It is labelled either way.
+    render(<Toolbar store={importedStore()} onImport={() => {}} />);
+
+    expect(screen.getByRole('button', { name: /Export/ }).textContent).toBe('Export (unredacted)');
+  });
+
+  it('points at the Session tab for redaction and the other modes', () => {
+    render(<Toolbar store={importedStore()} onImport={() => {}} />);
+
+    expect((screen.getByRole('button', { name: /Export/ }) as HTMLButtonElement).title).toContain(
+      'Session tab',
+    );
+  });
+
+  it('exports the current scope, unredacted, through the injected writer', () => {
+    const written: { filename: string; text: string }[] = [];
+    const store = importedStore();
+    store.update((s) => selectScope(s, 'r_happy'));
+
+    render(
+      <Toolbar
+        store={store}
+        onImport={() => {}}
+        exportIo={{
+          download: (filename, text) => {
+            written.push({ filename, text });
+            return { ok: true };
+          },
+          copy: () => Promise.resolve({ ok: true }),
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Export/ }));
+
+    expect(written[0]?.filename).toBe('agui-localhost-3000-2026-08-13T10-00-00.000Z.agui.jsonl');
+    expect(written[0]?.text).toContain('"redacted":[]');
+    // Unredacted means unredacted: the message text is in the file.
+    expect(written[0]?.text).toContain('The weather in Paris');
+  });
+
+  it('reports a refused download rather than doing nothing visible', () => {
+    render(
+      <Toolbar
+        store={importedStore()}
+        onImport={() => {}}
+        exportIo={{
+          download: () => ({ ok: false, reason: 'The browser refused the download: nope' }),
+          copy: () => Promise.resolve({ ok: true }),
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Export/ }));
+
+    expect(screen.getByRole('alert').textContent).toBe('The browser refused the download: nope');
   });
 });

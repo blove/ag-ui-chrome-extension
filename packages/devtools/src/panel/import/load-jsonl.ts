@@ -1,11 +1,34 @@
-import { decodeJsonl, type JsonlEvent, type JsonlKeepalive } from '../../core/jsonl/codec';
+import {
+  decodeJsonl,
+  type JsonlEvent,
+  type JsonlHeader,
+  type JsonlKeepalive,
+} from '../../core/jsonl/codec';
 import { createRunBuilder } from '../../core/normalizer/run-builder';
 import type { AguiEvent, CaptureRecord, Issue, Run } from '../../core/model/types';
+import type { RequestLine } from '../../sw/protocol';
 
 export interface LoadedCapture {
   runs: Run[];
   records: CaptureRecord[];
+  /**
+   * The request lines, kept rather than consumed.
+   *
+   * A request line is not a record — it has no `seq` and there is one per connection — and the
+   * run builder folds its body into `Run.input` without keeping the method, URL or arrival time.
+   * Export has to put the line back verbatim, and a run re-imported without it reports
+   * `run-started-without-input`: a finding about the user's server that the original capture did
+   * not have. This is the live capture's `LiveSession.requests` by another route.
+   */
+  requests: RequestLine[];
   issues: Issue[];
+  /**
+   * Line 1's header, or `null` when the file carried none.
+   *
+   * Read by export, not by any tab: E3's cumulative `redacted` needs to know what the file it is
+   * re-exporting already had replaced, and no other part of the panel can tell it.
+   */
+  header: JsonlHeader | null;
   /** One entry per malformed line, from `decodeJsonl`. Surfaced, never swallowed. */
   decodeErrors: string[];
 }
@@ -65,13 +88,21 @@ export function loadJsonl(text: string, options: { expandChunks?: boolean } = {}
   const { lines, errors } = decodeJsonl(text);
   const builder = createRunBuilder({ expandChunks: options.expandChunks ?? true });
   const records: CaptureRecord[] = [];
+  const requests: RequestLine[] = [];
+  let header: JsonlHeader | null = null;
   /** Every connection's last observed frame time — the moment it is closed at. */
   const lastTMsByConn = new Map<string, number>();
 
   for (const line of lines) {
-    if (line.kind === 'request') {
-      builder.addRequest(line.connId, line.method, line.url, line.input);
-      lastTMsByConn.set(line.connId, line.tMs);
+    if (line.kind === 'header') {
+      // The FIRST header wins: requirements §10 puts it on line 1, so a second one is a
+      // concatenation artefact and taking it would describe the wrong capture.
+      header ??= line;
+    } else if (line.kind === 'request') {
+      const { connId, tMs, method, url, input } = line;
+      requests.push({ connId, tMs, method, url, input });
+      builder.addRequest(connId, method, url, input);
+      lastTMsByConn.set(connId, tMs);
     } else if (line.kind === 'event') {
       const record = toEventRecord(line);
       records.push(record);
@@ -85,12 +116,19 @@ export function loadJsonl(text: string, options: { expandChunks?: boolean } = {}
       builder.addRecord(record);
       lastTMsByConn.set(line.connId, line.tMs);
     }
-    // A `header` line carries no record; the Session tab reads it separately.
+    // A `header` line carries no record.
   }
 
   // Closing is what runs `finalizeRules`, so an unterminated run reports `run-never-terminated`
   // instead of sitting silently in 'running'.
   for (const [connId, tMs] of lastTMsByConn) builder.closeConnection(connId, tMs);
 
-  return { runs: builder.runs(), records, issues: builder.allIssues(), decodeErrors: errors };
+  return {
+    runs: builder.runs(),
+    records,
+    requests,
+    issues: builder.allIssues(),
+    header,
+    decodeErrors: errors,
+  };
 }

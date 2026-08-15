@@ -18,9 +18,17 @@
  *      panel's own file input, assert the malformed capture annotates exactly the rows the
  *      validator flags and that the issue badge filters to them, and assert a partially decoded
  *      capture keeps saying so after the user leaves the tab it was imported on.
+ *   3. EXPORT — click the real export controls and assert a real file arrives with real content.
+ *      Design decision E1 chose `Blob` + `URL.createObjectURL` + a programmatic anchor precisely
+ *      so that no `downloads` permission is needed, and flagged the mechanism as UNVERIFIED in a
+ *      panel document. Nothing else in this repository can see whether it works: every unit test
+ *      stubs the writer, because a jsdom `Blob` is not a browser download. This phase runs twice —
+ *      over `dist/` served on http, and again with the REAL UNPACKED EXTENSION loaded, driving
+ *      `chrome-extension://<id>/src/panel/panel.html`, which is the origin and the CSP a DevTools
+ *      panel document actually has.
  *
- * Phase 2 is skipped when phase 1 fails: there is no point asserting on rows in a panel that is
- * not painting at all, and the phase-1 output is the diagnosis.
+ * Each phase is skipped when an earlier one fails: there is no point asserting on rows in a panel
+ * that is not painting at all, and the earlier output is the diagnosis.
  *
  * Run: `pnpm build && pnpm screenshot:panel` (first run also needs
  * `pnpm exec playwright install chromium-headless-shell` — the shell is what a default headless
@@ -28,10 +36,11 @@
  * different build, which is how the gate itself is tested against a deliberately unstyled variant.
  */
 import { createServer } from 'node:http';
-import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Browser, Page } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
 import { chromium } from 'playwright';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -379,6 +388,240 @@ async function checkFixtures(browser: Browser, origin: string): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Phase 3 — does a real click produce a real file? (design decision E1)       */
+/* -------------------------------------------------------------------------- */
+
+interface Saved {
+  filename: string;
+  text: string;
+}
+
+/**
+ * Click something and wait for the file it saves.
+ *
+ * `waitForEvent('download')` is the only honest assertion available here: it fires when Chromium
+ * actually begins writing a file, which is exactly the step no unit test can reach. A timeout is
+ * therefore a real failure — E1's mechanism did not work in this document — and never a flake to
+ * be retried away.
+ */
+async function clickAndSave(page: Page, selector: string, where: string): Promise<Saved | null> {
+  try {
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 10_000 }),
+      page.click(selector),
+    ]);
+    const path = await download.path();
+    return { filename: download.suggestedFilename(), text: readFileSync(path, 'utf8') };
+  } catch (error) {
+    fail(
+      `${where}: clicking ${selector} produced no download within 10s ` +
+        `(${error instanceof Error ? error.message : String(error)}). Design decision E1 relies on ` +
+        'Blob + URL.createObjectURL + a programmatic anchor needing no `downloads` permission. If ' +
+        'that is blocked in this document, E1 is wrong and the alternative is the `downloads` ' +
+        'permission — which requirements §11 does not allow to be added for convenience, so it is ' +
+        'a decision to be taken deliberately, not a quiet manifest edit.',
+    );
+    return null;
+  }
+}
+
+function headerLine(saved: Saved): Record<string, unknown> {
+  const first = saved.text.split('\n')[0] ?? '';
+  return JSON.parse(first) as Record<string, unknown>;
+}
+
+/**
+ * Drive both export surfaces against a loaded capture, and read what came out.
+ *
+ * `where` names the document being driven, because this runs twice: once over `dist/` on http,
+ * and once at the extension's own origin, and a failure in only one of the two is the single most
+ * useful thing this gate can say.
+ */
+async function checkExportSurfaces(page: Page, where: string, shots: string): Promise<void> {
+  /* --- the toolbar: one click, current scope, unredacted --------------- */
+  const toolbar = await clickAndSave(page, 'button[title*="Download this capture"]', where);
+  if (toolbar === null) return;
+
+  if (!/^agui-localhost-3000-.+\.agui\.jsonl$/.test(toolbar.filename)) {
+    fail(`${where}: the toolbar saved ${JSON.stringify(toolbar.filename)}, expected agui-<host>-<ISO>.agui.jsonl.`);
+  }
+  const lines = toolbar.text.split('\n').filter((line) => line !== '');
+  if (lines.length !== 17) {
+    fail(
+      `${where}: the exported capture holds ${String(lines.length)} lines, expected 17 ` +
+        '(header + request + 15 records). A file that downloads but is empty is worse than no file.',
+    );
+  }
+  const header = headerLine(toolbar);
+  if (header.kind !== 'header') {
+    fail(`${where}: line 1 of the exported file is not a header (requirements §10).`);
+  }
+  if (JSON.stringify(header.redacted) !== '[]') {
+    fail(
+      `${where}: the toolbar export declared redacted=${JSON.stringify(header.redacted)}. E5 makes ` +
+        'this surface unredacted, and the button says so.',
+    );
+  }
+  // The button is labelled "unredacted". If the text is not in the file, the label is a lie.
+  if (!toolbar.text.includes('The weather in Paris')) {
+    fail(`${where}: the toolbar export is labelled unredacted but the message text is not in it.`);
+  }
+
+  /* --- the Session tab: full control, and a redacted bug report -------- */
+  await page.click('button[role="tab"][id="agui-tab-session"]');
+  await page.waitForSelector('.agui-export');
+  await page.screenshot({ path: join(outDir, `${shots}-export-controls.png`), fullPage: true });
+
+  const summary = (await page.textContent('[data-testid="agui-export-summary"]'))?.trim() ?? '';
+  if (!summary.includes('unredacted')) {
+    fail(
+      `${where}: the export summary reads ${JSON.stringify(summary)}. E5 requires the panel to ` +
+        'state what will be included, and redaction is never a silent default.',
+    );
+  }
+
+  await page.click('.agui-export__groups button:has-text("Redact everything")');
+  const redacted = await clickAndSave(page, 'button:has-text("Download capture")', `${where} (redacted)`);
+  if (redacted === null) return;
+
+  await page.screenshot({ path: join(outDir, `${shots}-export-redacted.png`), fullPage: true });
+
+  const redactedHeader = headerLine(redacted);
+  if (
+    JSON.stringify(redactedHeader.redacted) !==
+    JSON.stringify(['text', 'reasoning', 'toolArgs', 'toolResults', 'state'])
+  ) {
+    fail(
+      `${where}: a fully redacted export declared redacted=${JSON.stringify(redactedHeader.redacted)}. ` +
+        'The header is the only record of what was replaced (§11).',
+    );
+  }
+  /*
+   * Done-when #7, asserted on the bytes a user would actually hand to a colleague.
+   *
+   * Every entry here is a VALUE. Keys — `lastCity`, `counter`, `notes` — survive redaction by
+   * design: §11 keeps structure, types, ordering and sizes, which is what makes the file a
+   * protocol bug report rather than a blank one. Listing a key here would be asserting the
+   * opposite of the requirement.
+   */
+  for (const secret of ['The weather in Paris', 'is sunny and 24', 'first note', 'Sunny', 'tempC']) {
+    if (redacted.text.includes(secret)) {
+      fail(`${where}: a fully redacted export still contains ${JSON.stringify(secret)}.`);
+    }
+  }
+  if (!redacted.text.includes('«redacted:')) {
+    fail(`${where}: a fully redacted export carries no placeholder — nothing was redacted at all.`);
+  }
+  if (!redacted.text.includes('RUN_FINISHED') || !redacted.text.includes('get_weather')) {
+    fail(
+      `${where}: a fully redacted export lost its structure. §11 keeps types, ids, ordering and ` +
+        'sizes — that is what makes it a protocol bug report rather than a blank file.',
+    );
+  }
+
+  /* --- the fixture export --------------------------------------------- */
+  await page.click('.agui-export__groups button:has-text("Redact nothing")');
+  const fixture = await clickAndSave(page, 'button:has-text("Download TypeScript fixture")', where);
+  if (fixture === null) return;
+
+  if (!fixture.filename.endsWith('.fixture.ts')) {
+    fail(`${where}: the fixture export saved ${JSON.stringify(fixture.filename)}, expected *.fixture.ts.`);
+  }
+  if (!fixture.text.includes('export const events: AguiEvent[] = [')) {
+    fail(`${where}: the fixture export holds no event array (E7).`);
+  }
+}
+
+/**
+ * The served `dist/` on http — the same document the paint and data phases drove.
+ *
+ * Driven in the DARK scheme deliberately: the extension-origin pass below runs light, so between
+ * the two every export control is drawn in both. A control styled in one scheme and bare in the
+ * other is exactly what this gate exists to catch.
+ */
+async function checkExport(browser: Browser, origin: string): Promise<void> {
+  const session = await openPanel(browser, origin, 'dark');
+  try {
+    await importFixture(session.page, join(fixtureDir, 'happy-run.agui.jsonl'));
+    await checkExportSurfaces(session.page, 'served dist/', 'served');
+    if (session.errors.length > 0) {
+      fail(`exporting logged errors: ${session.errors.join(' | ')}`);
+    }
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * The same drive, at the extension's own origin, with the real unpacked extension loaded.
+ *
+ * This is as close to a DevTools panel document as anything automatable gets. A DevTools panel IS
+ * `chrome-extension://<id>/…/panel.html`, loaded in an iframe inside the DevTools window — so the
+ * origin, the extension CSP and the `chrome` API surface driven here are the real ones, and the
+ * only thing not reproduced is the surrounding `devtools://` frame. That matters because the
+ * plausible way E1 fails is a CSP or a policy attached to the extension origin, not to the frame.
+ *
+ * `channel: 'chromium'` is mandatory: a default headless launch resolves to
+ * `chromium-headless-shell`, which is built WITHOUT the extensions stack — it accepts
+ * `--load-extension`, registers no service worker, and reports no error, so this would pass
+ * having loaded nothing at all.
+ */
+async function checkExportInExtension(): Promise<void> {
+  if (!existsSync(join(distDir, 'manifest.json'))) {
+    fail(`${join(distDir, 'manifest.json')} does not exist, so the extension could not be loaded.`);
+    return;
+  }
+
+  let ctx: BrowserContext | null = null;
+  try {
+    ctx = await chromium.launchPersistentContext(mkdtempSync(join(tmpdir(), 'agui-panel-')), {
+      channel: 'chromium',
+      headless: true,
+      viewport: { width: 1100, height: 760 },
+      args: [`--disable-extensions-except=${distDir}`, `--load-extension=${distDir}`],
+    });
+  } catch (error) {
+    fail(
+      'could not launch Chromium with the unpacked extension, so E1 could not be verified at the ' +
+        `extension origin: ${error instanceof Error ? error.message : String(error)}. ` +
+        'This needs the FULL `chromium` build (`playwright install chromium`), not the headless shell.',
+    );
+    return;
+  }
+
+  try {
+    // `serviceWorkers()` is frequently empty immediately after launch — measured by the capture
+    // e2e, and the reason it has the same fallback.
+    const worker = ctx.serviceWorkers()[0] ?? (await ctx.waitForEvent('serviceworker', { timeout: 20_000 }));
+    const extensionId = new URL(worker.url()).host;
+
+    const page = await ctx.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(message.text());
+    });
+
+    await page.goto(`chrome-extension://${extensionId}/src/panel/panel.html`);
+    await page.waitForSelector('.agui-app');
+    await importFixture(page, join(fixtureDir, 'happy-run.agui.jsonl'));
+
+    await checkExportSurfaces(page, 'the extension origin', 'extension');
+
+    if (errors.length > 0) {
+      fail(`the panel logged errors at the extension origin: ${errors.join(' | ')}`);
+    }
+  } catch (error) {
+    fail(
+      'driving the panel at the extension origin failed: ' +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  } finally {
+    await ctx.close();
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 
 function report(): never {
   console.error(`FAIL: ${String(failures.length)} visual invariant(s) violated:\n`);
@@ -408,10 +651,15 @@ async function main(): Promise<void> {
     // not already said, and buries the diagnosis under consequential failures.
     if (failures.length === 0) await checkUnreachableControls(browser, server.origin);
     if (failures.length === 0) await checkFixtures(browser, server.origin);
+    if (failures.length === 0) await checkExport(browser, server.origin);
   } finally {
     await browser.close();
     await server.close();
   }
+
+  // Outside the `finally` above because it runs its own browser: the extension only loads through
+  // `launchPersistentContext`, which cannot share the headless-shell instance the phases above use.
+  if (failures.length === 0) await checkExportInExtension();
 
   if (failures.length > 0) report();
 
@@ -432,6 +680,12 @@ async function main(): Promise<void> {
   );
   console.log('the post-grant Reload control is styled (.agui-app__note-action).');
   console.log('panel issued no off-origin requests (requirements §11).');
+  console.log('export writes a real file from a real click (design decision E1, no `downloads` permission):');
+  console.log(`  served dist/: toolbar 17 lines unredacted, redacted export leaks no text, fixture .ts`);
+  console.log(
+    `  the extension origin (chrome-extension://…/panel.html): the same, under the extension CSP`,
+  );
+  console.log(`  screenshots: ${outDir}/served-export-controls.png, ${outDir}/extension-export-redacted.png`);
 }
 
 await main();
