@@ -3,9 +3,8 @@
  *
  * Pure types and constants — no DOM, no `chrome` — so both ends can import it anywhere.
  *
- * This module currently declares only the relay leg. The panel leg (`PANEL_PORT_NAME`,
- * `SwMessage`, `RequestLine`, `PanelCommand`) lands with the service-worker task that needs it;
- * `src/sw/index.ts` still carries its own copy of the panel port name until then.
+ * The relay leg is the MAIN/ISOLATED -> worker direction; the panel leg below is the worker <->
+ * DevTools panel direction.
  */
 import type { InjectMessage } from '../inject/protocol';
 
@@ -29,3 +28,20 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
  * forwarded. `v` stays — the service worker still has to reject a version it cannot read.
  */
 export type RelayMessage = DistributiveOmit<InjectMessage, 'source'>;
+
+/**
+ * One captured connection's request line: what was asked for, and the `RunAgentInput` that went
+ * with it.
+ *
+ * Held apart from `CaptureRecord` because it is not a frame — it has no `seq`, it is one per
+ * connection rather than one per event, and it is what `run-started-without-input` reads. Mirrors
+ * the `request` line of the `.agui.jsonl` codec so a captured session and an imported one present
+ * the same thing to the run builder.
+ */
+export interface RequestLine {
+  connId: string;
+  tMs: number;
+  method: string;
+  url: string;
+  input: unknown;
+}
