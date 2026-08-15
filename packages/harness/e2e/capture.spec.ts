@@ -28,6 +28,7 @@ import {
   clearCapture,
   launchWithExtension,
   readCapture,
+  readSettledCapture,
   reconstruct,
   type CaptureSnapshot,
 } from './fixtures.js';
@@ -117,7 +118,10 @@ test.beforeAll(async () => {
   rendered = await page.$$eval('#messages li', (items) =>
     items.map((item) => ({ role: item.getAttribute('data-role'), text: item.textContent })),
   );
-  capture = await readCapture(ctx);
+  // `#status` is the PAGE's completion, and the capture path is not downstream of it — see
+  // `readSettledCapture`. Snapshotting here without waiting for the connection to close is what
+  // made this file's happy run fail 2 of 25 cold `pnpm test` runs with an empty buffer.
+  capture = await readSettledCapture(ctx);
 });
 
 test.afterAll(async () => {
@@ -225,7 +229,10 @@ test.describe('the malformed scenario, captured live', () => {
       },
       { timeout: 30_000 },
     );
-    malformed = await readCapture(ctx);
+    // `malformed` ends with no terminal EVENT, but the stream itself still ends, so the drain
+    // still posts its `conn-close` — which is the point: the wait is on the transport being over,
+    // not on the protocol being well-formed.
+    malformed = await readSettledCapture(ctx);
     await second.close();
   });
 
