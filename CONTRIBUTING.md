@@ -32,9 +32,10 @@ pnpm screenshot:panel
 pnpm verify:listing
 ```
 
-`pnpm listing:assets` is deliberately **not** in that list: it exits non-zero while any store
-screenshot depends on UI that does not exist yet. That is the point of it, and making it pass is not
-a fix.
+`pnpm listing:assets` is deliberately **not** in that list. It exits non-zero whenever a store
+screenshot's subject is not on screen, and that is the point of it: making it pass by relaxing a
+gate is not a fix. All five shots render today, so it happens to exit 0 — do not read that as
+permission to keep it green by editing the gate rather than the thing it caught.
 
 ## How this codebase thinks
 

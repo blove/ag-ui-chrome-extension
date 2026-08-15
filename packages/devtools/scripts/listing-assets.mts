@@ -9,15 +9,23 @@
  * downsampled through a canvas to exactly 1280×800, so panel text is retina-quality rather than
  * rendered at 1×.
  *
- * A storyboard entry the product cannot yet back FAILS THE RUN, and leaves no file behind. Today
- * that is one of the five shots: shot 5's subject — the per-origin capture grant — cannot be
- * reached from this harness at all. A caption sits directly above the panel in the same image, so
- * shooting it anyway produces an asset that contradicts itself, which is the misleading-claim
- * category that gets store submissions rejected.
+ * A storyboard entry the product cannot yet back FAILS THE RUN, and leaves no file behind. A
+ * caption sits directly above the panel in the same image, so shooting one anyway produces an
+ * asset that contradicts itself, which is the misleading-claim category that gets store
+ * submissions rejected.
  *
  * Emitting the ones that work and leaving a human to notice the gallery is short is precisely the
- * failure this script exists to prevent, so it exits 1 with each refusal naming what must exist
- * first. Four good screenshots and a loud list of blockers beats five and a rejected submission.
+ * failure this script exists to prevent, so a refusal exits 1 naming what must exist first. Four
+ * good screenshots and a loud list of blockers beats five and a rejected submission.
+ *
+ * ALL FIVE RENDER TODAY, and a zero exit is now the expected result rather than a milestone. Do
+ * not read that as the gates having been satisfied by loosening them: shot 5 was refused because
+ * its subject — the per-origin capture grant offer — was unreachable under the `no-devtools` shim
+ * and suppressed for an imported source. It is now shot with the `devtools-ungranted` shim and no
+ * fixture at all, which is the extension's honest first-run state, and its gate tests that the
+ * grant control is on screen and reads as an offer. If this run starts failing again, the refusal
+ * text names the subject that went missing; making it pass by weakening the gate is the failure
+ * mode this whole file is written against.
  *
  * The two promo tiles below (`TILES`) are NOT gated the same way, and that is deliberate rather
  * than an oversight: a screenshot photographs the built panel, so an entry the product cannot yet
@@ -38,11 +46,11 @@ import { fileURLToPath } from 'node:url';
 import type { Browser, FrameLocator } from 'playwright';
 import { chromium } from 'playwright';
 // The one source of truth for how many redaction groups shot 4 photographs. `redact.ts` is plain
-// TypeScript with a single type-only import, so unlike `session.tsx` — see `UNBUILT_MARKERS` below,
-// which duplicates its strings rather than drag JSX into a Node script — it costs nothing to import
-// here, and a sixth group added to §11 makes shot 4's gate expect six without anyone remembering to.
+// TypeScript with a single type-only import, so unlike a Preact component — importing one would
+// drag JSX and the panel's whole module graph into a Node script — it costs nothing to import here,
+// and a sixth group added to §11 makes shot 4's gate expect six without anyone remembering to.
 import { ALL_REDACTION_GROUPS } from '../src/core/jsonl/redact';
-import type { Session } from './panel-harness';
+import type { Session, ShimKind } from './panel-harness';
 import { importFixture, openPanel, PANEL_PATH, startServer } from './panel-harness';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,6 +67,21 @@ interface Shot {
   headline: string;
   sub: string;
   scheme: 'light' | 'dark';
+  /**
+   * The `chrome` surface the panel boots against. Defaults to `no-devtools`, which is what four
+   * of the five shots want: they photograph an imported capture, where the panel's Chrome-facing
+   * state is irrelevant and the least shim is the most honest one.
+   */
+  shim?: ShimKind;
+  /**
+   * Import `listing/fixtures/demo.agui.jsonl` before driving. Defaults to true.
+   *
+   * Only shot 5 sets it false, and it MUST: `CaptureBanner` returns `null` outright for an
+   * imported source (`capture-status.tsx:54`), so a shot whose subject is the capture banner
+   * cannot also be a shot of a loaded file. A capture already on disk cannot depict the moment
+   * someone opts an origin in.
+   */
+  importsFixture?: boolean;
   /** Drive the panel into the state this shot depicts. Throw to fail the run. */
   drive: (panel: FrameLocator) => Promise<void>;
 }
@@ -76,63 +99,16 @@ async function waitForSelectedDetail(panel: FrameLocator): Promise<void> {
   await panel.locator('.agui-detail__title').waitFor({ timeout: 5000 });
 }
 
-/**
- * Every phrase the Session tab uses to report one of its own capabilities as not built yet.
- *
- * The list must be COMPLETE, because a missing marker is a false pass — a shot taken of a tab
- * still confessing something this list forgot. An earlier revision carried only the first two and
- * would have started passing shot 5 the moment export shipped, while the Detected column still
- * rendered a wall of "not detected" under "No network egress. Ever.".
- *
- * Substrings, not whole values, so the surrounding sentence can be reworded without silently
- * emptying this list. Every one of them is pinned by a unit test — `session.test.tsx:26` ("
- * unavailable in this build"), `:105` (the capture-layer rows) and `:107` (the framework row) — so
- * a genuine reword breaks a test that names the string rather than quietly turning this gate off.
- * They are duplicated here rather than imported because `session.tsx` is a Preact component:
- * importing it would drag JSX and the panel's whole module graph into a Node script for the sake
- * of three string literals.
- *
- * A fourth marker, "not available in phase 1", was dropped when export shipped and its row with it.
- * Keeping a marker no rendered string can match is not free caution: it is a line in a list whose
- * whole documented contract is that every entry is pinned by a test, and there was no longer a test
- * or a row for that one to be pinned to. Grep before removing an entry — the point of the list is
- * completeness, and only a string `session.tsx` cannot produce may leave it.
+/*
+ * A whole-tab scan for unbuilt-capability wording used to live here, and it is GONE rather than
+ * merely unused. It existed for shot 5 while that shot photographed the Session tab; shot 5 now
+ * frames the capture banner over an empty Timeline, and `.agui-session` is not in the image at
+ * all. A gate whose subject is off screen is the exact defect this file has already been bitten by
+ * twice — shot 4 was once refused by two hardcoded Session rows that said nothing about export —
+ * so keeping the scan "just in case" would leave a check that reads as covering this shot while
+ * looking at a tab it never opens. `refuseWithoutGrantPrompt` below is shot 5's only gate, and it
+ * looks at shot 5's only subject.
  */
-const UNBUILT_MARKERS = [
-  'unavailable in this build',
-  'ships with the capture layer',
-  'no framework fingerprint in the page',
-];
-
-/**
- * Refuse to photograph a Session tab that is still advertising unbuilt functionality.
- *
- * Decision L1, applied where it bites hardest. A caption sits above the panel in the same image, so
- * a shot of a tab reporting a column of "not detected" under the words "No network egress. Ever."
- * is an asset that contradicts itself. The check is on the rendered text rather than on a feature
- * flag because the rendered text is what a store reviewer reads.
- *
- * Used by shot 5 only, and deliberately not by shot 4 any more. It is a scan of the WHOLE tab, so
- * for a caption about one section it fires on rows that have nothing to say about that section:
- * `Endpoints` and `Agents` are hardcoded "ships with the capture layer" strings
- * (`session.tsx:154,156`), genuinely unbuilt but silent on export and replay. Shot 4 was refused by
- * exactly those two under a message that blamed the harness shim — a blocker no change to the shim
- * could ever have cleared, described by a gate that never looked at its own subject. Shot 5 keeps
- * this because its caption IS a claim about the whole tab, which is the case the scan fits.
- *
- * `blockedBy` says what must exist before the shot can be taken, so the failure is a work item and
- * not a mystery. It must describe EVERY condition.
- */
-async function refuseUnbuiltPanel(panel: FrameLocator, blockedBy: string): Promise<void> {
-  const text = (await panel.locator('.agui-session').innerText()).toLowerCase();
-  const found = UNBUILT_MARKERS.filter((marker) => text.includes(marker));
-  if (found.length > 0) {
-    throw new Error(
-      `the Session tab still reads ${found.map((marker) => `"${marker}"`).join(', ')} — so this ` +
-        `shot would caption a claim the panel in the same image contradicts. ${blockedBy}`,
-    );
-  }
-}
 
 /**
  * Refuse the export shot unless the export panel is actually OFFERING an export.
@@ -189,35 +165,61 @@ async function refuseBlockedExport(panel: FrameLocator): Promise<void> {
 }
 
 /**
- * Refuse the privacy shot unless the per-origin capture grant is actually on screen.
+ * The one label that makes shot 5 the shot it claims to be: an OFFER, naming an ORIGIN.
  *
- * This gate tests shot 5's real subject, and it exists because the Session-tab marker check does
- * not. "No network egress. Ever." is a claim about a CHOICE the user makes — design §5's prompt,
+ * Anchored at both ends, because a partial match is how this check would go quietly wrong.
+ * `capture-status.tsx:165` renders the same `.agui-banner__action` element on both capture-off
+ * branches, and both label it `Enable capture for {origin}` — so a control that is present but
+ * reads as anything else means the banner took a branch this shot's caption does not describe, and
+ * that is a refusal rather than a detail. The origin half is not decoration either: "No network
+ * egress. Ever." is a claim about a per-ORIGIN choice, and a button offering to enable capture
+ * over nothing in particular would not show it.
+ */
+const GRANT_OFFER = /^Enable capture for https?:\/\/\S+$/;
+
+/**
+ * Refuse the privacy shot unless the per-origin capture grant offer is on screen and reads as one.
+ *
+ * This gate tests shot 5's only subject, and there is deliberately no second gate beside it.
+ * "No network egress. Ever." is a claim about a CHOICE the user makes — design §5's prompt,
  * `Enable capture for <origin>` — and a screenshot that does not contain that prompt is arguing
- * the point in prose instead of showing it. Gating that shot on export wording would have let it
- * pass on a build where the grant UI was still unreachable, which is a gate that reads as covering
- * something it never looked at: worse than no gate.
+ * the point in prose instead of showing it.
  *
- * `.agui-banner__action` is the grant control itself (`capture-status.tsx:114`). Two independent
- * things keep it off screen here, and both have to change:
+ * `.agui-banner__action` is the grant control itself. `waitFor` rather than a bare `count()`: the
+ * origin arrives through an `inspectedWindow.eval` CALLBACK (`app.tsx:35`), so the banner is on
+ * its `unsupported` branch — no control at all — for the first frames after the panel mounts. A
+ * point sample here would be a race that fails on a slow machine and, worse, could pass on a fast
+ * one for the wrong reason.
  *
- *   1. the harness boots the panel under the `no-devtools` shim, so `chrome.devtools` is absent,
- *      `resolveOrigin` returns early (`app.tsx:53-59`) and capture stays `unsupported` — the
- *      banner renders the "only runs inside the DevTools panel" branch, which offers no control;
- *   2. `CaptureBanner` returns `null` outright for an imported source (`capture-status.tsx:54`),
- *      and every shot here imports the demo fixture. A file that is already on disk cannot depict
- *      the moment someone opts an origin in.
+ * The count is asserted at exactly one so the label read below is unambiguous. Two banners on
+ * screen would be a panel state nobody designed, and `innerText` on a multi-match locator throws
+ * Playwright's strict-mode error — a message about selectors, in the one script whose whole job is
+ * saying precisely why an asset was refused.
  */
 async function refuseWithoutGrantPrompt(panel: FrameLocator): Promise<void> {
-  if ((await panel.locator('.agui-banner__action').count()) > 0) return;
+  const action = panel.locator('.agui-banner__action');
+  try {
+    await action.first().waitFor({ timeout: 5000 });
+  } catch {
+    // Swallowed on purpose: the count and label below produce the diagnosis, and Playwright's own
+    // `locator.waitFor: Timeout 5000ms` names the selector without naming what it was for.
+  }
+
+  const count = await action.count();
+  const label = count === 1 ? (await action.innerText()).trim() : '';
+  if (count === 1 && GRANT_OFFER.test(label)) return;
+
   throw new Error(
-    'the per-origin capture grant prompt (`.agui-banner__action`, design §5) is not on screen, ' +
-      'and it is the whole subject of this shot: privacy here is a choice the user is offered, ' +
-      'not a sentence in a caption. It is blocked twice over — the `no-devtools` shim leaves ' +
-      'capture `unsupported` so the banner offers no control, and the banner is suppressed ' +
-      'entirely for an imported source, which is what every shot in this storyboard loads. ' +
-      'Taking it needs live capture running against a granted origin, or a shim rich enough to ' +
-      'render a granted one plus a live source. Which of those is deferred, not forgotten.',
+    'the per-origin capture grant offer is not on screen, and it is the whole subject of this ' +
+      'shot: privacy here is a choice the user is offered, not a sentence in a caption. Expected ' +
+      'exactly one `.agui-banner__action` reading `Enable capture for <origin>` (design §5, ' +
+      `\`capture-status.tsx:165\`); found ${String(count)}` +
+      (count === 1 ? ` reading ${JSON.stringify(label)}` : '') +
+      '. The banner only offers on its capture-`off` branch, which needs all three of: the ' +
+      '`devtools-ungranted` shim (so `resolveOrigin` names an origin and capture leaves ' +
+      '`unsupported`), a non-localhost origin (`grant.ts` auto-enables the localhost family ' +
+      'straight to `on`), and no imported fixture (`capture-status.tsx:54` returns null for an ' +
+      'imported source). Check which of those moved before changing this gate.',
   );
 }
 
@@ -370,24 +372,52 @@ const STORYBOARD: Shot[] = [
   {
     file: '5-privacy.png',
     headline: 'No network egress. Ever.',
-    sub: 'Opt in per origin. Nothing is uploaded, synced, or persisted to disk.',
+    /*
+     * The sub names what the frame actually foregrounds — the offer — rather than restating the
+     * headline's absolutes. "Per-origin opt-in, offered up front" is the button in the image and
+     * `grant.ts`'s decision D3. It stops deliberately short of "capture is off until you grant":
+     * that is FALSE for the localhost family, which the manifest registers statically, and a
+     * caption is not the place to carry an exception.
+     *
+     * The second half replaces "Nothing is uploaded, synced, or persisted to disk", which was
+     * written when this shot was going to photograph the Session tab. In THIS frame the toolbar is
+     * on screen with an `Export (unredacted)` button in it, and a flat "nothing is persisted to
+     * disk" over a visible export control is a caption arguing with the pixels beneath it — the
+     * one failure this whole script exists to refuse. `copy.md` is careful about exactly this and
+     * says "Nothing on disk *by default*"; rather than compress that qualifier into a sub, the
+     * clauses here are copy.md's own list under this same headline, each asserted by
+     * `pnpm verify:build` against the built manifest: no static `host_permissions`, and no fetch
+     * or telemetry anywhere in the panel or the service worker.
+     */
+    sub: 'Per-origin opt-in, offered up front. No remote host permissions, no fetch, no telemetry.',
     scheme: 'dark',
+    /*
+     * The two settings that make this shot possible, and neither is a convenience.
+     *
+     * `devtools-ungranted` is the minimum `chrome` surface that lets the panel NAME the inspected
+     * origin; without it `resolveOrigin` returns early (`app.tsx:34`), capture stays `unsupported`,
+     * and the banner renders the "only runs inside the DevTools panel" branch, which offers no
+     * control at all. Importing nothing is the other half: `CaptureBanner` returns null for an
+     * imported source, so this is the one storyboard entry that cannot load the demo fixture.
+     *
+     * What is left is the extension's honest first-run state — an empty panel offering to enable
+     * capture on a site — and the empty timeline is the SUBJECT here, not a shortcoming. The tool
+     * ships inert and asks before it does anything; a frame full of somebody's captured prompts
+     * under "No network egress. Ever." would be arguing the opposite.
+     *
+     * It is also what makes this shot byte-reproducible. Nothing in frame reads a clock: the
+     * origin is a constant in the shim, and `describeSource`'s `(imported 11:36:29 AM)` — the wall
+     * clock that made shot 4 differ on every run — belongs to the Session tab, which is not opened
+     * here and would in any case have no import to describe.
+     */
+    shim: 'devtools-ungranted',
+    importsFixture: false,
     async drive(panel) {
-      await panel.locator('button[role="tab"][id="agui-tab-session"]').click();
-      await panel.locator('.agui-session').waitFor({ timeout: 5000 });
-      /*
-       * The grant prompt is checked FIRST, because it is what this shot is actually about. The
-       * Session-tab check that follows is a second, independent condition: even with the prompt on
-       * screen, a Detected column reading "not detected" four times over reads as "nothing works"
-       * rather than "nothing is sent", which is the opposite of the caption.
-       */
+      // No tab switch: the banner is shell chrome (`app.tsx:225`), rendered above the tab panel on
+      // whichever tab is active, and Timeline's empty state is the rest of the story this frame
+      // tells. Opening Session instead would push the offer up against a status table that says
+      // nothing about consent.
       await refuseWithoutGrantPrompt(panel);
-      await refuseUnbuiltPanel(
-        panel,
-        'Beyond the grant prompt this shot needs, the tab it photographs must also stop ' +
-          'reporting its own capabilities as absent: a column of "not detected" under "No ' +
-          'network egress. Ever." reads as a broken product rather than a deliberate one.',
-      );
     },
   },
 ];
@@ -511,6 +541,9 @@ async function shoot(browser: Browser, origin: string, shot: Shot): Promise<void
     viewport: { width: SHOT_WIDTH, height: SHOT_HEIGHT },
     deviceScaleFactor: 2,
     url: `${origin}/listing/frames/screenshot.html`,
+    // `addInitScript` applies to every frame in the context, which is what makes the iframed panel
+    // boot under this shim rather than the outer document's.
+    shim: shot.shim,
   });
   try {
     const { page } = session;
@@ -525,7 +558,7 @@ async function shoot(browser: Browser, origin: string, shot: Shot): Promise<void
 
     const panel = page.frameLocator('iframe.frame__panel');
     await panel.locator('.agui-app, .agui-drop').first().waitFor({ timeout: 10_000 });
-    await importFixture(panel, fixture);
+    if (shot.importsFixture !== false) await importFixture(panel, fixture);
     await shot.drive(panel);
 
     await capture(browser, session, {
