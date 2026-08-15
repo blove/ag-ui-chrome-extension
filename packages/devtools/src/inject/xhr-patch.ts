@@ -14,7 +14,12 @@
  */
 import { createSseParser, type SseParser } from '../core/sse/parser';
 
-import { AGUI_DT_SOURCE, PROTOCOL_VERSION, type InjectMessage, type WireFrame } from './protocol';
+import {
+  AGUI_DT_SOURCE,
+  PROTOCOL_VERSION,
+  type ConnectionMessage,
+  type WireFrame,
+} from './protocol';
 import { sseFrameToWireFrame } from './wire-frame';
 
 /** The slice of `XMLHttpRequest` this patch touches. Keeps the tests free of a real XHR. */
@@ -46,7 +51,7 @@ export interface XhrPatchOptions {
   /** The constructor whose prototype gets patched. Production passes `window.XMLHttpRequest`. */
   target: XhrConstructorLike;
   /** Delivery to the relay. Must never throw; this patch guards it anyway. */
-  post: (message: InjectMessage) => void;
+  post: (message: ConnectionMessage) => void;
   /** §5.5 monotonic clock. Production passes `() => performance.now()`. */
   now: () => number;
   nextConnId: () => string;
@@ -139,7 +144,7 @@ export function installXhrPatch(options: XhrPatchOptions): () => void {
   const originalSend = proto.send;
   const states = new WeakMap<object, ConnState>();
 
-  function emit(message: InjectMessage): void {
+  function emit(message: ConnectionMessage): void {
     try {
       post(message);
     } catch {
