@@ -17,8 +17,22 @@ function deepFreeze<T>(value: T): T {
 describe('redactString', () => {
   it('uses the exact template with the real character count', () => {
     expect(redactString('Hello, world!')).toBe('«redacted: 13 chars»');
-    expect(redactString('')).toBe('«redacted: 0 chars»');
     expect(redactString('a'.repeat(412))).toBe('«redacted: 412 chars»');
+  });
+
+  it('leaves the empty string alone — there is nothing in it to protect', () => {
+    /*
+     * Found by export, `redact.ts`'s second consumer (2026-08-15).
+     *
+     * A zero-length string carries no content, so replacing it protects nothing. What it DOES do
+     * is change what the validator sees: requirements §7 makes an empty `TEXT_MESSAGE_CONTENT`
+     * delta an ERROR (`empty-text-delta`), and `«redacted: 0 chars»` is not empty. A redacted bug
+     * report about an empty-delta bug therefore arrived at the colleague reporting no bug at all
+     * — the file looked clean while the original did not. §11 promises that structure, types,
+     * ordering, sizes and timings survive redaction; the emptiness of an empty payload is exactly
+     * that kind of fact, and done-when #7 requires a redacted export to still validate.
+     */
+    expect(redactString('')).toBe('');
   });
 });
 
