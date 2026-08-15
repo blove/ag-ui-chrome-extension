@@ -1364,3 +1364,107 @@ code {
   background: var(--agui-danger-bg);
   color: var(--agui-danger);
 }
+
+/* ---------------------------------------------------------------------------
+ * JSON tree (design decision S4). Shared by Messages (tool args and results)
+ * and, next milestone, State.
+ *
+ * The type colours are the whole point of drawing a tree rather than printing
+ * `JSON.stringify`: `24` and `"24"` must not look alike. Contrast measured
+ * against `--agui-surface` in both schemes; the weakest pair is the number hue
+ * at 4.62:1 (light) and 5.10:1 (dark).
+ * ------------------------------------------------------------------------- */
+
+:root {
+  --agui-json-key: #8430ce;
+  --agui-json-string: #0b7261;
+  --agui-json-number: #1451b4;
+  --agui-json-keyword: #a3401b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --agui-json-key: #c58af9;
+    --agui-json-string: #78d9c0;
+    --agui-json-number: #8ab4f8;
+    --agui-json-keyword: #f8a978;
+  }
+}
+
+.agui-json-tree {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  /* A wire value has no width limit. It wraps rather than pushing the pane wide,
+     and is never truncated — a value the panel shortened is a value the reader
+     cannot compare against their app. */
+  overflow-wrap: anywhere;
+}
+
+.agui-json-node {
+  min-width: 0;
+}
+
+.agui-json-node--leaf {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+/* The indent is on the children, so a node and its toggle stay aligned. */
+.agui-json-node__children {
+  padding-left: 12px;
+  border-left: 1px solid var(--agui-border);
+  margin-left: 3px;
+}
+
+.agui-json-node__toggle {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agui-json-node__toggle:hover {
+  background: var(--agui-row-hover);
+}
+
+.agui-json-node__caret {
+  width: 10px;
+  flex: none;
+  color: var(--agui-fg-muted);
+}
+
+.agui-json-node__key {
+  color: var(--agui-json-key);
+}
+
+.agui-json-node__summary {
+  color: var(--agui-fg-muted);
+}
+
+.agui-json-node__value[data-type='string'] {
+  color: var(--agui-json-string);
+}
+
+.agui-json-node__value[data-type='number'] {
+  color: var(--agui-json-number);
+}
+
+.agui-json-node__value[data-type='boolean'],
+.agui-json-node__value[data-type='null'],
+.agui-json-node__value[data-type='undefined'] {
+  color: var(--agui-json-keyword);
+}
+
+.agui-json-node__value[data-type='empty'],
+.agui-json-node__value[data-type='other'] {
+  color: var(--agui-fg-muted);
+}
