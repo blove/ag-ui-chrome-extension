@@ -10560,6 +10560,41 @@ Notable results:
 - **Session-mirror restore proven** across two simulated worker incarnations, including that mirror-trimmed records surface as `droppedBefore`.
 - **Every `expectIssues` value was observed**, not guessed — including re-confirming that omitting the request body adds `run-started-without-input` to an otherwise clean run.
 
+## Decision for Task 12 — the relay's async-load window
+
+Found while wiring Tasks 9–10, and re-judged as worse than first thought.
+
+Once `relay.ts` gained imports, CRXJS stopped emitting it as a direct content script and began
+wrapping it in a loader that `await import(...)`s its chunk. So the relay's `message` listener
+registers slightly *after* `document_start`. The MAIN-world script has the same shape, but resolves
+a plain relative import, while the ISOLATED loader additionally goes through
+`chrome.runtime.getURL` and a web-accessible-resource fetch — so MAIN is the likelier of the two to
+win the race.
+
+Why it matters more than a dropped frame: **`EventSource` posts `conn-open` synchronously in its
+constructor**, and XHR posts on `readyState === 2`, so an early inline script can produce a message
+inside that window. And `conn-open` is the message that carries `input`, the `RunAgentInput`.
+Losing it does not merely lose a frame — the service worker then sees frames for a connection it
+never opened, and the run surfaces as `run-started-without-input`, which reads as a **finding about
+the user's server** rather than a defect in our capture. A misattributed finding is worse than a
+missing one.
+
+**Decided: re-state `conn-open` on the first `frames` message for a connection**, and make the
+service worker's handling of it idempotent.
+
+Rejected alternatives and why:
+- *Give `relay.ts` no imports* so CRXJS emits it synchronously. Cheapest, but it means inlining
+  `isInjectMessage` — duplicating a security boundary into two places that must not drift. Not
+  worth it.
+- *Buffer in MAIN until the relay signals readiness.* Needs the relay to answer the page, which §11
+  forbids.
+- *Have the SW tolerate frames for an unknown `connId`.* Mitigates the symptom but still loses
+  `input`, which is the whole point.
+
+The chosen fix needs no handshake and nothing page-observable: the first `frames` message simply
+carries the open payload again, and the SW ignores it if it already has one. Task 12 must also add
+a test asserting a `conn-open` posted at `document_start` reaches the buffer.
+
 ## Known gaps carried forward
 
 1. **`§5.5`'s `Date.now()` epoch anchor has no message field** — all `tMs` values are `performance.now()`-based only. Fine within a session; a captured file cannot be aligned to wall clock.
