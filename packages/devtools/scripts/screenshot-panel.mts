@@ -624,6 +624,55 @@ async function checkMessages(browser: Browser, origin: string): Promise<void> {
       );
     }
 
+    /*
+     * THE SAME CLAIM, ON THE SURFACES THE RECIPIENT ACTUALLY READS.
+     *
+     * `happy-run` is clean. Its redacted export is the file a colleague is handed, and they see
+     * the badge and the run heading long before they open a tool call's arguments. Messages was
+     * honest here while the badge, the heading and the Timeline tint all asserted
+     * `tool-args-not-json` — an error the redactor caused. A tab that declines the claim while
+     * the toolbar above it makes the claim is not a fix; this is the assertion that the two
+     * halves say one thing.
+     */
+    const runIssues = await session.page.$('[data-testid="run-issues-r_happy"]');
+    if (runIssues !== null) {
+      const text = ((await runIssues.innerText()) || '').trim();
+      fail(
+        `the Messages run heading on a redacted CLEAN capture reads ${JSON.stringify(text)}. ` +
+          'The run it was exported from had no issues at all.',
+      );
+    }
+
+    await session.page.click('button[role="tab"][id="agui-tab-timeline"]');
+    await session.page.waitForSelector('.agui-timeline');
+    await session.page.screenshot({
+      path: join(outDir, 'timeline-redacted.png'),
+      fullPage: true,
+    });
+
+    const redactedBadge = (await session.page.textContent('.agui-issue-badge__count'))?.trim();
+    if (redactedBadge !== '0 issues') {
+      fail(
+        `a redacted export of the CLEAN happy-run capture shows ${JSON.stringify(redactedBadge)} ` +
+          'in the issue badge. Redaction removes evidence; it must not add findings. The reader ' +
+          'of a shared bug report never sees the export-time warning — the file is all they get.',
+      );
+    }
+    const redactedTone = await session.page.getAttribute('.agui-issue-badge', 'data-tone');
+    if (redactedTone !== 'none') {
+      fail(
+        `the issue badge on a redacted clean capture has tone ${JSON.stringify(redactedTone)}, ` +
+          'expected "none". The one red thing in the panel always means a protocol error.',
+      );
+    }
+    const redactedRows = await seqsOf(session.page, '.agui-event-row[data-severity]');
+    if (redactedRows.length !== 0) {
+      fail(
+        `a redacted export of the clean happy-run capture tints seqs [${redactedRows.join(', ')}] ` +
+          'in the Timeline. The row tint is an accusation about the frame it sits on.',
+      );
+    }
+
     if (session.errors.length > 0) {
       fail(`Messages on a redacted capture logged errors: ${session.errors.join(' | ')}`);
     }
@@ -1254,6 +1303,10 @@ async function main(): Promise<void> {
   console.log(
     `  redacted: placeholders, structure kept, arguments reported redacted rather than broken — ` +
       `${outDir}/messages-redacted.png`,
+  );
+  console.log(
+    `  redacted: a clean capture stays clean — badge "0 issues", no tinted rows — ` +
+      `${outDir}/timeline-redacted.png`,
   );
   console.log('State renders in every state design §8 names:');
   console.log(`  empty: says so rather than showing a blank pane — ${outDir}/state-empty.png`);
