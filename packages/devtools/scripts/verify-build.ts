@@ -215,37 +215,6 @@ function checkSelfContained(role: string, emitted: string, files: string[]): voi
   }
 }
 
-/**
- * D8: icons are a Chrome Web Store submission requirement, not a load-unpacked one, so nothing
- * before this milestone caught their absence. The manifest can name them and the build can still
- * ship without them if `public/icons/` was not rendered — hence both halves are asserted.
- */
-const ICON_SIZES = ['16', '32', '48', '128'] as const;
-
-function checkIcons(manifest: Rec, distDir: string): void {
-  const icons = asRecord(manifest.icons);
-  if (icons === undefined) {
-    fail(
-      'manifest icons',
-      'manifest has no "icons" block; the Chrome Web Store upload will be rejected.',
-    );
-    return;
-  }
-  for (const size of ICON_SIZES) {
-    const path = asString(icons[size]);
-    if (path === undefined) {
-      fail('manifest icons', `manifest declares no icon for size ${size}.`);
-      continue;
-    }
-    if (!existsSync(join(distDir, path))) {
-      fail(
-        'manifest icons',
-        `manifest points icon ${size} at ${path}, which is not in dist/. Run \`pnpm icons\`.`,
-      );
-    }
-  }
-}
-
 /* -------------------------------------------------------------------------- */
 /* 1. Entry-point identity: does each chunk contain the code it should?        */
 /* -------------------------------------------------------------------------- */
@@ -362,6 +331,47 @@ function checkEntry(expectation: EntryExpectation): void {
           `A MAIN-world content script has no extension APIs: this throws at document_start ` +
           `on every matched page. The usual cause is a basename collision that put another ` +
           `entry point's code in this chunk.`,
+      );
+    }
+  }
+}
+
+// Independent from `SIZES` in `render-icons.mts` ON PURPOSE: this list is a statement of what
+// the manifest owes, not a mirror of what the renderer happens to produce. Importing it would
+// degrade the check into comparing the renderer to itself — a renderer that silently dropped a
+// size, or a fifth size added to it and forgotten here, would both still pass.
+const ICON_SIZES = ['16', '32', '48', '128'] as const;
+
+/**
+ * D8: icons are a Chrome Web Store submission requirement, not a load-unpacked one, so nothing
+ * before this milestone caught their absence. The manifest can name them and the build can still
+ * ship without them if `public/icons/` was not rendered — hence both halves are asserted.
+ */
+function checkIcons(manifest: Rec): void {
+  const icons = asRecord(manifest.icons);
+  if (icons === undefined) {
+    fail(
+      'manifest icons',
+      'manifest has no "icons" block; the Chrome Web Store upload will be rejected. ' +
+        'Add the `icons` block to manifest.config.ts.',
+    );
+    return;
+  }
+  for (const size of ICON_SIZES) {
+    const path = asString(icons[size]);
+    if (path === undefined) {
+      fail(
+        'manifest icons',
+        `manifest declares no icon for size ${size}. Add ${size}: 'icons/icon-${size}.png' to ` +
+          `the icons block in manifest.config.ts.`,
+      );
+      continue;
+    }
+    if (!existsSync(join(distDir, path))) {
+      fail(
+        'manifest icons',
+        `manifest points icon ${size} at ${path}, which is not in dist/. Run ` +
+          '`pnpm icons && pnpm build`.',
       );
     }
   }
@@ -533,8 +543,6 @@ function main(): void {
   // Re-run here, against the same artifact these entry checks ran against, so one command
   // gates the whole build.
 
-  checkIcons(distManifest, distDir);
-
   /**
    * NO `web_accessible_resources` AT ALL.
    *
@@ -596,9 +604,13 @@ function main(): void {
     );
   }
 
-  /* --- 3. Panel HTML actually reached dist/ -------------------------------- */
+  /* --- 3. Declared assets actually reached dist/ (panel HTML, icons) ------- */
   // panel.html is opened at runtime by chrome.devtools.panels.create, so no manifest key
-  // points at it and nothing else would notice it going missing until the panel 404s.
+  // points at it and nothing else would notice it going missing until the panel 404s. Icons are
+  // the same shape of gap: not a privacy invariant, just a declared asset nothing but this
+  // script and a human Chrome Web Store reviewer would ever notice missing.
+
+  checkIcons(distManifest);
 
   for (const html of ['src/panel/panel.html', 'src/panel/devtools.html']) {
     if (!existsSync(join(distDir, html))) {
