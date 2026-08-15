@@ -29,6 +29,7 @@ is stated.
 | P7 | The list's left gutter shows `CaptureRecord.seq`, not a row index | Filtering reorders visible rows. `seq` is stable, and it is literally what `Issue.seq` refers to, so an issue and its event stay cross-referenceable under any filter. |
 | P8 | **Build the panel against imported fixtures before the capture layer exists** | See §7. This is the highest-leverage sequencing decision in the document. |
 | P9 | **Eviction is surfaced, never silent.** When the ring buffer drops events, the list shows a truncation marker at the boundary and the toolbar carries a persistent dropped-event count | Sessions are expected to be long and ongoing with multiple runs, so the 5k-event / 8MB default *will* evict in normal use. Requirements §15 asks for a visible "buffer full" state but §9 gives it no home. A panel that silently renders a truncated stream is the same class of trust failure as a hidden validator issue — the user would compute TTFT from a run whose start had been evicted and never know. |
+| P12 | **Capture status reports what the DOCUMENT says, never what the origin allows.** The page announces its capture hooks; absence of that announcement — after a short grace period — is what produces "not instrumented" | Found in a real browser, 2026-08-15. The panel flipped capture to `on` from `chrome.permissions.contains` alone, but `chrome.scripting.registerContentScripts` affects only FUTURE navigations, so a document already open when the grant landed had no hooks in it: `Function.prototype.toString.call(window.fetch)` still read `[native code]`, and the panel said it was capturing. Three divergence paths — a grant from a previous session, an extension reload with the page open, and a grant the user never acts on — and only the third was handled, by `awaitingReload`. The grace period is not optional: rendering the warning before the report is due would flash a false alarm on every panel open, and a warning that is usually wrong teaches the user to ignore the one that matters. `executeScript` into the open document was rejected as the remedy — it produces a PARTIALLY instrumented document (bundlers hoist `const f = window.fetch`; an already-constructed `EventSource` is unreachable) that reports itself fully instrumented, which is the same failure class again. A reload is honest. |
 | P10 | The scope bar's run selector is a **searchable, virtualized list**, not a plain dropdown | Follows from the same answer: with many runs per session, a 4-item dropdown assumption breaks. Runs are labelled by thread, outcome, and issue count so the interesting one is findable without opening Runs. |
 
 ---
@@ -132,8 +133,9 @@ capture." So it belongs in the Session tab as metadata, not in the capture banne
 
 ## 5. Capture-off and first run
 
-Three honest states, never a silent empty one. Under P11 both capture-off states offer Enable; the
-detection signal changes only the wording:
+Five honest states, never a silent empty one. Under P11 both capture-off states offer Enable; the
+detection signal changes only the wording. Under P12 "capture on" splits in three, because the
+origin being granted and the document being patched are different facts:
 
 - **An event stream was seen** (strongest) — names the origin, and says only what the network log
   can support: an SSE response finished here, contents unknown. Deliberately not "an AG-UI stream":
@@ -143,9 +145,15 @@ detection signal changes only the wording:
   sends a message, so the panel cannot tell yet. It may NOT say "nothing detected": that reads as a
   verdict on the page when it is only an absence of evidence. Per §4a there is no third, stronger
   pre-traffic state to reach for
-- **Capture on, idle** — waiting for a run
+- **Capture on, checking** (P12) — the origin is enabled and the page has not reported its capture
+  hooks yet. It may NOT say "capture is on": that is the claim that was wrong. It may not warn
+  either, until the grace period is out
+- **Capture on, this document has no hooks** (P12) — granted, and nothing is being captured here.
+  Carries the same reload affordance a fresh grant does, for the same reason
+- **Capture on, idle** — instrumented, waiting for a run
 
-All three explain the reload requirement, and the two capture-off ones carry the same Enable button.
+All of them explain the reload requirement, and the two capture-off ones carry the same Enable
+button.
 
 The framework label of §4a appears on the **Session** tab (`Framework: Angular 21.1.6`) and never in
 this banner — it is a fact about how the app was built, not about what it speaks.

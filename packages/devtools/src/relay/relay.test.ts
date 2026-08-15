@@ -108,6 +108,16 @@ function validOpen(extra: Record<string, unknown> = {}): Record<string, unknown>
   };
 }
 
+function validInstalled(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    source: AGUI_DT_SOURCE,
+    v: PROTOCOL_VERSION,
+    kind: 'capture-installed',
+    tMs: 1.25,
+    ...extra,
+  };
+}
+
 function delivered(harness: ChromeHarness): unknown[] {
   return harness.ports.flatMap((port) => port.posted);
 }
@@ -228,6 +238,25 @@ describe('relay — forwarding', () => {
     ]);
   });
 
+  /*
+   * The announcement crosses the boundary on exactly the same terms as everything else.
+   *
+   * It is the message the panel reads as "this document has capture hooks in it", so a forged
+   * one makes the panel claim capture is live where it is not — the very failure the message
+   * exists to abolish. It therefore gets no shortcut: same origin check, same source check, same
+   * plain-prototype screen, same version check, same field-by-field rebuild.
+   */
+  it('forwards capture-installed without the source tag', () => {
+    post(validInstalled());
+    expect(delivered(chromeHarness)).toEqual([{ v: 1, kind: 'capture-installed', tMs: 1.25 }]);
+  });
+
+  it('rebuilds capture-installed from known fields only', () => {
+    post(validInstalled({ connId: 'c1', cookie: 'session=abc', instrumented: 'yes' }));
+    const [forwarded] = delivered(chromeHarness) as Record<string, unknown>[];
+    expect(Object.keys(forwarded ?? {}).sort()).toEqual(['kind', 'tMs', 'v']);
+  });
+
   it('drops properties the contract does not name, at the top level and inside frames', () => {
     post(validOpen({ cookie: 'session=abc', headers: { authorization: 'Bearer x' } }));
     post({
@@ -340,6 +369,27 @@ describe('relay — hostile input is dropped silently', () => {
           connId: 'c1',
           frames: [{ kind: 'event', tMs: 1, raw: '{}' }, null],
         }),
+    ],
+    ['a forged capture-installed from an iframe', () => post(validInstalled(), { source: {} })],
+    [
+      'a forged capture-installed from another origin',
+      () => post(validInstalled(), { origin: 'https://evil.example' }),
+    ],
+    ['a capture-installed with a look-alike tag', () => post(validInstalled({ source: 'agui-dt2' }))],
+    ['a capture-installed from a future protocol', () => post(validInstalled({ v: 2 }))],
+    ['a capture-installed with no timestamp', () => post({ ...validInstalled(), tMs: undefined })],
+    ['a capture-installed with a NaN timestamp', () => post(validInstalled({ tMs: Number.NaN }))],
+    [
+      'a capture-installed whose fields live on its prototype',
+      () => {
+        const hostile = Object.create({
+          source: AGUI_DT_SOURCE,
+          v: PROTOCOL_VERSION,
+          tMs: 1,
+        }) as Record<string, unknown>;
+        hostile.kind = 'capture-installed';
+        post(hostile);
+      },
     ],
     ['a bare string', () => post('data: {"type":"RUN_STARTED"}')],
     ['null', () => post(null)],

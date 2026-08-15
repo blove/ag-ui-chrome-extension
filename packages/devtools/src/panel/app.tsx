@@ -15,32 +15,10 @@ import { RunSelector } from './shell/run-selector';
 import { TabStrip, tabPanelId } from './shell/tab-strip';
 import { Toolbar } from './shell/toolbar';
 import { Timeline } from './tabs/timeline/timeline';
+import { Messages } from './tabs/messages/messages';
+import { Runs } from './tabs/runs/runs';
+import { State } from './tabs/state/state';
 import { Session } from './tabs/session/session';
-
-/** Which milestone of the design's §7 sequencing each unbuilt tab belongs to. */
-const COMING_NEXT: Record<'runs' | 'state' | 'messages', string> = {
-  runs: 'Runs is milestone 2 of the design §7 sequencing (Runs, then State, then Messages), built against the same imported fixtures as Timeline.',
-  state:
-    'State is milestone 2 of the design §7 sequencing, after Runs. It renders the reconstructed document with a scrubber over Run.stateTimeline.',
-  messages:
-    'Messages is milestone 2 of the design §7 sequencing, after State. It renders the conversation as the client would.',
-};
-
-/**
- * A tab that exists in the strip but has no implementation yet.
- *
- * It names the milestone rather than showing an empty pane or fake content: a blank tab is
- * indistinguishable from a broken one, and stub content is worse — it invites a reader to trust
- * a number nothing computed.
- */
-function ComingNext({ title, detail }: { title: string; detail: string }): JSX.Element {
-  return (
-    <section class="agui-coming" aria-label={title}>
-      <h2 class="agui-coming__title">{title} — not built yet</h2>
-      <p class="agui-coming__detail">{detail}</p>
-    </section>
-  );
-}
 
 /**
  * Resolve the inspected page's origin, so the capture banner can name it.
@@ -203,13 +181,13 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
       body = <Session store={store} onLoaded={commit} />;
       break;
     case 'runs':
-      body = <ComingNext title="Runs" detail={COMING_NEXT.runs} />;
+      body = <Runs store={store} />;
       break;
     case 'state':
-      body = <ComingNext title="State" detail={COMING_NEXT.state} />;
+      body = <State store={store} />;
       break;
     case 'messages':
-      body = <ComingNext title="Messages" detail={COMING_NEXT.messages} />;
+      body = <Messages store={store} />;
       break;
   }
 
@@ -273,9 +251,10 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
 
       <main class="agui-app__body">
         {/*
-         * `tabIndex` because three of the five tab panels contain nothing focusable: without it a
-         * keyboard user tabbing off the tab strip leaves the panel entirely and never reads the
-         * content the tab they just selected is about.
+         * `tabIndex` because a tab panel can contain nothing focusable — every tab now has an
+         * implementation, but an empty capture leaves Runs, State and Messages as prose. Without
+         * it a keyboard user tabbing off the tab strip leaves the panel entirely and never reads
+         * the content the tab they just selected is about.
          */}
         <div
           class="agui-app__tabpanel"

@@ -149,6 +149,16 @@ jobs:
       # built panel in a real browser, asserts it is painted in both colour schemes and that the
       # two differ, and drives the fixtures through the panel's own file input to prove real data
       # renders.
+      #
+      # It also drives EXPORT and asserts a real click produces a real file with real content.
+      # Design decision E1 saves through `Blob` + `URL.createObjectURL` + a programmatic anchor
+      # specifically so no `downloads` permission is needed (requirements §11), and nothing else
+      # in this repository can see whether that works — every unit test stubs the writer, because
+      # a jsdom `Blob` is not a browser download. That check runs twice: over the served `dist/`,
+      # and again with the unpacked extension loaded, driving
+      # `chrome-extension://<id>/src/panel/panel.html` — the origin and CSP a DevTools panel
+      # document actually has. The second pass needs the FULL `chromium` build, which the install
+      # step above already fetches for the harness e2e.
       - name: Visual gate
         run: pnpm screenshot:panel
 

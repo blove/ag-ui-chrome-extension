@@ -23,7 +23,7 @@
  *    frames at all — not zero-length ones, none. §8's gap metrics are correspondingly blind on
  *    this transport.
  */
-import { AGUI_DT_SOURCE, PROTOCOL_VERSION, type InjectMessage } from './protocol';
+import { AGUI_DT_SOURCE, PROTOCOL_VERSION, type ConnectionMessage } from './protocol';
 import { eventFrame } from './wire-frame';
 
 /** The slice of `EventSource` this patch touches. Keeps the tests free of a real one. */
@@ -46,7 +46,7 @@ export interface EventSourceScope {
 
 export interface EventSourcePatchOptions {
   scope: EventSourceScope;
-  post: (message: InjectMessage) => void;
+  post: (message: ConnectionMessage) => void;
   now: () => number;
   nextConnId: () => string;
 }
@@ -74,7 +74,7 @@ export function installEventSourcePatch(options: EventSourcePatchOptions): () =>
    */
   const closers = new WeakMap<object, (reason: 'complete' | 'error' | 'aborted') => void>();
 
-  function emit(message: InjectMessage): void {
+  function emit(message: ConnectionMessage): void {
     try {
       post(message);
     } catch {

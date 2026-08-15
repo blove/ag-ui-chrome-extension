@@ -53,6 +53,7 @@ function makeRun(runId: string, recordSeqs: number[]): Run {
     },
     issues: [],
     recordSeqs,
+    redacted: [],
   };
 }
 

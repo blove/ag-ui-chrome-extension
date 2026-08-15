@@ -40,10 +40,43 @@ describe('Session', () => {
       ...initialPanelState(),
       source: { kind: 'live', origin: 'http://localhost:3000' },
       capture: { kind: 'on', origin: 'http://localhost:3000' },
+      instrumented: true,
     });
     render(<Session store={store} />);
     expect(screen.getByText('live capture from http://localhost:3000')).toBeTruthy();
     expect(screen.getByText('on for http://localhost:3000')).toBeTruthy();
+  });
+
+  /*
+   * The Session row is the second place the panel states capture status, so it is the second
+   * place the granted-vs-instrumented divergence can be reported falsely. "on for <origin>" says
+   * capture is HAPPENING; the origin being granted only says it is available here, and on a
+   * document that was already open when the grant landed those are different facts.
+   */
+  it('does not claim capture is happening on a document that has reported no hooks', () => {
+    const store = createPanelStore({
+      ...initialPanelState(),
+      source: { kind: 'live', origin: 'http://localhost:3000' },
+      capture: { kind: 'on', origin: 'http://localhost:3000' },
+      instrumented: false,
+    });
+    render(<Session store={store} />);
+    const value = screen.getByText(/^on for http:\/\/localhost:3000/);
+    expect(value.textContent).toMatch(/reload/i);
+    expect(value.textContent).toMatch(/no capture hooks/i);
+  });
+
+  it('says the page has not reported yet rather than either of the two verdicts', () => {
+    const store = createPanelStore({
+      ...initialPanelState(),
+      source: { kind: 'live', origin: 'http://localhost:3000' },
+      capture: { kind: 'on', origin: 'http://localhost:3000' },
+      instrumented: null,
+    });
+    render(<Session store={store} />);
+    const value = screen.getByText(/^on for http:\/\/localhost:3000/);
+    expect(value.textContent).toMatch(/has not reported/i);
+    expect(value.textContent).not.toMatch(/no capture hooks/i);
   });
 
   it('reports a capture-off origin without claiming nothing is there', () => {
@@ -95,10 +128,16 @@ describe('Session', () => {
     expect(value('Total')).toBe('4');
   });
 
-  it('states that export is not available rather than offering one', () => {
+  it('carries the export controls, disabled with a reason on an empty capture', () => {
     render(<Session store={createPanelStore()} />);
-    expect(screen.getByText('not available in phase 1')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /export/i })).toBeNull();
+
+    const download = screen.getByRole('button', {
+      name: /Download capture/,
+    }) as HTMLButtonElement;
+    expect(download.disabled).toBe(true);
+    expect(screen.getByTestId('agui-export-blocked').textContent).toBe(
+      'Nothing has been captured yet, so there is nothing to export.',
+    );
   });
 
   it('carries the import control and commits a dropped capture to the store', async () => {

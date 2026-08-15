@@ -138,14 +138,39 @@ describe('App', () => {
     expect(dropTarget()).toBeTruthy();
   });
 
-  it.each<[TabId, RegExp]>([
-    ['runs', /Runs — not built yet/],
-    ['state', /State — not built yet/],
-    ['messages', /Messages — not built yet/],
-  ])('names the milestone for the %s placeholder', (tab, heading) => {
-    render(<App store={createPanelStore({ ...initialPanelState(), tab })} />);
-    expect(screen.getByRole('heading', { name: heading })).toBeTruthy();
-    expect(screen.getByText(/milestone 2 of the design §7 sequencing/i)).toBeTruthy();
+  /**
+   * The panel has no unbuilt tabs left. This asserts the absence rather than trusting it: the
+   * placeholder said "not built yet" on every tab that had no implementation, so a tab that
+   * silently lost its component would say so here rather than render blank.
+   */
+  it('has no placeholder left on any tab', () => {
+    for (const tab of ['timeline', 'runs', 'state', 'messages', 'session'] as TabId[]) {
+      const view = render(<App store={createPanelStore({ ...initialPanelState(), tab })} />);
+      expect(screen.queryByText(/not built yet/i)).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it('renders Runs on the runs tab', () => {
+    render(<App store={createPanelStore({ ...initialPanelState(), tab: 'runs' })} />);
+    expect(screen.getByRole('region', { name: 'Runs' })).toBeTruthy();
+    // `region` alone is not enough to tell the tab from the placeholder it replaced: the
+    // placeholder was a `section` with an `aria-label` too, so it answered to the same query.
+    expect(screen.getByText(/no runs to show/i)).toBeTruthy();
+  });
+
+  it('renders State on the state tab', () => {
+    render(<App store={createPanelStore({ ...initialPanelState(), tab: 'state' })} />);
+    expect(screen.getByRole('region', { name: 'State' })).toBeTruthy();
+    // Not the placeholder: an empty State tab explains itself in its own words.
+    expect(screen.queryByText(/not built yet/i)).toBeNull();
+  });
+
+  it('renders Messages on the messages tab', () => {
+    render(<App store={createPanelStore({ ...initialPanelState(), tab: 'messages' })} />);
+    expect(screen.getByRole('region', { name: 'Messages' })).toBeTruthy();
+    // Not the placeholder: an empty Messages tab explains itself in its own words.
+    expect(screen.queryByText(/not built yet/i)).toBeNull();
   });
 
   it('renders Session on the session tab', () => {

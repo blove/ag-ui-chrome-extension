@@ -33,6 +33,14 @@ export interface CaptureSnapshot {
   records: CaptureRecord[];
   requests: RequestLine[];
   droppedBefore: number;
+  /**
+   * Whether a document in the browser has reported that its capture hooks are installed — the
+   * same fact the worker puts on the panel's `snapshot`, read from the same function.
+   *
+   * This is the panel-facing state that used to be inferred from the permission instead, and the
+   * inference is what let the panel report capture from documents it had never touched.
+   */
+  instrumented: boolean;
 }
 
 /** The shape `src/sw/index.ts` attaches to the SW global, unconditionally. */
@@ -41,6 +49,7 @@ interface TestHook {
   requests(): RequestLine[];
   droppedBefore(): number;
   bytes(): number;
+  instrumented(): boolean;
   clear(): void;
 }
 
@@ -145,6 +154,7 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
       records: hook.records(),
       requests: hook.requests(),
       droppedBefore: hook.droppedBefore(),
+      instrumented: hook.instrumented(),
     };
   });
 }

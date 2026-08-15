@@ -10,8 +10,19 @@ export const ALL_REDACTION_GROUPS: readonly RedactionGroup[] = [
   'state',
 ];
 
-/** The one and only placeholder shape. Size survives; content does not. */
+/**
+ * The one and only placeholder shape. Size survives; content does not.
+ *
+ * The empty string is returned as itself. There is no content in a zero-length string to protect,
+ * and replacing it changes what the VALIDATOR sees: requirements §7 makes an empty
+ * `TEXT_MESSAGE_CONTENT` delta an error (`empty-text-delta`), and `«redacted: 0 chars»` is not
+ * empty. Found by export (2026-08-15), this module's second consumer and the first to fold a
+ * redacted capture back through the run builder — a redacted bug report about an empty-delta bug
+ * reached its reader reporting no bug at all. §11 promises structure, types, ordering, sizes and
+ * timings survive redaction, and the emptiness of an empty payload is that kind of fact.
+ */
 export function redactString(value: string): string {
+  if (value === '') return '';
   return `«redacted: ${value.length} chars»`;
 }
 

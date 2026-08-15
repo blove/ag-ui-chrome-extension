@@ -1,7 +1,8 @@
-import type { JSX, RefObject } from 'preact';
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import type { JSX } from 'preact';
+import { useLayoutEffect, useRef } from 'preact/hooks';
 import type { CaptureRecord, Issue, IssueSeverity } from '../../../core/model/types';
 import { VirtualList } from '../../common/virtual-list';
+import { useMeasuredHeight } from '../../common/layout';
 import { summarizeEvent } from '../../common/format';
 import { issuesBySeq, visibleRecords } from '../../model/selectors';
 import { selectSeq, type PanelStore } from '../../model/store';
@@ -23,13 +24,6 @@ export interface EventListProps {
 /** Uniform row height, in px. `VirtualList` assumes uniform rows in phase 1. */
 const ROW_HEIGHT_PX = 22;
 
-/**
- * Viewport height used until the container has been measured. jsdom reports `clientHeight`
- * as 0 and has no `ResizeObserver`, so without a fallback the list would window down to zero
- * rows and render nothing at all under test.
- */
-const FALLBACK_HEIGHT_PX = 480;
-
 /** Worst severity wins the row's tint: an error must not be hidden by a co-located info. */
 const SEVERITY_RANK: Record<IssueSeverity, number> = { error: 3, warning: 2, info: 1 };
 
@@ -47,25 +41,6 @@ function worstSeverity(issues: Issue[]): IssueSeverity | undefined {
 function typeLabel(record: CaptureRecord): string {
   if (record.kind === 'keepalive') return 'keepalive';
   return record.event === null ? 'unparsed' : record.event.type;
-}
-
-function useMeasuredHeight(ref: RefObject<HTMLDivElement>): number {
-  const [height, setHeight] = useState(FALLBACK_HEIGHT_PX);
-  useEffect(() => {
-    const el = ref.current;
-    if (el === null) return;
-    const measure = (): void => {
-      if (el.clientHeight > 0) setHeight(el.clientHeight);
-    };
-    measure();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => {
-      observer.disconnect();
-    };
-  }, [ref]);
-  return height;
 }
 
 interface EventRowProps {

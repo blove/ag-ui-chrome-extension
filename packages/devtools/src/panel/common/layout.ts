@@ -7,6 +7,7 @@
  * (a detail pane that stacks at a width where the waterfall has not yet collapsed) is
  * invisible in unit tests.
  */
+import type { RefObject } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 
 /** P4: below this width the Timeline stacks and the waterfall collapses to one line. */
@@ -49,4 +50,40 @@ export function useIsNarrow(): boolean {
   }, []);
 
   return isNarrow;
+}
+
+/**
+ * Viewport height used until a virtualized list's container has been measured.
+ *
+ * jsdom reports `clientHeight` as 0 and implements no `ResizeObserver`, so without a fallback
+ * every virtualized list would window down to zero rows and render nothing at all under test —
+ * a list that shows no data and a list that works are then indistinguishable to every gate but
+ * the screenshot one.
+ */
+export const FALLBACK_VIEWPORT_HEIGHT_PX = 480;
+
+/**
+ * The measured height of `ref`'s element, for a virtualized list to window against.
+ *
+ * Shared by every list that virtualizes: the Timeline's event list and the Runs table both need
+ * the same measurement and the same jsdom fallback, and two copies of that rule would drift the
+ * first time one of them is tuned.
+ */
+export function useMeasuredHeight(ref: RefObject<HTMLElement | null>): number {
+  const [height, setHeight] = useState(FALLBACK_VIEWPORT_HEIGHT_PX);
+  useEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const measure = (): void => {
+      if (el.clientHeight > 0) setHeight(el.clientHeight);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, [ref]);
+  return height;
 }

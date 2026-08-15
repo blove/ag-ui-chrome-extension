@@ -37,6 +37,7 @@ function makeRun(
     metrics: m,
     issues: [],
     recordSeqs: [],
+    redacted: [],
   };
 }
 

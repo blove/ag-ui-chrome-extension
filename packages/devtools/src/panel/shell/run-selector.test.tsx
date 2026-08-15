@@ -32,6 +32,7 @@ function makeRun(runId: string, threadId: string, outcome: RunOutcome, issues: I
     metrics: metrics(),
     issues,
     recordSeqs: [],
+    redacted: [],
   };
 }
 

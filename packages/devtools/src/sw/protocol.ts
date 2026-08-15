@@ -73,6 +73,16 @@ export type SwMessage =
       records: CaptureRecord[];
       requests: RequestLine[];
       droppedBefore: number;
+      /**
+       * Whether any document in this tab has reported that its capture hooks are installed.
+       *
+       * NOT the same fact as "the origin is granted", which is what the panel used to infer
+       * capture from: `chrome.scripting.registerContentScripts` affects only FUTURE navigations,
+       * so a document already open when the grant landed has no hooks in it. This is how a panel
+       * opened AFTER the announcement still learns about it — the announcement itself is a
+       * one-shot message the panel may well have missed.
+       */
+      instrumented: boolean;
     }
   | {
       kind: 'append';
@@ -93,6 +103,17 @@ export type SwMessage =
    * failure mode to avoid.
    */
   | { kind: 'binary'; connId: string; tMs: number; contentType: string; bytes: number }
+  /**
+   * A document in this tab has just reported that its capture hooks are installed.
+   *
+   * Re-stated on EVERY announcement rather than only on a change, because the interesting
+   * announcement is usually the one that changes nothing here: the user reloads on the panel's
+   * advice, the new document announces exactly as the old one did, and a panel that had reset
+   * itself to "checking" for the new document has to hear it or it warns about a page that is
+   * working. There is deliberately no negative counterpart — absence is the signal, at this
+   * boundary exactly as at the page's.
+   */
+  | { kind: 'capture-installed' }
   | { kind: 'cleared' };
 
 /** Panel → worker. */

@@ -1,4 +1,9 @@
 import type { JSX } from 'preact';
+import { useState } from 'preact/hooks';
+import { encodeJsonl } from '../../core/jsonl/codec';
+import { buildExport, exportBlockedReason } from '../export/build';
+import { DEFAULT_EXPORT_IO, type ExportIo } from '../export/download';
+import { exportFilename } from '../export/filename';
 import { issueCounts } from '../model/selectors';
 import { initialPanelState } from '../model/panel-types';
 import type { RunScope } from '../model/panel-types';
@@ -29,6 +34,12 @@ export interface ToolbarProps {
    * the records, and the next snapshot — a reconnect, a reopened panel — would resurrect them.
    */
   onClear?: () => void;
+  /**
+   * The two side effects export needs. Injected so the button's success and failure branches are
+   * both reachable from a test without a real `Blob` — `download.ts` is the deliberately
+   * untestable edge, and this is the seam that keeps it out of everything above it.
+   */
+  exportIo?: ExportIo;
 }
 
 export type IssueTone = 'error' | 'warning' | 'none';
@@ -89,13 +100,51 @@ export function issueBadgeLabel(counts: Counts, issuesOnly: boolean, scope: RunS
  * it is not. Disabled-with-a-reason rather than hidden: a control that vanishes reads as a
  * missing feature, and one that is present but inert with no explanation reads as a bug.
  */
-export function Toolbar({ store, onImport, onSetRecording, onClear }: ToolbarProps): JSX.Element {
+export function Toolbar({
+  store,
+  onImport,
+  onSetRecording,
+  onClear,
+  exportIo = DEFAULT_EXPORT_IO,
+}: ToolbarProps): JSX.Element {
   const state = usePanelState(store);
   const counts = issueCounts(state);
   const tone = issueTone(counts);
   const captureIsOn = state.capture.kind === 'on';
   const recording = captureIsOn && state.recording;
   const hasData = state.source.kind !== 'empty' || state.records.length > 0 || state.runs.length > 0;
+
+  const exportBlocked = exportBlockedReason(state, state.scope);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  /**
+   * E5 — one click: current scope, UNREDACTED, and labelled as unredacted.
+   *
+   * This is the developer exporting their own capture for themselves, where a silently-redacted
+   * file would be useless — §10 lists "full" and "redacted bug report" as separate modes for
+   * exactly that reason. Redaction is a deliberate act on the Session tab; the label here is what
+   * stops the other direction from being a surprise too.
+   *
+   * The same `buildExport` the Session tab calls, with the arguments fixed. Two call sites, one
+   * implementation, no duplicated policy.
+   */
+  function onExport(): void {
+    if (exportBlocked !== null) {
+      setExportError(exportBlocked);
+      return;
+    }
+    const built = buildExport(state, {
+      scope: state.scope,
+      groups: [],
+      toolVersion: chrome.runtime.getManifest().version,
+      exportedAtIso: new Date().toISOString(),
+    });
+    const result = exportIo.download(
+      exportFilename(built.header.url, built.header.capturedAt),
+      encodeJsonl(built.lines),
+    );
+    setExportError(result.ok ? null : result.reason);
+  }
 
   return (
     <div class="agui-toolbar" role="toolbar" aria-label="Capture controls">
@@ -174,6 +223,26 @@ export function Toolbar({ store, onImport, onSetRecording, onClear }: ToolbarPro
       <button type="button" class="agui-toolbar__button" onClick={onImport}>
         Import
       </button>
+
+      <button
+        type="button"
+        class="agui-toolbar__button"
+        disabled={exportBlocked !== null}
+        title={
+          exportBlocked ??
+          'Download this capture as .agui.jsonl, unredacted, at the current run scope. ' +
+            'Use the Session tab to redact field groups, copy to the clipboard, or emit a test fixture.'
+        }
+        onClick={onExport}
+      >
+        Export (unredacted)
+      </button>
+
+      {exportError !== null && (
+        <span class="agui-toolbar__export-error" role="alert">
+          {exportError}
+        </span>
+      )}
 
       {state.droppedBefore > 0 && (
         <span

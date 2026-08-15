@@ -1,0 +1,18 @@
+{"kind":"header","schemaVersion":1,"tool":"ag-ui-devtools@0.1.0","capturedAt":"2026-08-15T11:00:00.000Z","url":"http://localhost:3000/","framework":"react/copilotkit","transport":"sse","redacted":[]}
+{"kind":"request","connId":"c1","tMs":0,"method":"POST","url":"/api/copilotkit/agent/weather/run","input":{"threadId":"t_alpha","runId":"r_alpha","state":{},"messages":[{"id":"m_user_1","role":"user","content":"Weather in Paris please."}],"tools":[],"context":[],"forwardedProps":{}}}
+{"kind":"event","connId":"c1","seq":1,"tMs":10,"event":{"type":"RUN_STARTED","threadId":"t_alpha","runId":"r_alpha","agentId":"weather-agent"}}
+{"kind":"event","connId":"c1","seq":2,"tMs":30,"event":{"type":"TEXT_MESSAGE_START","messageId":"m_a1","role":"assistant"}}
+{"kind":"event","connId":"c1","seq":3,"tMs":150,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_a1","delta":"Sunny and 24 degrees."}}
+{"kind":"event","connId":"c1","seq":4,"tMs":180,"event":{"type":"TEXT_MESSAGE_END","messageId":"m_a1"}}
+{"kind":"event","connId":"c1","seq":5,"tMs":210,"event":{"type":"RUN_FINISHED","threadId":"t_alpha","runId":"r_alpha"}}
+{"kind":"request","connId":"c2","tMs":300,"method":"POST","url":"/api/copilotkit/agent/booking/run","input":{"threadId":"t_beta","runId":"r_beta","state":{},"messages":[{"id":"m_user_2","role":"user","content":"Book a table."}],"tools":[],"context":[],"forwardedProps":{}}}
+{"kind":"event","connId":"c2","seq":6,"tMs":310,"event":{"type":"RUN_STARTED","threadId":"t_beta","runId":"r_beta"}}
+{"kind":"event","connId":"c2","seq":7,"tMs":330,"event":{"type":"TOOL_CALL_START","toolCallId":"tc_beta","toolCallName":"book_table"}}
+{"kind":"event","connId":"c2","seq":8,"tMs":360,"event":{"type":"TOOL_CALL_ARGS","toolCallId":"tc_beta","delta":"{\"party\": 4"}}
+{"kind":"event","connId":"c2","seq":9,"tMs":390,"event":{"type":"TOOL_CALL_END","toolCallId":"tc_beta"}}
+{"kind":"event","connId":"c2","seq":10,"tMs":430,"event":{"type":"RUN_ERROR","threadId":"t_beta","runId":"r_beta","message":"the booking service refused the call"}}
+{"kind":"request","connId":"c3","tMs":500,"method":"POST","url":"/api/copilotkit/agent/weather/run","input":{"threadId":"t_gamma","runId":"r_gamma","state":{},"messages":[{"id":"m_user_3","role":"user","content":"And tomorrow?"}],"tools":[],"context":[],"forwardedProps":{}}}
+{"kind":"event","connId":"c3","seq":11,"tMs":510,"event":{"type":"RUN_STARTED","threadId":"t_gamma","runId":"r_gamma","agentId":"weather-agent"}}
+{"kind":"event","connId":"c3","seq":12,"tMs":540,"event":{"type":"TEXT_MESSAGE_START","messageId":"m_g1","role":"assistant"}}
+{"kind":"event","connId":"c3","seq":13,"tMs":620,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_g1","delta":"Tomorrow it will be"}}
+{"kind":"event","connId":"c4","seq":14,"tMs":700,"event":{"type":"TEXT_MESSAGE_END","messageId":"m_nowhere"}}

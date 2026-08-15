@@ -103,6 +103,11 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
       ...s,
       runs: builder.runs(),
       records,
+      // The request lines reach panel state as well as the fold. Export re-encodes from what
+      // `PanelState` holds (E2), and a request line lives nowhere else once the builder has taken
+      // its body — so without this a live capture would export runs with no `RunAgentInput`, and
+      // the re-import would report `run-started-without-input` about the user's server.
+      requests,
       issues: builder.allIssues(),
       droppedBefore: workerDropped + panelDropped,
       binaryTransport: binary,
@@ -156,7 +161,17 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
         trim();
         // The snapshot is a new dataset: a selection made against the previous one would point
         // at a seq this one may not contain, and a scope at a run it may not have.
-        return { ...project(s), scope: null, selectedSeq: null };
+        return {
+          ...project(s),
+          scope: null,
+          selectedSeq: null,
+          // Only ever upwards, exactly like `raiseSignal`. A snapshot arrives the instant the
+          // panel subscribes, which on a page that is still loading is before any announcement
+          // is due, so `false` here means "nothing reported YET" and never "not instrumented".
+          // The finding is made by the grace-period timeout in `use-live-capture`, which is the
+          // one place that has waited long enough to make it.
+          instrumented: message.instrumented ? true : s.instrumented,
+        };
       }
       case 'append': {
         for (const record of message.records) builder.addRecord(record);
@@ -197,6 +212,18 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
                 bytes: message.bytes,
               };
         return project(s);
+      }
+      case 'capture-installed': {
+        /*
+         * The inspected document says its hooks are installed.
+         *
+         * It touches the builder, the records and the seq counter not at all, and it must stay
+         * that way: the Timeline claims to show AG-UI protocol events reconstructed from the
+         * wire, so a row here would be the panel asserting something false about the user's
+         * application, and it would consume a `seq` that every validator issue is anchored to.
+         * The whole visible footprint of this message is the capture status.
+         */
+        return { ...s, instrumented: true };
       }
       case 'cleared': {
         restart();

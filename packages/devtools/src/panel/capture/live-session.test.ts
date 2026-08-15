@@ -42,6 +42,7 @@ describe('createLiveSession', () => {
       records,
       requests: [requestLine()],
       droppedBefore: 0,
+      instrumented: true,
     });
 
     expect(next.records).toHaveLength(5);
@@ -61,6 +62,7 @@ describe('createLiveSession', () => {
       records: head,
       requests: [requestLine()],
       droppedBefore: 0,
+      instrumented: true,
     });
     state = session.apply(state, { kind: 'append', records: tail });
 
@@ -110,6 +112,7 @@ describe('createLiveSession', () => {
       records,
       requests: [requestLine()],
       droppedBefore: 0,
+      instrumented: true,
     });
 
     expect(state.records.map((r) => r.seq)).toEqual([2, 3, 4]);
@@ -123,6 +126,7 @@ describe('createLiveSession', () => {
       records: happyRun(),
       requests: [requestLine()],
       droppedBefore: 7,
+      instrumented: true,
     });
 
     expect(state.droppedBefore).toBe(9);
@@ -140,6 +144,7 @@ describe('createLiveSession', () => {
       records: happyRun(),
       requests: [requestLine()],
       droppedBefore: 0,
+      instrumented: true,
     });
     expect(state.droppedBefore).toBe(0);
 
@@ -160,6 +165,7 @@ describe('createLiveSession', () => {
       records: happyRun(),
       requests: [requestLine()],
       droppedBefore: 6,
+      instrumented: true,
     });
     nextSeq = 5;
     state = session.apply(state, {
@@ -177,6 +183,7 @@ describe('createLiveSession', () => {
       records: happyRun(),
       requests: [requestLine()],
       droppedBefore: 0,
+      instrumented: true,
     });
     // Two evicted by the panel already.
     expect(state.droppedBefore).toBe(2);
@@ -199,6 +206,7 @@ describe('createLiveSession', () => {
       records: happyRun(),
       requests: [requestLine()],
       droppedBefore: 4,
+      instrumented: true,
     });
     state = { ...state, selectedSeq: 2, scope: 'r1' };
 
@@ -226,6 +234,7 @@ describe('createLiveSession', () => {
       records,
       requests: [requestLine()],
       droppedBefore: 0,
+      instrumented: true,
     });
     state = session.apply(state, { kind: 'closed', connId: 'c1', tMs: 40 });
     const before = state.issues.map((issue) => issue.code);
@@ -240,11 +249,105 @@ describe('createLiveSession', () => {
     expect(before).not.toContain('run-started-without-input');
   });
 
+  /**
+   * The announcement, folded into state and NOWHERE ELSE.
+   *
+   * It is extension-internal state about our own capture layer. The Timeline claims to show AG-UI
+   * protocol events reconstructed from the wire, so a row for this would make the panel assert
+   * something false about the user's application — and it would take a `seq`, moving every anchor
+   * the validator reports issues against.
+   */
+  describe('instrumentation', () => {
+    it('records that the page reported its hooks, without producing anything to show', () => {
+      const session = createLiveSession();
+      const start = { ...initialPanelState(), instrumented: null };
+
+      const state = session.apply(start, { kind: 'capture-installed' });
+
+      expect(state.instrumented).toBe(true);
+      expect(state.records).toEqual([]);
+      expect(state.runs).toEqual([]);
+      expect(state.issues).toEqual([]);
+    });
+
+    it('leaves seq numbering exactly where it was', () => {
+      const session = createLiveSession();
+      const records = happyRun();
+      let state = session.apply(initialPanelState(), {
+        kind: 'snapshot',
+        records,
+        requests: [requestLine()],
+        droppedBefore: 0,
+        instrumented: false,
+      });
+      const before = state.records.map((r) => r.seq);
+
+      state = session.apply(state, { kind: 'capture-installed' });
+
+      expect(state.records.map((r) => r.seq)).toEqual(before);
+      expect(state.runs).toHaveLength(1);
+    });
+
+    it('takes instrumentation from a snapshot, which is how a late panel learns it', () => {
+      const session = createLiveSession();
+
+      const state = session.apply(
+        { ...initialPanelState(), instrumented: null },
+        {
+          kind: 'snapshot',
+          records: [],
+          requests: [],
+          droppedBefore: 0,
+          instrumented: true,
+        },
+      );
+
+      expect(state.instrumented).toBe(true);
+    });
+
+    it('never reads a snapshot as proof that the page is NOT instrumented', () => {
+      const session = createLiveSession();
+
+      // A snapshot arrives the instant the panel subscribes, which on a page that is still
+      // loading is before any announcement is due. `false` here means "nothing reported YET",
+      // and treating it as a finding is exactly the false warning the grace period exists to
+      // prevent — the finding is made by the timeout in `use-live-capture`, never here.
+      const fresh = session.apply(
+        { ...initialPanelState(), instrumented: null },
+        { kind: 'snapshot', records: [], requests: [], droppedBefore: 0, instrumented: false },
+      );
+      expect(fresh.instrumented).toBeNull();
+
+      const known = session.apply(
+        { ...initialPanelState(), instrumented: true },
+        { kind: 'snapshot', records: [], requests: [], droppedBefore: 0, instrumented: false },
+      );
+      expect(known.instrumented).toBe(true);
+    });
+
+    it('survives a clear, which empties data and uninstalls nothing', () => {
+      const session = createLiveSession();
+      const state = session.apply(
+        { ...initialPanelState(), instrumented: true },
+        { kind: 'cleared' },
+      );
+
+      expect(state.instrumented).toBe(true);
+      expect(state.records).toEqual([]);
+    });
+  });
+
   it('drops a selection that a new snapshot may not contain', () => {
     const session = createLiveSession();
     const state = session.apply(
       { ...initialPanelState(), selectedSeq: 99, scope: 'r_old' },
-      { kind: 'snapshot', records: happyRun(), requests: [requestLine()], droppedBefore: 0 },
+      {
+        kind: 'snapshot',
+        records: happyRun(),
+        requests: [requestLine()],
+        droppedBefore: 0,
+        instrumented: true,
+      },
     );
 
     expect(state.selectedSeq).toBeNull();
@@ -352,9 +455,60 @@ describe('createLiveSession', () => {
         records: [],
         requests: [],
         droppedBefore: 0,
+        instrumented: true,
       });
 
       expect(state.binaryTransport?.contentType).toBe('application/vnd.ag-ui.event+proto');
     });
+  });
+});
+
+describe('the request lines an export has to put back', () => {
+  it('projects the request lines onto panel state, not only into the fold', () => {
+    // Export re-encodes from what `PanelState` holds. The fold keeps the request lines so it can
+    // refold; without them on the state as well, a live capture would export a run whose
+    // RunAgentInput was gone and re-import as `run-started-without-input`.
+    const session = createLiveSession();
+
+    const state = session.apply(initialPanelState(), {
+      kind: 'request',
+      request: requestLine(),
+    });
+
+    expect(state.requests).toEqual([requestLine()]);
+  });
+
+  it('replaces them on a snapshot, which is a new dataset', () => {
+    const session = createLiveSession();
+
+    let state = session.apply(initialPanelState(), { kind: 'request', request: requestLine('c9') });
+    state = session.apply(state, {
+      kind: 'snapshot',
+      records: happyRun(),
+      requests: [requestLine('c1')],
+      droppedBefore: 0,
+      instrumented: true,
+    });
+
+    expect(state.requests.map((request) => request.connId)).toEqual(['c1']);
+  });
+
+  it('drops them on cleared, along with everything else the user asked to be rid of', () => {
+    const session = createLiveSession();
+
+    let state = session.apply(initialPanelState(), { kind: 'request', request: requestLine() });
+    state = session.apply(state, { kind: 'cleared' });
+
+    expect(state.requests).toEqual([]);
+  });
+
+  it('keeps them across a refold, so Expand chunks does not lose the run input', () => {
+    const session = createLiveSession();
+
+    let state = session.apply(initialPanelState(), { kind: 'request', request: requestLine() });
+    state = session.apply(state, { kind: 'append', records: happyRun() });
+    state = session.refold(state, { expandChunks: false });
+
+    expect(state.requests).toEqual([requestLine()]);
   });
 });

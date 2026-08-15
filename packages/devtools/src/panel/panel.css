@@ -1227,24 +1227,21 @@ li[data-severity='warning'] .agui-detail__severity {
   background: var(--agui-hover);
 }
 
-/* --- Empty and not-yet-built states -------------------------------------- */
+/* --- Empty states -------------------------------------------------------- */
 
-.agui-empty,
-.agui-coming {
+.agui-empty {
   max-width: 78ch;
   padding: 12px 16px;
 }
 
-.agui-empty__title,
-.agui-coming__title {
+.agui-empty__title {
   margin: 0 0 4px;
   font-size: 14px;
   font-weight: 600;
   color: var(--agui-fg);
 }
 
-.agui-empty__detail,
-.agui-coming__detail {
+.agui-empty__detail {
   margin: 0 0 8px;
   color: var(--agui-fg-muted);
 }
@@ -1257,4 +1254,1010 @@ li[data-severity='warning'] .agui-detail__severity {
 code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.95em;
+}
+
+/* --- Export (Session tab, and the toolbar's error line) -------------------
+ * Every colour here is a token already declared in both schemes above. The
+ * controls reuse `.agui-toolbar__button` verbatim rather than restating it:
+ * one rule, so a control cannot end up styled in one band and bare in the
+ * other — which is exactly how this panel once shipped with no stylesheet at
+ * all.
+ */
+
+.agui-export {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 78ch;
+  color: var(--agui-fg);
+}
+
+.agui-export__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  background: var(--agui-surface);
+}
+
+.agui-export__groups:disabled {
+  opacity: 0.55;
+}
+
+.agui-export__legend {
+  padding: 0 4px;
+  color: var(--agui-fg-muted);
+  font-weight: 600;
+}
+
+.agui-export__group {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.agui-export__groups .agui-toolbar__button {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.agui-export__summary {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: var(--agui-surface-raised);
+  color: var(--agui-fg);
+  font-weight: 600;
+}
+
+/*
+ * The disabled-with-a-reason line. Not styled as an error: an empty capture is
+ * a normal state, and colouring it red would put the panel's one danger colour
+ * on something that is not a protocol error.
+ */
+.agui-export__blocked {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: var(--agui-surface);
+  color: var(--agui-fg-muted);
+}
+
+/* Redaction that arrived with the file and cannot be undone (E3), and the cost
+ * of redacting tool arguments. Both are warnings about the FILE, not errors. */
+.agui-export__inherited,
+.agui-export__warning {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-warning-border);
+  border-radius: 3px;
+  background: var(--agui-warning-bg);
+  color: var(--agui-fg);
+}
+
+.agui-export__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agui-export__ok {
+  margin: 0;
+  color: var(--agui-fg-muted);
+}
+
+.agui-export__error,
+.agui-toolbar__export-error {
+  margin: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--agui-danger-border);
+  border-radius: 3px;
+  background: var(--agui-danger-bg);
+  color: var(--agui-danger);
+}
+
+/* ---------------------------------------------------------------------------
+ * JSON tree (design decision S4). Shared by Messages (tool args and results)
+ * and, next milestone, State.
+ *
+ * The type colours are the whole point of drawing a tree rather than printing
+ * `JSON.stringify`: `24` and `"24"` must not look alike. Contrast measured
+ * against `--agui-surface` in both schemes; the weakest pair is the number hue
+ * at 4.62:1 (light) and 5.10:1 (dark).
+ * ------------------------------------------------------------------------- */
+
+:root {
+  --agui-json-key: #8430ce;
+  --agui-json-string: #0b7261;
+  --agui-json-number: #1451b4;
+  --agui-json-keyword: #a3401b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --agui-json-key: #c58af9;
+    --agui-json-string: #78d9c0;
+    --agui-json-number: #8ab4f8;
+    --agui-json-keyword: #f8a978;
+  }
+}
+
+.agui-json-tree {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  /* A wire value has no width limit. It wraps rather than pushing the pane wide,
+     and is never truncated — a value the panel shortened is a value the reader
+     cannot compare against their app. */
+  overflow-wrap: anywhere;
+}
+
+.agui-json-node {
+  min-width: 0;
+}
+
+.agui-json-node--leaf {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+/* The indent is on the children, so a node and its toggle stay aligned. */
+.agui-json-node__children {
+  padding-left: 12px;
+  border-left: 1px solid var(--agui-border);
+  margin-left: 3px;
+}
+
+.agui-json-node__toggle {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agui-json-node__toggle:hover {
+  background: var(--agui-row-hover);
+}
+
+.agui-json-node__caret {
+  width: 10px;
+  flex: none;
+  color: var(--agui-fg-muted);
+}
+
+.agui-json-node__key {
+  color: var(--agui-json-key);
+}
+
+.agui-json-node__summary {
+  color: var(--agui-fg-muted);
+}
+
+.agui-json-node__value[data-type='string'] {
+  color: var(--agui-json-string);
+}
+
+.agui-json-node__value[data-type='number'] {
+  color: var(--agui-json-number);
+}
+
+.agui-json-node__value[data-type='boolean'],
+.agui-json-node__value[data-type='null'],
+.agui-json-node__value[data-type='undefined'] {
+  color: var(--agui-json-keyword);
+}
+
+.agui-json-node__value[data-type='empty'],
+.agui-json-node__value[data-type='other'] {
+  color: var(--agui-fg-muted);
+}
+
+/* ---------------------------------------------------------------------------
+ * Messages tab (requirements §9.4, design decisions M1–M5).
+ *
+ * The colours carry claims, so each is stated in both schemes and none of them
+ * is the only signal: every tinted row also carries a phrase. `data-args` is
+ * the M2 verdict and `data-flag="streaming"` is M4's, and both were measured
+ * against the surface they sit on — the weakest pair is the streaming flag at
+ * 4.68:1 (light) and 5.21:1 (dark).
+ * ------------------------------------------------------------------------- */
+
+.agui-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.agui-messages__empty {
+  margin: 0;
+  color: var(--agui-fg-muted);
+}
+
+.agui-messages__run {
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  background: var(--agui-surface);
+}
+
+.agui-messages__run-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  margin: 0;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--agui-border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agui-messages__run-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.agui-messages__run-thread {
+  color: var(--agui-fg-muted);
+  font-weight: 400;
+}
+
+.agui-messages__run-outcome {
+  padding: 0 6px;
+  border: 1px solid var(--agui-border);
+  border-radius: 8px;
+  font-weight: 400;
+}
+
+/* A run that never terminated must not read like one that finished. */
+.agui-messages__run-outcome[data-outcome='error'],
+.agui-messages__run-outcome[data-outcome='aborted'] {
+  border-color: var(--agui-severity-error);
+  color: var(--agui-severity-error);
+}
+
+.agui-messages__run-issues {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--agui-severity-warning-bg);
+  color: var(--agui-severity-warning);
+  font-weight: 400;
+}
+
+.agui-messages__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--agui-border);
+}
+
+.agui-msg,
+.agui-tool {
+  padding: 6px 8px;
+  background: var(--agui-surface-raised);
+}
+
+.agui-msg__head,
+.agui-tool__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.agui-msg__role,
+.agui-tool__name {
+  font-weight: 600;
+}
+
+.agui-msg__id,
+.agui-tool__id,
+.agui-tool__parent {
+  color: var(--agui-fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.agui-msg__time,
+.agui-msg__frames {
+  color: var(--agui-fg-muted);
+  font-size: 11px;
+}
+
+/* A turn read out of the request body, not off the stream. Attribution is the
+   tab's subject, so the two are never drawn alike. */
+.agui-msg--input {
+  border-left: 3px solid var(--agui-bar-run);
+}
+
+.agui-msg__origin {
+  padding: 0 6px;
+  border: 1px dashed var(--agui-border);
+  border-radius: 8px;
+  color: var(--agui-fg-muted);
+  font-size: 11px;
+}
+
+/* M4. A message still open is a real state and says so in words as well as tint. */
+.agui-msg[data-streaming='true'] {
+  border-left: 3px solid var(--agui-severity-info);
+}
+
+.agui-msg__flag[data-flag='streaming'] {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+  font-size: 11px;
+}
+
+.agui-msg__locate {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: var(--agui-surface);
+  color: var(--agui-fg);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agui-msg__locate:hover:not(:disabled) {
+  background: var(--agui-row-hover);
+}
+
+.agui-msg__locate:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The message itself. `pre-wrap` because the wire's newlines are data: a panel
+   that collapses them cannot answer "does this match my UI?". */
+.agui-msg__content {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agui-msg__absent,
+.agui-tool__absent {
+  margin: 4px 0 0;
+  color: var(--agui-fg-muted);
+  font-style: italic;
+}
+
+.agui-msg__pre {
+  margin: 4px 0 0;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--agui-surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* M3: reasoning is visually distinct and collapsed by default. */
+.agui-msg[data-kind='reasoning'] {
+  border-left: 3px solid var(--agui-bar-step);
+  background: var(--agui-surface);
+}
+
+.agui-msg__disclosure,
+.agui-tool__toggle {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--agui-fg-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agui-msg__disclosure:hover,
+.agui-tool__toggle:hover {
+  color: var(--agui-fg);
+}
+
+.agui-tool__caret {
+  width: 10px;
+}
+
+.agui-tool__pane {
+  padding-left: 16px;
+}
+
+/* M2. The verdict on the streamed arguments, always visible in the collapsed
+   row — a verdict a reader has to click to find is one most readers miss. */
+.agui-tool__status {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--agui-track);
+  color: var(--agui-fg-muted);
+  font-size: 11px;
+}
+
+.agui-tool__status[data-status='parsed'] {
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+}
+
+.agui-tool__status[data-status='failed'] {
+  background: var(--agui-severity-error-bg);
+  color: var(--agui-severity-error);
+  font-weight: 600;
+}
+
+.agui-tool__status[data-status='streaming'] {
+  background: var(--agui-severity-warning-bg);
+  color: var(--agui-severity-warning);
+}
+
+/* Arguments that never parsed are the bug this tab exists to make obvious, so
+   the whole row is marked, not just the chip. */
+.agui-tool[data-args='failed'] {
+  border-left: 3px solid var(--agui-severity-error);
+  background: var(--agui-severity-error-bg);
+}
+
+.agui-tool[data-args='streaming'] {
+  border-left: 3px solid var(--agui-severity-warning);
+}
+
+.agui-tool__error {
+  margin: 4px 0 0;
+  color: var(--agui-severity-error);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+/* Not an error: the file no longer carries the evidence, and saying so is the
+   difference between a finding about the agent and one about the exporter. */
+.agui-tool__note {
+  margin: 4px 0 0;
+  color: var(--agui-fg-muted);
+}
+
+/* ---------------------------------------------------------------------------
+ * State tab (requirements §9.3, design decisions S1–S4).
+ *
+ * The scrubber is the tab. §9.3 asks for failed patches "marked red at their
+ * position on the scrubber", so the tick strip is laid out as one flex item per
+ * frame: a tick's horizontal position IS its position in the timeline, and a
+ * failure is therefore visible without scrubbing to find it.
+ *
+ * Red is never the only signal. A failed tick also carries a `!` glyph and says
+ * so in its accessible name, so the mark survives greyscale, a colour vision
+ * deficiency, and a screen reader alike.
+ * ------------------------------------------------------------------------- */
+
+.agui-state {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.agui-state__empty {
+  margin: 0;
+  color: var(--agui-fg-muted);
+}
+
+/* Not an error — the file no longer carries the values. Drawn as a note so a
+   reader does not take a redacted document for the one that was on the wire. */
+.agui-state__redacted {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-border);
+  border-left: 3px solid var(--agui-severity-info);
+  border-radius: 3px;
+  background: var(--agui-surface);
+  color: var(--agui-fg-muted);
+}
+
+.agui-state__run {
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  background: var(--agui-surface);
+}
+
+.agui-state__run-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  margin: 0;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--agui-border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agui-state__run-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.agui-state__run-thread,
+.agui-state__run-frames {
+  color: var(--agui-fg-muted);
+  font-weight: 400;
+}
+
+.agui-state__run-outcome {
+  padding: 0 6px;
+  border: 1px solid var(--agui-border);
+  border-radius: 8px;
+  font-weight: 400;
+}
+
+.agui-state__run-outcome[data-outcome='error'],
+.agui-state__run-outcome[data-outcome='aborted'] {
+  border-color: var(--agui-severity-error);
+  color: var(--agui-severity-error);
+}
+
+/* The headline count. A run whose state broke says so before anything is
+   clicked, in the same red the scrubber uses for the positions it broke at. */
+.agui-state__run-failures {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--agui-severity-error-bg);
+  color: var(--agui-severity-error);
+}
+
+.agui-state__streaming {
+  margin: 0;
+  padding: 4px 8px;
+  border-left: 3px solid var(--agui-severity-info);
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+}
+
+.agui-state__absent {
+  margin: 4px 8px;
+  color: var(--agui-fg-muted);
+  font-style: italic;
+}
+
+/* ── The scrubber (S1), with S3's failures in place ─────────────────────── */
+
+.agui-scrub {
+  display: flex;
+  gap: 2px;
+  align-items: stretch;
+  margin: 8px;
+  padding: 3px;
+  border-radius: 3px;
+  background: var(--agui-track);
+  overflow-x: auto;
+}
+
+.agui-scrub__tick {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  /* Never collapses to nothing: a 10k-frame run scrolls its scrubber rather
+     than rendering positions a pointer cannot hit. */
+  min-width: 8px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--agui-border);
+  border-radius: 2px;
+  background: var(--agui-surface-raised);
+  color: var(--agui-fg-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.agui-scrub__tick:hover {
+  background: var(--agui-row-hover);
+}
+
+/* A snapshot is where state was DECLARED rather than derived, so it reads as a
+   landmark. Tinted rather than outlined: the accent outline below is what says
+   "selected", and two accent-edged ticks in one strip is a strip that cannot say
+   which position the reader is on. */
+.agui-scrub__tick[data-kind='snapshot'] {
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+}
+
+/* S3. The whole requirement, in three declarations. */
+.agui-scrub__tick[data-failed='true'] {
+  border-color: var(--agui-severity-error);
+  background: var(--agui-severity-error);
+  color: var(--agui-bg);
+}
+
+.agui-scrub__tick[aria-checked='true'] {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
+
+/* ── The selected frame ─────────────────────────────────────────────────── */
+
+.agui-state__frame {
+  margin: 0 8px 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: var(--agui-surface-raised);
+}
+
+.agui-state__frame[data-failed='true'] {
+  border-left: 3px solid var(--agui-severity-error);
+}
+
+.agui-state__frame-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.agui-state__frame-ordinal {
+  font-weight: 600;
+}
+
+.agui-state__frame-kind {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--agui-track);
+  color: var(--agui-fg-muted);
+  font-size: 11px;
+}
+
+.agui-state__frame-kind[data-kind='snapshot'] {
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+}
+
+.agui-state__frame-seq,
+.agui-state__frame-time {
+  color: var(--agui-fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.agui-state__locate {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: var(--agui-surface);
+  color: var(--agui-fg);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agui-state__locate:hover {
+  background: var(--agui-row-hover);
+}
+
+/* Says which op failed, why, and that the document below is NOT this patch's
+   result — the frame repeats the previous frame's value by design. */
+.agui-state__failure {
+  margin: 6px 0 0;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--agui-severity-error-bg);
+  color: var(--agui-severity-error);
+  font-weight: 600;
+}
+
+/* ── The patch a delta carried (S2) ─────────────────────────────────────── */
+
+.agui-state__patch {
+  margin-top: 6px;
+}
+
+.agui-state__ops {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agui-op {
+  padding: 3px 6px;
+  border-left: 3px solid transparent;
+  border-radius: 2px;
+  background: var(--agui-surface);
+}
+
+/* The op the patch stopped at. Marked in place for the same reason the tick is:
+   a patch of twenty ops with the eighth wrong is not a patch anyone reads. */
+.agui-op[data-failed='true'] {
+  border-left-color: var(--agui-severity-error);
+  background: var(--agui-severity-error-bg);
+}
+
+.agui-op__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.agui-op__index {
+  min-width: 12px;
+  color: var(--agui-fg-muted);
+  font-size: 11px;
+}
+
+.agui-op__name {
+  font-weight: 600;
+}
+
+.agui-op__path,
+.agui-op__from {
+  color: var(--agui-json-key);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.agui-op__absent {
+  color: var(--agui-severity-error);
+  font-style: italic;
+}
+
+.agui-op__raw {
+  margin: 4px 0 0;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--agui-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agui-op__reason {
+  margin: 4px 0 0;
+  color: var(--agui-severity-error);
+}
+
+.agui-op__note {
+  margin: 4px 0 0;
+  color: var(--agui-fg-muted);
+}
+
+/* ── The document as it stood at the selected frame (S1, via S4's tree) ─── */
+
+.agui-state__doc {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--agui-border);
+}
+
+/* ── Runs (§9.2, design decisions R1–R3) ────────────────────────────────────────────────────────
+ *
+ * A grid rather than a `<table>`: `VirtualList` puts its own sizer and window between the table
+ * and its rows, and no table element may contain those. The columns are therefore declared once,
+ * as a custom property on the table, and inherited by BOTH the header row and every data row —
+ * two `grid-template-columns` declarations would drift the first time a column is resized, and a
+ * header that no longer sits over its column is worse than no header at all.
+ */
+
+.agui-runs {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.agui-runs__empty {
+  max-width: 78ch;
+  margin: 0;
+  padding: 12px 16px;
+  color: var(--agui-fg-muted);
+}
+
+/*
+ * R1 asks for a redacted capture to be legible as one. The note is `--agui-severity-info`, never
+ * the danger colour: P2 reserves red for protocol issues, and redaction is a property of the FILE
+ * rather than a finding about the run.
+ */
+.agui-runs__redacted {
+  margin: 8px 12px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--agui-severity-info);
+  border-radius: 3px;
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-fg);
+}
+
+.agui-runs__table {
+  --agui-runs-columns: minmax(110px, 1.6fr) minmax(90px, 1.2fr) minmax(90px, 1.2fr) 92px 96px 96px
+    72px 72px;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.agui-runs__head {
+  display: grid;
+  grid-template-columns: var(--agui-runs-columns);
+  gap: 8px;
+  align-items: center;
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--agui-border);
+  background: var(--agui-surface);
+  color: var(--agui-fg-muted);
+  font-weight: 600;
+}
+
+.agui-runs__th {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The four measured columns are right-aligned, so digits of different widths still line up. */
+.agui-runs__th[data-column='duration'],
+.agui-runs__th[data-column='ttft'],
+.agui-runs__th[data-column='events'],
+.agui-runs__th[data-column='issues'] {
+  text-align: right;
+}
+
+.agui-runs__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agui-runs__row {
+  display: grid;
+  grid-template-columns: var(--agui-runs-columns);
+  gap: 8px;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  /* Exactly the header's padding, and no border of its own: the two share one column
+     declaration, so any box difference between them slides every heading off its column. The
+     visual gate measures that — it caught a 3px transparent border here. */
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--agui-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agui-runs__row:hover {
+  background: var(--agui-hover);
+}
+
+.agui-runs__row:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
+}
+
+/* The run the shell is scoped to. R2 makes this table the scope picker, so the row that is
+   already in force has to be findable without reading the run selector one band up. */
+.agui-runs__row[aria-current='true'] {
+  background: var(--agui-row-selected);
+}
+
+.agui-runs__cell {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.agui-runs__cell[data-column='duration'],
+.agui-runs__cell[data-column='ttft'],
+.agui-runs__cell[data-column='events'],
+.agui-runs__cell[data-column='issues'] {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * THE RULE THIS TAB TURNS ON.
+ *
+ * `data-known="false"` is a cell reporting the ABSENCE of a measurement — "still running", "no
+ * text", "no run start". Drawn like the measurements beside it, those read as values the panel
+ * computed, which is precisely the misreading R1 forbids. Muted and italic, so an absence is
+ * visibly not a number even before the words are read.
+ */
+.agui-runs__cell[data-known='false'] {
+  color: var(--agui-fg-muted);
+  font-style: italic;
+}
+
+.agui-runs__cell[data-column='run'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.agui-runs__run-id {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.agui-runs__redacted-flag {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--agui-severity-info);
+  border-radius: 8px;
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+  font-family: inherit;
+  font-size: 10px;
+}
+
+/* An outcome is not a neutral label: `error` and `aborted` are how a run went wrong, and
+   `orphaned` means there was never a RUN_STARTED to attribute these events to. */
+.agui-runs__cell[data-outcome='error'],
+.agui-runs__cell[data-outcome='aborted'] {
+  color: var(--agui-severity-error);
+}
+
+.agui-runs__cell[data-outcome='orphaned'] {
+  color: var(--agui-severity-warning);
+}
+
+.agui-runs__cell[data-outcome='running'] {
+  color: var(--agui-severity-info);
+}
+
+/*
+ * The issue count, toned by the WORST issue on the run — an error must not be hidden behind a
+ * co-located info. `none` is deliberately left plain: zero issues is the ordinary case, and a
+ * table where every row is coloured says nothing.
+ */
+.agui-runs__cell[data-tone='error'] {
+  color: var(--agui-severity-error);
+  font-weight: 600;
+}
+
+.agui-runs__cell[data-tone='warning'] {
+  color: var(--agui-severity-warning);
+  font-weight: 600;
+}
+
+.agui-runs__cell[data-tone='info'] {
+  color: var(--agui-severity-info);
 }

@@ -143,18 +143,23 @@ Five screenshots, one message each, hero first.
 |---|---|---|---|
 | 1 | Every AG-UI event, decoded and in order | Timeline with the waterfall and an event detail pane open on a tool call | ✅ |
 | 2 | Protocol violations, named and located | The flagged row selected in context, detail showing the rule | ✅ |
-| 3 | Watch state rebuild, patch by patch | State tab, RFC 6902 patch timeline | ⏳ needs the State tab |
-| 4 | Record a run. Replay it anywhere. | Import/export of `.agui.jsonl` | ⏳ needs export **and** a richer shim |
+| 3 | Watch state rebuild, patch by patch | State tab, RFC 6902 patch timeline | ✅ since the State tab shipped |
+| 4 | Record a run. Replay it anywhere. | Import/export of `.agui.jsonl` | ⏳ export shipped; the harness shim still blocks it |
 | 5 | No network egress. Ever. | Per-origin capture grant | ⏳ needs a live, granted source |
 
-**Three shots are blocked, not one.** This table said 4 and 5 were renderable, and building them
-proved otherwise — the correction is recorded here rather than smoothed away, because it is the
-table someone will read to plan the submission.
+**This table has been wrong twice, in both directions.** It first claimed 4 and 5 were renderable
+and building them proved otherwise; it then listed 3 as blocked and the State tab shipped, at which
+point the generator produced that shot with no change to this pipeline at all. Both corrections are
+recorded rather than smoothed away, because this is the table someone reads to plan the submission —
+and because the second one is the evidence that L1 works: the gallery filled itself in as the
+product caught up.
 
-Shot 4's caption promises a round trip the Session tab in the same image reports it cannot do
-(`Export: not available in phase 1`). Two independent things block it, and shipping export clears
-only the first: the harness boots the panel under a shim with no `chrome.devtools`, so capture
-reports `unavailable in this build` regardless of what the product ships. Shot 5's subject is the
+Shot 4's caption promises a round trip the Session tab in the same image reports it cannot do. Two
+independent things blocked it, and the generator's failure message predicted that shipping export
+would clear only the first — which is exactly what happened. Export landed and the shot still
+refuses, because the harness boots the panel under a shim with no `chrome.devtools`, so capture
+reports `unavailable in this build` regardless of what the product ships. **Unblocking shot 4 is now
+harness work, not product work**: a shim rich enough to report a real capture source. Shot 5's subject is the
 grant prompt itself — privacy here is a choice the user is offered, not a sentence in a caption —
 and that banner is suppressed for an imported source, which is what every shot in this storyboard
 loads.

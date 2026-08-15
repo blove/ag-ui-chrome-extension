@@ -11812,6 +11812,17 @@ capture layer or the export bundle ships.
    stream's issue set is identical **except** for exactly one added `tool-args-not-json`. Options
    for later: exclude `toolArgs` from the bug-report profile, or have the validator read
    `JsonlHeader.redacted` and suppress that one rule on redacted imports.
+   **RESOLVED 2026-08-15 (PR #27), the second way.** `JsonlHeader.redacted` is threaded into
+   `core/` as `Run.redacted` — set by `loadJsonl` from the file's own header, empty for a live
+   capture — and `toolArgsNotJsonRule` returns `[]` when it names `toolArgs`. The claim is
+   SUPPRESSED rather than downgraded: the recipient of a shared bug report reads the badge, the
+   run heading and the timeline tint, and the honest count of claims a redacted file supports is
+   zero. The fact is kept where the arguments are on screen — the Messages tab reports the call
+   as `arguments redacted`, off the same `Run.redacted` field. Cost, accepted: arguments that
+   really were malformed are no longer reported once the group is ticked, which is why the
+   export panel says to leave it unticked when the bug is the arguments themselves. Measured
+   over six captures × every group: `tool-args-not-json` is the only rule redaction affects in
+   either direction (`src/panel/export/redaction-issue-parity.test.ts`).
 2. **Nothing populates `JsonlHeader.redacted` on export.** `redactLine` deliberately leaves the
    header alone. Requirements §11's "the header records what was redacted" belongs to the export
    bundle builder, which is not in this pass.

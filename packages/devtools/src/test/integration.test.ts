@@ -7,7 +7,7 @@ import {
   type JsonlKeepalive,
   type JsonlLine,
 } from '../core/jsonl/codec';
-import { ALL_REDACTION_GROUPS, redactLine } from '../core/jsonl/redact';
+import { ALL_REDACTION_GROUPS, redactLine, type RedactionGroup } from '../core/jsonl/redact';
 import { createRunBuilder, type RunBuilder } from '../core/normalizer/run-builder';
 import type { AguiEvent, CaptureRecord, Issue, Run, StateFrame } from '../core/model/types';
 
@@ -50,8 +50,13 @@ function toKeepaliveRecord(line: JsonlKeepalive): CaptureRecord {
 }
 
 /** Replays a decoded stream exactly as the panel does, closing every connection at the end. */
-function buildFrom(lines: JsonlLine[]): RunBuilder {
-  const builder = createRunBuilder();
+/**
+ * `redacted` is what a caller would read off the file's own `JsonlHeader.redacted` and hand to
+ * the fold. Omitting it is the honest default for a caller that has no header to read — and it
+ * is exactly what the panel's `loadJsonl` does NOT do, since line 1 always says.
+ */
+function buildFrom(lines: JsonlLine[], redacted: RedactionGroup[] = []): RunBuilder {
+  const builder = createRunBuilder({ redacted });
   const lastTMsByConn = new Map<string, number>();
 
   for (const line of lines) {
@@ -248,8 +253,11 @@ describe('Done-when #7: a redacted export leaks no text and still builds', () =>
       frameShape(originalRuns[0]!.stateTimeline),
     );
 
-    // The redacted stream is still valid, with exactly one unavoidable extra finding:
-    // redacted tool-call args are by construction no longer parseable JSON.
+    /*
+     * A fold told nothing about the file it is reading has no choice: `«redacted: N chars»`
+     * really is not JSON, so it reports `tool-args-not-json` and it is right to, given what it
+     * knows. That is the raw arithmetic of redaction, pinned here.
+     */
     const key = (issues: Issue[]): string[] =>
       issues.map((issue) => `${issue.code}@${issue.seq}`).sort();
     expect(key(redactedIssues).filter((k) => !k.startsWith('tool-args-not-json@'))).toEqual(
@@ -258,6 +266,31 @@ describe('Done-when #7: a redacted export leaks no text and still builds', () =>
     expect(key(redactedIssues).filter((k) => k.startsWith('tool-args-not-json@'))).toEqual([
       'tool-args-not-json@10',
     ]);
+  });
+
+  it('reports NOTHING extra once the fold is told what the header declares', () => {
+    /*
+     * The same bytes, the same fold, one difference: the builder has been told what the file
+     * says was taken out of it — which is what every real reader has, because the export writes
+     * `redacted` into the header on line 1.
+     *
+     * Redaction removes evidence, so the rule that judged that evidence declines its claim. The
+     * recipient of a shared bug report reads a badge and a row tint, and neither may accuse
+     * their agent of a defect the redactor introduced.
+     */
+    const lines = loadFixture('happy-run.agui.jsonl');
+    const groups: RedactionGroup[] = [...ALL_REDACTION_GROUPS];
+    const redacted = lines.map((line) => redactLine(line, groups));
+
+    const originalIssues = buildFrom(lines).allIssues();
+    const awareBuilder = buildFrom(redacted, groups);
+
+    expect(originalIssues).toEqual([]);
+    expect(awareBuilder.allIssues()).toEqual([]);
+    // The reconstruction is untouched — only the CLAIM is withdrawn. The bytes are still there
+    // to read, and the run still says what was removed from it.
+    expect(awareBuilder.getRun('r_happy')!.redacted).toEqual(groups);
+    expect(awareBuilder.getRun('r_happy')!.toolCalls.get('tc_1')!.argsParseError).toBeDefined();
   });
 });
 

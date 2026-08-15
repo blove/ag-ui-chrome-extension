@@ -51,6 +51,19 @@ const binary: InjectMessage = {
   bytes: 2048,
 };
 
+/**
+ * The one message that is about the capture layer rather than about the page's traffic.
+ *
+ * It has no `connId` — there is no connection, and there may never be one; its whole value is
+ * that a document which was never instrumented cannot send it.
+ */
+const captureInstalled: InjectMessage = {
+  source: AGUI_DT_SOURCE,
+  v: PROTOCOL_VERSION,
+  kind: 'capture-installed',
+  tMs: 0.5,
+};
+
 /** A copy of `message` with one key removed, so "missing field" cases stay readable. */
 function without(message: InjectMessage, key: string): Record<string, unknown> {
   const copy: Record<string, unknown> = { ...message };
@@ -94,8 +107,13 @@ describe('isInjectMessage — accepts every message the contract defines', () =>
     expect(isInjectMessage({ ...connOpen, contentType: null })).toBe(true);
   });
 
+  it('accepts capture-installed, which carries no connection', () => {
+    expect(isInjectMessage(captureInstalled)).toBe(true);
+    expect(isInjectMessage({ ...captureInstalled, tMs: 0 })).toBe(true);
+  });
+
   it('accepts messages that survived a structured clone', () => {
-    for (const message of [connOpen, frames, connClose, binary]) {
+    for (const message of [connOpen, frames, connClose, binary, captureInstalled]) {
       expect(isInjectMessage(structuredClone(message))).toBe(true);
     }
   });
@@ -183,6 +201,29 @@ describe('isInjectMessage — rejects anything else', () => {
   it('rejects an unknown close reason', () => {
     expect(isInjectMessage({ ...connClose, reason: 'timeout' })).toBe(false);
     expect(isInjectMessage({ ...connClose, reason: undefined })).toBe(false);
+  });
+
+  /*
+   * The new arm gets NO exemption. It is the one message a page has an incentive to forge —
+   * forging it makes the panel claim capture is live on a document that has no hooks in it,
+   * which is precisely the false-success state this whole message exists to abolish.
+   */
+  it('rejects a capture-installed that is not exactly the contract', () => {
+    expect(isInjectMessage({ ...captureInstalled, source: 'agui-dt-evil' })).toBe(false);
+    expect(isInjectMessage({ ...captureInstalled, v: 2 })).toBe(false);
+    expect(isInjectMessage({ ...captureInstalled, v: '1' })).toBe(false);
+    expect(isInjectMessage(without(captureInstalled, 'tMs'))).toBe(false);
+    expect(isInjectMessage({ ...captureInstalled, tMs: Number.NaN })).toBe(false);
+    expect(isInjectMessage({ ...captureInstalled, tMs: '0' })).toBe(false);
+    expect(isInjectMessage({ ...captureInstalled, kind: 'capture-installed ' })).toBe(false);
+  });
+
+  it('rejects a capture-installed whose fields live on the prototype', () => {
+    const hostile = Object.create({ tMs: 1 }) as Record<string, unknown>;
+    hostile.source = AGUI_DT_SOURCE;
+    hostile.v = PROTOCOL_VERSION;
+    hostile.kind = 'capture-installed';
+    expect(isInjectMessage(hostile)).toBe(false);
   });
 
   it('rejects binary without a byte count or content type', () => {

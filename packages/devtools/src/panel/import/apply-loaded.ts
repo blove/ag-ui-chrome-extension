@@ -25,7 +25,10 @@ export function applyLoaded(
     source: { kind: 'imported', filename, importedAtMs },
     runs: loaded.runs,
     records: loaded.records,
+    requests: loaded.requests,
     issues: loaded.issues,
+    // E3: what this file already had redacted, kept so a re-export cannot under-report it.
+    importedHeader: loaded.header,
     scope: null,
     selectedSeq: null,
     droppedBefore: 0,

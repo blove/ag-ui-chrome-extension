@@ -94,6 +94,12 @@ function isPlainObject(value: unknown): boolean {
  */
 function toRelayMessage(message: InjectMessage): RelayMessage {
   switch (message.kind) {
+    case 'capture-installed':
+      // Forwarded through the same rebuild as everything else, and deliberately not exempted
+      // from any check above: this is the message the panel reads as "this document has capture
+      // hooks in it", so a forged one would make the panel claim capture is live where it is
+      // not. Only `tMs` survives — there is nothing else the worker needs to know.
+      return { v: PROTOCOL_VERSION, kind: 'capture-installed', tMs: message.tMs };
     case 'conn-open':
       return {
         v: PROTOCOL_VERSION,
