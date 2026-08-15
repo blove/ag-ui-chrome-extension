@@ -1,0 +1,24 @@
+{
+  "name": "ag-ui-harness",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Private test harness: serves AG-UI fixtures over real SSE and drives the capture layer",
+  "license": "MIT",
+  "scripts": {
+    "test:ci": "playwright test",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@ag-ui/client": "0.0.58",
+    "@copilotkit/aimock": "^1.38.0",
+    "@eslint/js": "^9.39.5",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^22.20.1",
+    "eslint": "^9.39.5",
+    "globals": "^17.11.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.67.0"
+  }
+}
