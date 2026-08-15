@@ -31,10 +31,9 @@
  *
  * Run against a real `dist/`: `pnpm build && pnpm verify:build`.
  */
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import manifestConfig from '../manifest.config';
 
@@ -382,40 +381,63 @@ function checkIcons(manifest: Rec): void {
 /**
  * The icons are generated and committed, so they can go stale against `listing/icon.svg` with no
  * signal at all — `checkIcons` above only asserts the files exist in `dist/`, never that their
- * bytes still match the source that made them. The same gap hides cross-version drift: the PNGs
- * are antialiased Chromium output, so a Playwright/Chromium upgrade changes the committed bytes
- * and nothing says so either. Re-render to a throwaway directory via `ICON_OUT`
- * (`render-icons.mts` honours it for exactly this) and diff against what is committed.
+ * bytes still match the source that made them.
+ *
+ * This compares a SHA-256 of the source SVG, not rendered pixels. An earlier version of this
+ * check re-rendered `icon.svg` to a scratch directory (`render-icons.mts` still supports that via
+ * `ICON_OUT`, for manual use) and diffed the resulting PNGs against `public/icons/`. That is
+ * WRONG for a check that has to pass identically everywhere: the PNGs are antialiased Chromium
+ * output, and Chromium's rasterizer is not bit-identical across platforms or versions. The
+ * committed icons were rendered on darwin/arm64; CI's `release` job runs on ubuntu x86_64 and, at
+ * the time this was caught in review, had no Playwright install step at all — every tag push
+ * would have failed `verify:build` on a missing browser, and even with one installed a rasterizer
+ * difference could flip the check red on a PR that never touched `icon.svg`. A hash has neither
+ * problem: it is deterministic on every machine and needs no browser, so `verify:build` stays
+ * pure file inspection.
+ *
+ * The trade-off is real and deliberate: this no longer catches the PNGs drifting under a
+ * Playwright/Chromium upgrade, only the source SVG changing without a re-render. That is the
+ * right side to be wrong on — drifted antialiasing still produces a valid icon, whereas a stale
+ * icon (edited SVG, un-regenerated PNGs) is a wrong one — but it is a real reduction in coverage,
+ * so it is named here rather than left for the next reader to discover.
+ *
+ * `render-icons.mts` writes `public/icons/.source-sha256` alongside the PNGs on every run; this
+ * is the one place that reads it back.
  */
 function checkIconsAreFresh(): void {
-  const rendered = mkdtempSync(join(tmpdir(), 'agui-icons-'));
-  const result = spawnSync('pnpm', ['icons'], {
-    cwd: packageRoot,
-    env: { ...process.env, ICON_OUT: rendered },
-    encoding: 'utf8',
-  });
-  if (result.status !== 0) {
+  const iconsDir = join(packageRoot, 'public/icons');
+  const hashPath = join(iconsDir, '.source-sha256');
+  const currentHash = createHash('sha256')
+    .update(readFileSync(join(packageRoot, 'listing/icon.svg'), 'utf8'), 'utf8')
+    .digest('hex');
+
+  if (!existsSync(hashPath)) {
     fail(
-      'icon freshness check could not run',
-      `\`pnpm icons\` failed while re-rendering to a scratch directory: ${result.stderr}`,
+      'icon source hash missing',
+      `public/icons/.source-sha256 does not exist. Run \`pnpm icons\` and commit the result.`,
     );
-    return;
+  } else {
+    const committedHash = readFileSync(hashPath, 'utf8').trim();
+    if (committedHash !== currentHash) {
+      fail(
+        'committed icons are stale',
+        'public/icons/.source-sha256 does not match a fresh hash of listing/icon.svg — the SVG ' +
+          'was edited without re-rendering. Run `pnpm icons` and commit the result.',
+      );
+    }
   }
+
+  // Independent of the hash check above: a PNG deleted (rather than edited) from public/icons/
+  // still has a matching, untouched .source-sha256 next to it, so the comparison above would
+  // pass while the committed icon set is incomplete. checkIcons does not catch this either — it
+  // reads dist/, which still holds whatever was built last, stale or not. This is the one check
+  // that owns the committed source, so it has to be the one that notices it went missing.
   for (const size of ICON_SIZES) {
     const name = `icon-${size}.png`;
-    const committedPath = join(packageRoot, 'public/icons', name);
-    if (!existsSync(committedPath)) {
-      // checkIcons (run against dist/) already reports the manifest-facing version of this; this
-      // guard only needs to not crash comparing against a file that was never committed.
-      continue;
-    }
-    const committed = readFileSync(committedPath);
-    const fresh = readFileSync(join(rendered, name));
-    if (!committed.equals(fresh)) {
+    if (!existsSync(join(iconsDir, name))) {
       fail(
-        'committed icon is stale',
-        `public/icons/${name} does not match a fresh render of listing/icon.svg. Run ` +
-          '`pnpm icons` and commit the result.',
+        'committed icon missing',
+        `public/icons/${name} does not exist. Run \`pnpm icons\` and commit the result.`,
       );
     }
   }

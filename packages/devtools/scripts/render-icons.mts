@@ -11,6 +11,7 @@
  * — the shell is what a default headless `chromium.launch()` resolves to, and it is what CI
  * installs; see `screenshot-panel.mts` for the same prerequisite).
  */
+import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,9 +19,11 @@ import { chromium } from 'playwright';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const svgPath = join(packageRoot, 'listing/icon.svg');
-// ICON_OUT lets a freshness check (scripts/verify-build.ts, a later task) render to a scratch
-// directory and diff it against the committed PNGs, catching output that has gone stale against
-// icon.svg or drifted under a Playwright/Chromium upgrade.
+// ICON_OUT lets a caller render to a scratch directory instead of overwriting the committed
+// PNGs — useful for manual inspection of what a re-render would produce without touching the
+// working tree. scripts/verify-build.ts does NOT use it: freshness there is checked by comparing
+// a source hash, not by re-rendering, so it never launches a browser. See that file's
+// checkIconsAreFresh for why.
 const outDir = process.env.ICON_OUT ?? join(packageRoot, 'public/icons');
 
 /** Manifest icon sizes. 128 is also the CWS store icon. */
@@ -67,6 +70,12 @@ async function main(): Promise<void> {
       await page.close();
       console.log(`  icon-${String(size)}.png`);
     }
+    // Sidecar recording exactly what these PNGs were rendered from. verify-build.ts's
+    // checkIconsAreFresh compares a fresh hash of listing/icon.svg against this file rather than
+    // re-rendering and diffing pixels — deterministic on every machine, where a rendered-byte
+    // comparison is not (Chromium's rasterizer differs by platform and version).
+    const sourceHash = createHash('sha256').update(svg, 'utf8').digest('hex');
+    writeFileSync(join(outDir, '.source-sha256'), `${sourceHash}\n`);
   } finally {
     await browser.close();
   }
