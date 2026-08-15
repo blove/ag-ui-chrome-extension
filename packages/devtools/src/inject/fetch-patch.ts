@@ -171,10 +171,24 @@ function captureRequestMeta(
   if (init && 'body' in init) {
     body = captureBody(init.body);
   } else if (isRequestObject(input) && input.body !== null) {
-    // `clone()` tees the request body, so the request the page made is untouched.
-    body = Promise.resolve()
-      .then(() => input.clone().text())
-      .then(decodeBodyText);
+    // `clone()` tees the request body, so the request the page made is untouched — but it
+    // MUST be taken synchronously, before `original` is called. `fetch(request)` runs
+    // `new Request(input)` internally, which marks the caller's Request used straight away,
+    // and a clone taken even one microtask later throws `TypeError: unusable`. That failure
+    // is silent: the body degrades to `[unsupported body]` and every captured run then
+    // reports a spurious `run-started-without-input`. Pinned by a test whose stand-in
+    // consumes the Request the way the platform does.
+    let clone: Request | null = null;
+    try {
+      clone = input.clone();
+    } catch {
+      // Already used by the page before it ever reached us. Nothing to read.
+      clone = null;
+    }
+    body =
+      clone === null
+        ? Promise.resolve<unknown>(UNSUPPORTED_BODY)
+        : clone.text().then(decodeBodyText);
   } else {
     body = Promise.resolve(null);
   }

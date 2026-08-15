@@ -422,6 +422,44 @@ describe('installFetchPatch — request body capture (verified fact 4)', () => {
     expect(seen[0]?.bodyUsed).toBe(false);
   });
 
+  it('captures a Request body even though fetch consumes the Request', async () => {
+    // `fetch(request)` runs `new Request(input)`, which marks the caller's Request used
+    // SYNCHRONOUSLY. A clone taken one microtask later throws `TypeError: unusable`, and the
+    // capture silently degrades to '[unsupported body]' — which is exactly the state that
+    // makes every run report a spurious `run-started-without-input`. The stand-in below does
+    // what the platform does, so the clone has to be taken before `original` is called.
+    const h = harness((...args) => {
+      const request = args[0] as Request;
+      // Marks `request` used, exactly as the real fetch does.
+      void new Request(request);
+      return Promise.resolve(sseResponse(streamOf([':\n\n'])));
+    });
+    const request = new Request('http://localhost:3000/run', {
+      method: 'POST',
+      body: '{"threadId":"t_3"}',
+    });
+    await h.host.fetch(request);
+    await settle();
+    const open = h.posted[0];
+    if (open?.kind !== 'conn-open') throw new Error('expected conn-open');
+    expect(open.input).toEqual({ threadId: 't_3' });
+  });
+
+  it('records an unsupported body rather than failing when the Request is already used', async () => {
+    const h = harness(() => Promise.resolve(sseResponse(streamOf([':\n\n']))));
+    const request = new Request('http://localhost:3000/run', {
+      method: 'POST',
+      body: '{"threadId":"t_4"}',
+    });
+    await request.text();
+    await h.host.fetch(request);
+    await settle();
+    const open = h.posted[0];
+    if (open?.kind !== 'conn-open') throw new Error('expected conn-open');
+    expect(open.input).toBe('[unsupported body]');
+    expect(open.url).toBe('http://localhost:3000/run');
+  });
+
   it('holds frames until conn-open, even when the body read resolves late', async () => {
     const h = harness(() => Promise.resolve(sseResponse(streamOf([`data: ${RUN_STARTED}\n\n`]))));
     await h.host.fetch('http://localhost:3000/run', {
