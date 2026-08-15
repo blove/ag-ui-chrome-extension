@@ -520,6 +520,14 @@ function attachPanelPort(port: chrome.runtime.Port): void {
  * The scripts are copied from the manifest's own declarations rather than named here, because
  * the built filenames are content-hashed: `dist/inject.ts-<hash>.js` changes every build and a
  * hardcoded path would rot into a silent no-op.
+ *
+ * KNOWN GAP, one layer further out and NOT fixable from here: CRXJS emits both content scripts
+ * as loaders that dynamic-import their real chunk, and `web_accessible_resources` in the built
+ * manifest scopes those chunks to the localhost family only. A MAIN-world script runs in the
+ * page's world, so on a granted origin such as `https://example.com` that import is subject to
+ * `web_accessible_resources` and is expected to fail. Registering here is necessary but may not
+ * be sufficient until `manifest.config.ts` widens that list — which is a privacy trade (§11
+ * wants the extension undetectable) and belongs with the manifest, not with the worker.
  */
 const registeredMatches = new Set<string>();
 
