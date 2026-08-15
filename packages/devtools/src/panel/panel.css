@@ -1885,10 +1885,13 @@ code {
   background: var(--agui-row-hover);
 }
 
-/* A snapshot is where state was declared rather than derived, so it reads
-   differently from the deltas that follow it. */
+/* A snapshot is where state was DECLARED rather than derived, so it reads as a
+   landmark. Tinted rather than outlined: the accent outline below is what says
+   "selected", and two accent-edged ticks in one strip is a strip that cannot say
+   which position the reader is on. */
 .agui-scrub__tick[data-kind='snapshot'] {
-  border-color: var(--agui-accent);
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
 }
 
 /* S3. The whole requirement, in three declarations. */
