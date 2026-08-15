@@ -11,7 +11,7 @@
  */
 import type { CaptureRecord } from '../../core/model/types';
 import { createRunBuilder, type RunBuilder } from '../../core/normalizer/run-builder';
-import type { RequestLine, SwMessage } from '../../sw/protocol';
+import type { ClosedConn, RequestLine, SwMessage } from '../../sw/protocol';
 import type { BinaryTransport, PanelState } from '../model/panel-types';
 
 export interface LiveSessionOptions {
@@ -63,8 +63,15 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
    * issue that the same capture did not have a moment earlier.
    */
   let requests: RequestLine[] = [];
-  /** Connections already closed, replayed by `refold` so `finalizeRules` still runs. */
-  let closed: Array<{ connId: string; tMs: number }> = [];
+  /**
+   * Connections already closed, replayed by `refold` so `finalizeRules` still runs.
+   *
+   * Filled from the `closed` push message AND from a `snapshot`'s `closed` list, because those
+   * are the same fact reaching a panel that was watching and a panel that arrived afterwards. A
+   * fold that took only the streamed one left a run that had finished before the panel opened
+   * sitting in `outcome: 'running'` forever.
+   */
+  let closed: ClosedConn[] = [];
   /**
    * The worker's own eviction count, as of the last message that carried one, and the panel's.
    *
@@ -119,6 +126,21 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     builder.addRequest(request.connId, request.method, request.url, request.input);
   }
 
+  /**
+   * Close a connection once, and retain it once.
+   *
+   * A snapshot may already contain a close that a `closed` message then re-states — the worker
+   * broadcasts to whoever is subscribed and hands the same fact to whoever subscribes later, so
+   * a panel connecting at the wrong instant sees both. `closeConnection` is itself idempotent by
+   * `closedAtMs`, so the run builder is safe either way; this keeps `closed` free of duplicates
+   * as well, so `refold` replays the close exactly once at the time it actually happened.
+   */
+  function closeConnection(entry: ClosedConn): void {
+    if (closed.some((held) => held.connId === entry.connId)) return;
+    closed.push(entry);
+    builder.closeConnection(entry.connId, entry.tMs);
+  }
+
   function refold(s: PanelState, next: LiveSessionOptions): PanelState {
     const heldRecords = records;
     const heldRequests = requests;
@@ -155,6 +177,11 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
         for (const request of message.requests) addRequest(request);
         for (const record of message.records) builder.addRecord(record);
         records = [...message.records];
+        // AFTER the records, because closing finalises what has been folded so far: a close
+        // applied first would report `run-never-terminated` about a run whose RUN_FINISHED had
+        // not been read yet. Each carries the time the connection actually ended, which is what
+        // every run-end issue is anchored to.
+        for (const entry of message.closed) closeConnection(entry);
         // The worker's own eviction count is the floor: those records are gone before the
         // panel ever saw them, and `trim()` may add to it below.
         workerDropped = message.droppedBefore;
@@ -189,8 +216,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
       case 'closed': {
         // Closing is what runs `finalizeRules`, so an unterminated run reports
         // `run-never-terminated` instead of sitting silently in 'running'.
-        closed.push({ connId: message.connId, tMs: message.tMs });
-        builder.closeConnection(message.connId, message.tMs);
+        closeConnection({ connId: message.connId, tMs: message.tMs });
         return project(s);
       }
       case 'binary': {

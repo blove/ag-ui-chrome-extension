@@ -25,9 +25,11 @@ import { chromium, type BrowserContext, type Worker } from '@playwright/test';
 
 import type { CaptureRecord, Issue, Run } from '@devtools/core/model/types';
 import { createRunBuilder } from '@devtools/core/normalizer/run-builder';
-import type { RequestLine } from '@devtools/sw/protocol';
+import { createLiveSession } from '@devtools/panel/capture/live-session';
+import { initialPanelState } from '@devtools/panel/model/panel-types';
+import type { ClosedConn, RequestLine } from '@devtools/sw/protocol';
 
-export type { RequestLine };
+export type { ClosedConn, RequestLine };
 
 export interface CaptureSnapshot {
   records: CaptureRecord[];
@@ -42,10 +44,13 @@ export interface CaptureSnapshot {
    */
   instrumented: boolean;
   /**
-   * Connections the worker has seen close. `readSettledCapture` waits on this; see the note
-   * there for why nothing else will do.
+   * Connections the worker has seen close, each with the time it closed at.
+   *
+   * `readSettledCapture` waits on this; see the note there for why nothing else will do. The
+   * `tMs` is the same one the worker puts on a late panel's `snapshot`, and `reconstruct` closes
+   * at it — so the run-end issues this harness computes are anchored where the panel's are.
    */
-  closedConns: string[];
+  closes: ClosedConn[];
 }
 
 /** The shape `src/sw/index.ts` attaches to the SW global, unconditionally. */
@@ -55,7 +60,7 @@ interface TestHook {
   droppedBefore(): number;
   bytes(): number;
   instrumented(): boolean;
-  closedConns(): string[];
+  closes(): ClosedConn[];
   clear(): void;
 }
 
@@ -161,7 +166,7 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
       requests: hook.requests(),
       droppedBefore: hook.droppedBefore(),
       instrumented: hook.instrumented(),
-      closedConns: hook.closedConns(),
+      closes: hook.closes(),
     };
   });
 }
@@ -219,14 +224,14 @@ export async function readSettledCapture(
   const deadline = Date.now() + timeoutMs;
   let latest = await readCapture(ctx);
   for (;;) {
-    const closed = new Set(latest.closedConns);
+    const closed = new Set(latest.closes.map((close) => close.connId));
     const open = latest.requests.filter((request) => !closed.has(request.connId));
     if (latest.requests.length >= wanted && open.length === 0) return latest;
     if (Date.now() >= deadline) {
       throw new Error(
         `capture did not settle within ${String(timeoutMs)}ms: expected ${String(wanted)} ` +
           `connection(s) to open and close, saw ${String(latest.requests.length)} request line(s), ` +
-          `${String(latest.closedConns.length)} close(s), ${String(latest.records.length)} record(s). ` +
+          `${String(latest.closes.length)} close(s), ${String(latest.records.length)} record(s). ` +
           'A capture layer that never delivered is what this looks like; so is one that opened a ' +
           'connection it never closed.',
       );
@@ -276,6 +281,32 @@ export function reconstruct(capture: CaptureSnapshot): Reconstruction {
   for (const [connId, tMs] of lastTMsByConn) builder.closeConnection(connId, tMs);
 
   return { runs: builder.runs(), issues: builder.allIssues() };
+}
+
+/**
+ * Fold a captured snapshot the way a panel opened AFTER the run does — through the real
+ * `createLiveSession`, from the real `snapshot` message the worker builds.
+ *
+ * `reconstruct` above models the IMPORT path. This models the other one, and the two must agree:
+ * that they did not is the defect this exists to hold. The panel UI is unreachable from
+ * Playwright (H4/H5), but the fold beneath it is a pure function of the worker's state, so this
+ * drives exactly the code the panel runs on `case 'snapshot'` with exactly the bytes the worker
+ * would have sent.
+ *
+ * The closes come with their own `tMs` and are replayed as such — closing is the sole trigger for
+ * `finalizeRules`, so a snapshot without them leaves every finished run in `outcome: 'running'`.
+ */
+export function foldAsLatePanel(capture: CaptureSnapshot): Reconstruction {
+  const session = createLiveSession();
+  const state = session.apply(initialPanelState(), {
+    kind: 'snapshot',
+    records: capture.records,
+    requests: capture.requests,
+    closed: capture.closes,
+    droppedBefore: capture.droppedBefore,
+    instrumented: capture.instrumented,
+  });
+  return { runs: state.runs, issues: state.issues };
 }
 
 export async function clearCapture(ctx: BrowserContext): Promise<void> {

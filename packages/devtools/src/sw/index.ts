@@ -21,6 +21,7 @@ import type { WireFrame } from '../inject/protocol';
 import {
   PANEL_PORT_NAME,
   RELAY_PORT_NAME,
+  type ClosedConn,
   type PanelCommand,
   type RelayMessage,
   type RequestLine,
@@ -47,7 +48,7 @@ declare global {
         /** Whether any live document in any tab has reported its capture hooks. */
         instrumented(): boolean;
         /**
-         * Connections this worker has seen close, across every tab.
+         * Connections this worker has seen close, across every tab, each with the time it closed.
          *
          * The end of capture for a connection, and the only fact that says so. Everything else
          * the harness can observe — the page's own `status`, the response it rendered — describes
@@ -57,8 +58,11 @@ declare global {
          * the page says "done" is therefore reading a pipeline that is still in flight, and
          * measured, it is: the buffer has been observed empty ~600 ms after the page finished,
          * with the whole run landing intact a moment later.
+         *
+         * The `tMs` rides along because the harness reconstructs a run from this, and closing is
+         * what runs `finalizeRules` — the run-end issues are anchored to that time.
          */
-        closedConns(): string[];
+        closes(): ClosedConn[];
         clear(): void;
       }
     | undefined;
@@ -97,8 +101,17 @@ interface TabState {
    * `RelayMessage`s are already broadcast as `closed`, but a broadcast is for whoever is
    * listening AT THE TIME. This is the same fact retained, which is what a reader arriving after
    * the event needs.
+   *
+   * A MAP, not a set, and the value is the page-side close time from the `conn-close` frame.
+   * The id alone says a stream is over; only the time lets a late reader FINALISE it. Closing is
+   * what runs `finalizeRules`, and every run-end issue it emits is anchored to that time, so a
+   * snapshot carrying bare ids would force the panel to invent one — which misplaces the issues
+   * instead of losing them, a quieter version of the same bug.
+   *
+   * First close wins: the time a connection ended is not restated, and a repeat must not move an
+   * anchor that has already been reported.
    */
-  closedConns: Set<string>;
+  closedConns: Map<string, number>;
   /**
    * Frames of this tab that have reported their capture hooks, mapped to the relay port that
    * reported it — or `null` for a frame restored from the session mirror, whose port belonged to
@@ -151,14 +164,19 @@ interface MirroredTab {
    */
   instrumentedFrames: number[];
   /**
-   * Connections that had closed when this was written.
+   * Connections that had closed when this was written, with the time each closed at.
    *
    * Mirrored for the same reason as the flag above: the worker is terminated at ~30 s idle and a
    * fact that lived only in its memory would come back as "still open" for a connection that
    * ended minutes ago. A reader waiting for the stream to finish would then wait for a message
-   * that has already been delivered and will never be sent again.
+   * that has already been delivered and will never be sent again — and a panel opened after the
+   * restart would never finalise the run.
+   *
+   * The time is mirrored alongside the id because a restored close is fed to the same
+   * `finalizeRules` a live one is, and re-deriving the time from the records would anchor the
+   * run-end issues at the last FRAME rather than at the close.
    */
-  closedConns: string[];
+  closedConns: ClosedConn[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -174,7 +192,7 @@ function ensureTab(tabId: number): TabState {
     recording: true,
     restoredDropped: 0,
     seenConns: new Set<string>(),
-    closedConns: new Set<string>(),
+    closedConns: new Map<string, number>(),
     instrumentedFrames: new Map<number, chrome.runtime.Port | null>(),
   };
   tabs.set(tabId, created);
@@ -183,6 +201,16 @@ function ensureTab(tabId: number): TabState {
 
 function droppedFor(state: TabState): number {
   return state.restoredDropped + state.buffer.droppedBefore();
+}
+
+/**
+ * The closes this tab holds, in the shape the panel and the mirror both take.
+ *
+ * One function, so the snapshot a panel is sent, the mirror written to session storage and the
+ * harness's read cannot drift into disagreeing about which connections ended and when.
+ */
+function closesFor(state: TabState): ClosedConn[] {
+  return [...state.closedConns].map(([connId, tMs]) => ({ connId, tMs }));
 }
 
 /**
@@ -320,7 +348,7 @@ async function writeMirror(tabId: number): Promise<void> {
     nextSeq: state.nextSeq,
     recording: state.recording,
     instrumentedFrames: [...state.instrumentedFrames.keys()],
-    closedConns: [...state.closedConns],
+    closedConns: closesFor(state),
   };
   await chrome.storage.session.set({ [sessionKey(tabId)]: mirrored });
 }
@@ -361,6 +389,20 @@ function isCaptureRecord(value: unknown): value is CaptureRecord {
   );
 }
 
+/**
+ * A mirrored close, which must carry BOTH halves to be usable.
+ *
+ * A mirror written by an older build holds bare id strings, which fail this check and are
+ * dropped. That is deliberate: the connection then reads as still open — exactly the behaviour
+ * that build already had — rather than being finalised at a time this worker made up. A close
+ * with a fabricated `tMs` would anchor `run-never-terminated` and every `unclosed-*` somewhere
+ * they did not happen, which is worse than not claiming them at all. The next capture writes a
+ * mirror in the current shape, so the gap closes itself.
+ */
+function isClosedConn(value: unknown): value is ClosedConn {
+  return isRecord(value) && typeof value['connId'] === 'string' && typeof value['tMs'] === 'number';
+}
+
 function isRequestLine(value: unknown): value is RequestLine {
   return (
     isRecord(value) &&
@@ -391,7 +433,7 @@ function asMirroredTab(value: unknown): MirroredTab | null {
     // Absent in a mirror written by an older build. Empty is the honest reading: nothing was
     // recorded, so nothing is claimed.
     instrumentedFrames: Array.isArray(frames) ? frames.filter((id) => typeof id === 'number') : [],
-    closedConns: Array.isArray(closed) ? closed.filter((id) => typeof id === 'string') : [],
+    closedConns: Array.isArray(closed) ? closed.filter(isClosedConn) : [],
   };
 }
 
@@ -436,7 +478,7 @@ async function restoreFromSession(): Promise<void> {
       // just been terminated. The documents are still open and still patched, so these entries
       // survive until a new announcement replaces them.
       for (const frameId of mirrored.instrumentedFrames) state.instrumentedFrames.set(frameId, null);
-      for (const connId of mirrored.closedConns) state.closedConns.add(connId);
+      for (const close of mirrored.closedConns) state.closedConns.set(close.connId, close.tMs);
     }
   } finally {
     restored = true;
@@ -535,7 +577,11 @@ function handleRelayMessage(
       return;
     }
     case 'conn-close': {
-      state.closedConns.add(message.connId);
+      // First close wins. The moment a connection ended does not change, and letting a repeat
+      // overwrite it would move an anchor the panel has already been told about.
+      if (!state.closedConns.has(message.connId)) {
+        state.closedConns.set(message.connId, message.tMs);
+      }
       broadcast(tabId, { kind: 'closed', connId: message.connId, tMs: message.tMs });
       // The end of a connection is the moment a lost tail costs a whole run, so this one writes
       // through instead of waiting out the debounce.
@@ -596,6 +642,11 @@ function snapshotFor(tabId: number): SwMessage {
     kind: 'snapshot',
     records: state.buffer.records(),
     requests: state.buffer.requests(),
+    // The connections that ended before this panel existed. Without them a panel opened after
+    // the run never finalises it: the run sits in `outcome: 'running'` and every run-end issue
+    // — `run-never-terminated` and the rest — is silently missing, while the identical bytes
+    // exported and re-imported report all of them.
+    closed: closesFor(state),
     droppedBefore: droppedFor(state),
     // How a panel opened AFTER the page loaded learns that the page announced itself — which is
     // the ordinary case, since the announcement fires at `document_start` and the panel is
@@ -801,8 +852,8 @@ globalThis.__AGUI_DT_TEST__ = {
   instrumented(): boolean {
     return [...tabs.values()].some(instrumentedFor);
   },
-  closedConns(): string[] {
-    return [...tabs.values()].flatMap((state) => [...state.closedConns]);
+  closes(): ClosedConn[] {
+    return [...tabs.values()].flatMap(closesFor);
   },
   clear(): void {
     for (const [tabId, state] of tabs) clearTab(tabId, state);

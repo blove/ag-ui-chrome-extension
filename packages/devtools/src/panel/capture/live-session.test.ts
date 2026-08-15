@@ -41,6 +41,7 @@ describe('createLiveSession', () => {
       kind: 'snapshot',
       records,
       requests: [requestLine()],
+      closed: [],
       droppedBefore: 0,
       instrumented: true,
     });
@@ -61,6 +62,7 @@ describe('createLiveSession', () => {
       kind: 'snapshot',
       records: head,
       requests: [requestLine()],
+      closed: [],
       droppedBefore: 0,
       instrumented: true,
     });
@@ -103,6 +105,89 @@ describe('createLiveSession', () => {
     expect(state.issues.map((issue) => issue.code)).toContain('run-never-terminated');
   });
 
+  /**
+   * The same finalisation, for the panel that was NOT there when the close went out.
+   *
+   * A `closed` message is delivered to whoever is subscribed at the time. A panel opened after
+   * the run gets one `snapshot` and nothing else, so unless the snapshot carries the closes it
+   * finalises nothing — the run sits in `outcome: 'running'` and every run-end issue is silently
+   * absent. `panel/capture/late-panel-parity.test.ts` holds that against the import path.
+   */
+  it('finalizes from a snapshot too, for a panel that opened after the run', () => {
+    const session = createLiveSession();
+    nextSeq = 0;
+    const records = [
+      record({ type: 'RUN_STARTED', threadId: 't1', runId: 'r1' }),
+      record({ type: 'TEXT_MESSAGE_START', messageId: 'm1', role: 'assistant' }),
+    ];
+
+    const state = session.apply(initialPanelState(), {
+      kind: 'snapshot',
+      records,
+      requests: [requestLine()],
+      closed: [{ connId: 'c1', tMs: 99 }],
+      droppedBefore: 0,
+      instrumented: true,
+    });
+
+    expect(state.issues.map((issue) => issue.code)).toContain('run-never-terminated');
+    // Anchored at the close the worker reported, never at a time this fold chose for itself.
+    expect(state.issues.find((issue) => issue.code === 'run-never-terminated')?.tMs).toBe(99);
+    expect(state.runs[0]?.outcome).toBe('aborted');
+  });
+
+  it('leaves a still-open connection open when the snapshot lists no close for it', () => {
+    // The negative half, and the reason `closed` is a list rather than a flag: a snapshot taken
+    // mid-run must not finalise anything, or a live capture would report `run-never-terminated`
+    // about a run that is still going.
+    const session = createLiveSession();
+    nextSeq = 0;
+    const records = [record({ type: 'RUN_STARTED', threadId: 't1', runId: 'r1' })];
+
+    const state = session.apply(initialPanelState(), {
+      kind: 'snapshot',
+      records,
+      requests: [requestLine()],
+      closed: [],
+      droppedBefore: 0,
+      instrumented: true,
+    });
+
+    expect(state.issues.map((issue) => issue.code)).not.toContain('run-never-terminated');
+    expect(state.runs[0]?.outcome).toBe('running');
+  });
+
+  it('replaces the closes on a new snapshot, which is a new dataset', () => {
+    // A snapshot replaces everything, closes included. Carrying a previous one over would
+    // finalise a connection the new dataset may not even contain.
+    const session = createLiveSession();
+    nextSeq = 0;
+    const first = [record({ type: 'RUN_STARTED', threadId: 't1', runId: 'r1' })];
+    let state = session.apply(initialPanelState(), {
+      kind: 'snapshot',
+      records: first,
+      requests: [requestLine()],
+      closed: [{ connId: 'c1', tMs: 50 }],
+      droppedBefore: 0,
+      instrumented: true,
+    });
+    expect(state.runs[0]?.outcome).toBe('aborted');
+
+    nextSeq = 0;
+    const second = [record({ type: 'RUN_STARTED', threadId: 't2', runId: 'r2' }, 'c2')];
+    state = session.apply(state, {
+      kind: 'snapshot',
+      records: second,
+      requests: [requestLine('c2')],
+      closed: [],
+      droppedBefore: 0,
+      instrumented: true,
+    });
+
+    expect(state.runs.map((run) => run.runId)).toEqual(['r2']);
+    expect(state.runs[0]?.outcome).toBe('running');
+  });
+
   it('counts its own eviction into droppedBefore (P9)', () => {
     const session = createLiveSession({ maxRecords: 3 });
     const records = happyRun();
@@ -111,6 +196,7 @@ describe('createLiveSession', () => {
       kind: 'snapshot',
       records,
       requests: [requestLine()],
+      closed: [],
       droppedBefore: 0,
       instrumented: true,
     });
@@ -125,6 +211,7 @@ describe('createLiveSession', () => {
       kind: 'snapshot',
       records: happyRun(),
       requests: [requestLine()],
+      closed: [],
       droppedBefore: 7,
       instrumented: true,
     });
@@ -143,6 +230,7 @@ describe('createLiveSession', () => {
       kind: 'snapshot',
       records: happyRun(),
       requests: [requestLine()],
+      closed: [],
       droppedBefore: 0,
       instrumented: true,
     });
@@ -164,6 +252,7 @@ describe('createLiveSession', () => {
       kind: 'snapshot',
       records: happyRun(),
       requests: [requestLine()],
+      closed: [],
       droppedBefore: 6,
       instrumented: true,
     });
@@ -182,6 +271,7 @@ describe('createLiveSession', () => {
       kind: 'snapshot',
       records: happyRun(),
       requests: [requestLine()],
+      closed: [],
       droppedBefore: 0,
       instrumented: true,
     });
@@ -205,6 +295,7 @@ describe('createLiveSession', () => {
       kind: 'snapshot',
       records: happyRun(),
       requests: [requestLine()],
+      closed: [],
       droppedBefore: 4,
       instrumented: true,
     });
@@ -233,6 +324,7 @@ describe('createLiveSession', () => {
       kind: 'snapshot',
       records,
       requests: [requestLine()],
+      closed: [],
       droppedBefore: 0,
       instrumented: true,
     });
@@ -277,6 +369,7 @@ describe('createLiveSession', () => {
         kind: 'snapshot',
         records,
         requests: [requestLine()],
+        closed: [],
         droppedBefore: 0,
         instrumented: false,
       });
@@ -297,6 +390,7 @@ describe('createLiveSession', () => {
           kind: 'snapshot',
           records: [],
           requests: [],
+          closed: [],
           droppedBefore: 0,
           instrumented: true,
         },
@@ -314,13 +408,13 @@ describe('createLiveSession', () => {
       // prevent — the finding is made by the timeout in `use-live-capture`, never here.
       const fresh = session.apply(
         { ...initialPanelState(), instrumented: null },
-        { kind: 'snapshot', records: [], requests: [], droppedBefore: 0, instrumented: false },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, instrumented: false },
       );
       expect(fresh.instrumented).toBeNull();
 
       const known = session.apply(
         { ...initialPanelState(), instrumented: true },
-        { kind: 'snapshot', records: [], requests: [], droppedBefore: 0, instrumented: false },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, instrumented: false },
       );
       expect(known.instrumented).toBe(true);
     });
@@ -345,6 +439,7 @@ describe('createLiveSession', () => {
         kind: 'snapshot',
         records: happyRun(),
         requests: [requestLine()],
+        closed: [],
         droppedBefore: 0,
         instrumented: true,
       },
@@ -454,6 +549,7 @@ describe('createLiveSession', () => {
         kind: 'snapshot',
         records: [],
         requests: [],
+        closed: [],
         droppedBefore: 0,
         instrumented: true,
       });
@@ -486,6 +582,7 @@ describe('the request lines an export has to put back', () => {
       kind: 'snapshot',
       records: happyRun(),
       requests: [requestLine('c1')],
+      closed: [],
       droppedBefore: 0,
       instrumented: true,
     });
