@@ -16,18 +16,17 @@ import { TabStrip, tabPanelId } from './shell/tab-strip';
 import { Toolbar } from './shell/toolbar';
 import { Timeline } from './tabs/timeline/timeline';
 import { Messages } from './tabs/messages/messages';
+import { State } from './tabs/state/state';
 import { Session } from './tabs/session/session';
 
 /**
  * Which milestone of the sequencing each unbuilt tab belongs to.
  *
  * The order is the one set out in the export-and-remaining-tabs design §9: Export, then Messages,
- * then State, then Runs. Export and Messages have shipped, so these two are what is left.
+ * then State, then Runs. The first three have shipped, so this is what is left.
  */
-const COMING_NEXT: Record<'runs' | 'state', string> = {
+const COMING_NEXT: Record<'runs', string> = {
   runs: 'Runs is the last milestone of the sequencing, after State. It is a table of runs — thread, agent, outcome, duration, TTFT, event and issue counts — clicking through to Timeline scoped to that run.',
-  state:
-    'State is the next milestone, after Messages. It renders the reconstructed document as a JSON tree with a scrubber over Run.stateTimeline, marking failed patches red at their position.',
 };
 
 /**
@@ -210,7 +209,7 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
       body = <ComingNext title="Runs" detail={COMING_NEXT.runs} />;
       break;
     case 'state':
-      body = <ComingNext title="State" detail={COMING_NEXT.state} />;
+      body = <State store={store} />;
       break;
     case 'messages':
       body = <Messages store={store} />;
