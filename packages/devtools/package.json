@@ -15,6 +15,7 @@
     "lint": "eslint .",
     "gen:events": "tsx scripts/gen-event-table.ts",
     "icons": "tsx scripts/render-icons.mts",
+    "listing:fixture": "tsx scripts/build-demo-fixture.ts",
     "verify:build": "tsx scripts/verify-build.ts",
     "screenshot:panel": "tsx scripts/screenshot-panel.mts"
   },

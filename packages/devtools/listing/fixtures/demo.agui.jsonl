@@ -1,0 +1,38 @@
+{"kind":"header","schemaVersion":1,"tool":"ag-ui-devtools@0.1.0","capturedAt":"2026-08-15T09:00:00.000Z","url":"http://localhost:3000/","framework":"react/copilotkit","transport":"sse","redacted":[]}
+{"kind":"request","connId":"c1","tMs":0,"method":"POST","url":"/api/copilotkit/agent/support/run","input":{"threadId":"t_demo","runId":"r_demo_1","state":{"order":null,"steps":0},"messages":[{"id":"m_user_r_demo_1","role":"user","content":"Where is my order 4417?"}],"tools":[],"context":[],"forwardedProps":{}}}
+{"kind":"event","connId":"c1","seq":1,"tMs":12,"event":{"type":"RUN_STARTED","threadId":"t_demo","runId":"r_demo_1"}}
+{"kind":"event","connId":"c1","seq":2,"tMs":28,"event":{"type":"STEP_STARTED","stepName":"plan"}}
+{"kind":"event","connId":"c1","seq":3,"tMs":44,"event":{"type":"TEXT_MESSAGE_START","messageId":"m_1","role":"assistant"}}
+{"kind":"event","connId":"c1","seq":4,"tMs":96,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_1","delta":"Let me look up"}}
+{"kind":"event","connId":"c1","seq":5,"tMs":128,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_1","delta":" order 4417"}}
+{"kind":"event","connId":"c1","seq":6,"tMs":161,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_1","delta":" for you."}}
+{"kind":"event","connId":"c1","seq":7,"tMs":180,"event":{"type":"TEXT_MESSAGE_END","messageId":"m_1"}}
+{"kind":"event","connId":"c1","seq":8,"tMs":188,"event":{"type":"STEP_FINISHED","stepName":"plan"}}
+{"kind":"event","connId":"c1","seq":9,"tMs":201,"event":{"type":"STEP_STARTED","stepName":"lookup"}}
+{"kind":"event","connId":"c1","seq":10,"tMs":214,"event":{"type":"TOOL_CALL_START","toolCallId":"tc_1","toolCallName":"lookup_order","parentMessageId":"m_1"}}
+{"kind":"event","connId":"c1","seq":11,"tMs":232,"event":{"type":"TOOL_CALL_ARGS","toolCallId":"tc_1","delta":"{\"orderId\":"}}
+{"kind":"event","connId":"c1","seq":12,"tMs":251,"event":{"type":"TOOL_CALL_ARGS","toolCallId":"tc_1","delta":" \"4417\","}}
+{"kind":"event","connId":"c1","seq":13,"tMs":270,"event":{"type":"TOOL_CALL_ARGS","toolCallId":"tc_1","delta":" \"include\": [\"shipping\"]}"}}
+{"kind":"event","connId":"c1","seq":14,"tMs":284,"event":{"type":"TOOL_CALL_END","toolCallId":"tc_1"}}
+{"kind":"event","connId":"c1","seq":15,"tMs":812,"event":{"type":"TOOL_CALL_RESULT","toolCallId":"tc_1","messageId":"m_tool_1","content":"{\"orderId\":\"4417\",\"status\":\"in_transit\",\"carrier\":\"Northwind\",\"eta\":\"2026-08-18\"}"}}
+{"kind":"event","connId":"c1","seq":16,"tMs":840,"event":{"type":"STATE_SNAPSHOT","snapshot":{"order":{"id":"4417","status":"unknown","carrier":null},"steps":0}}}
+{"kind":"event","connId":"c1","seq":17,"tMs":858,"event":{"type":"STATE_DELTA","delta":[{"op":"replace","path":"/order/status","value":"in_transit"},{"op":"replace","path":"/order/carrier","value":"Northwind"}]}}
+{"kind":"event","connId":"c1","seq":18,"tMs":872,"event":{"type":"STATE_DELTA","delta":[{"op":"replace","path":"/steps","value":1}]}}
+{"kind":"event","connId":"c1","seq":19,"tMs":886,"event":{"type":"STEP_FINISHED","stepName":"lookup"}}
+{"kind":"event","connId":"c1","seq":20,"tMs":900,"event":{"type":"STEP_STARTED","stepName":"respond"}}
+{"kind":"event","connId":"c1","seq":21,"tMs":918,"event":{"type":"TEXT_MESSAGE_START","messageId":"m_2","role":"assistant"}}
+{"kind":"event","connId":"c1","seq":22,"tMs":962,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_2","delta":"Order 4417 is in transit"}}
+{"kind":"event","connId":"c1","seq":23,"tMs":1004,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_2","delta":" with Northwind and should"}}
+{"kind":"event","connId":"c1","seq":24,"tMs":1041,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_2","delta":" arrive on 18 August."}}
+{"kind":"event","connId":"c1","seq":25,"tMs":1058,"event":{"type":"TEXT_MESSAGE_END","messageId":"m_2"}}
+{"kind":"event","connId":"c1","seq":26,"tMs":1070,"event":{"type":"STATE_DELTA","delta":[{"op":"replace","path":"/steps","value":2}]}}
+{"kind":"event","connId":"c1","seq":27,"tMs":1082,"event":{"type":"STEP_FINISHED","stepName":"respond"}}
+{"kind":"event","connId":"c1","seq":28,"tMs":1094,"event":{"type":"RUN_FINISHED","threadId":"t_demo","runId":"r_demo_1"}}
+{"kind":"request","connId":"c2","tMs":0,"method":"POST","url":"/api/copilotkit/agent/support/run","input":{"threadId":"t_demo","runId":"r_demo_2","state":{"order":null,"steps":0},"messages":[{"id":"m_user_r_demo_2","role":"user","content":"Can you resend the return label?"}],"tools":[],"context":[],"forwardedProps":{}}}
+{"kind":"event","connId":"c2","seq":29,"tMs":11,"event":{"type":"RUN_STARTED","threadId":"t_demo","runId":"r_demo_2"}}
+{"kind":"event","connId":"c2","seq":30,"tMs":24,"event":{"type":"STEP_STARTED","stepName":"respond"}}
+{"kind":"event","connId":"c2","seq":31,"tMs":63,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_3","delta":"Your replacement label"}}
+{"kind":"event","connId":"c2","seq":32,"tMs":119,"event":{"type":"TEXT_MESSAGE_CONTENT","messageId":"m_3","delta":" is ready to print."}}
+{"kind":"event","connId":"c2","seq":33,"tMs":136,"event":{"type":"TEXT_MESSAGE_END","messageId":"m_3"}}
+{"kind":"event","connId":"c2","seq":34,"tMs":148,"event":{"type":"STEP_FINISHED","stepName":"respond"}}
+{"kind":"event","connId":"c2","seq":35,"tMs":160,"event":{"type":"RUN_FINISHED","threadId":"t_demo","runId":"r_demo_2"}}
