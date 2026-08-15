@@ -251,9 +251,10 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
 
       <main class="agui-app__body">
         {/*
-         * `tabIndex` because two of the five tab panels contain nothing focusable: without it a
-         * keyboard user tabbing off the tab strip leaves the panel entirely and never reads the
-         * content the tab they just selected is about.
+         * `tabIndex` because a tab panel can contain nothing focusable — every tab now has an
+         * implementation, but an empty capture leaves Runs, State and Messages as prose. Without
+         * it a keyboard user tabbing off the tab strip leaves the panel entirely and never reads
+         * the content the tab they just selected is about.
          */}
         <div
           class="agui-app__tabpanel"
