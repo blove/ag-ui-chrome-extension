@@ -252,6 +252,20 @@ describe('Runs — virtualization (R3)', () => {
     expect(mounted[0]).toBe('r_0');
   });
 
+  /*
+   * Virtualization is invisible to a screen reader unless the table says so: without these, a
+   * reader on run 150 of 300 is told it is "row 8 of 28" — the window, announced as the capture.
+   * `aria-rowcount` counts the header row too, and `aria-rowindex` is 1-based from it.
+   */
+  it('announces the whole capture’s size, not the mounted window’s', () => {
+    renderTab({ ...initialPanelState(), runs: many });
+
+    expect(screen.getByRole('table').getAttribute('aria-rowcount')).toBe('301');
+    expect(screen.getAllByRole('columnheader')[0]?.closest('[role="row"]')?.getAttribute('aria-rowindex')).toBe('1');
+    expect(row('r_0').getAttribute('aria-rowindex')).toBe('2');
+    expect(row('r_5').getAttribute('aria-rowindex')).toBe('7');
+  });
+
   it('keeps the sizer at the height of the whole capture, not of the window', () => {
     const { container } = render(
       <Runs store={createPanelStore({ ...initialPanelState(), runs: many })} />,

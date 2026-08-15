@@ -41,10 +41,13 @@ const ROW_HEIGHT_PX = 24;
  */
 function RunTableRow({
   row,
+  rowIndex,
   current,
   onOpen,
 }: {
   row: RunRow;
+  /** 1-based position in the WHOLE capture, header included — see `aria-rowcount` below. */
+  rowIndex: number;
   current: boolean;
   onOpen: (row: RunRow) => void;
 }): JSX.Element {
@@ -58,6 +61,7 @@ function RunTableRow({
       data-outcome={row.outcome}
       data-redacted={row.redacted ? 'true' : 'false'}
       data-testid={`run-row-${row.runId}`}
+      aria-rowindex={rowIndex}
       // `aria-current` rather than `aria-selected`: the row is in a `table`, where selection is
       // not a defined state. What is true is that this is the run the shell is scoped to.
       aria-current={current ? 'true' : undefined}
@@ -156,8 +160,19 @@ export function Runs({ store }: RunsProps): JSX.Element {
           tab, or enable capture and reload the inspected page.
         </p>
       ) : (
-        <div class="agui-runs__table" role="table" aria-label="Runs" aria-rowcount={rows.length}>
-          <div class="agui-runs__head" role="row">
+        /*
+         * `aria-rowcount` and `aria-rowindex` are what make virtualization survive a screen
+         * reader. Only a window of rows is ever in the DOM, so without them a reader on run 150
+         * of 300 is told it is "row 8 of 28" — the window, announced as the capture. Both count
+         * the header row, which is row 1.
+         */
+        <div
+          class="agui-runs__table"
+          role="table"
+          aria-label="Runs"
+          aria-rowcount={rows.length + 1}
+        >
+          <div class="agui-runs__head" role="row" aria-rowindex={1}>
             {/* The run id is the row's identity, not one of §9.2's seven columns — but a table of
                 runs that does not name them is a table you cannot act on. */}
             <span class="agui-runs__th" role="columnheader" data-column="run">
@@ -186,12 +201,13 @@ export function Runs({ store }: RunsProps): JSX.Element {
                * complete the moment it loads, so following it would only fight a user scrolling.
                */
               follow={state.source.kind === 'live' && state.recording}
-              renderRow={(row) => (
+              renderRow={(row, index) => (
                 // Keyed by run id, never by the array index: a live capture appends runs, and a
                 // key that moved would re-use the wrong row's DOM.
                 <RunTableRow
                   key={row.runId}
                   row={row}
+                  rowIndex={index + 2}
                   current={state.scope === row.runId}
                   onOpen={open}
                 />
