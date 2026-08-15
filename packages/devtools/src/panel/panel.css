@@ -1227,24 +1227,21 @@ li[data-severity='warning'] .agui-detail__severity {
   background: var(--agui-hover);
 }
 
-/* --- Empty and not-yet-built states -------------------------------------- */
+/* --- Empty states -------------------------------------------------------- */
 
-.agui-empty,
-.agui-coming {
+.agui-empty {
   max-width: 78ch;
   padding: 12px 16px;
 }
 
-.agui-empty__title,
-.agui-coming__title {
+.agui-empty__title {
   margin: 0 0 4px;
   font-size: 14px;
   font-weight: 600;
   color: var(--agui-fg);
 }
 
-.agui-empty__detail,
-.agui-coming__detail {
+.agui-empty__detail {
   margin: 0 0 8px;
   color: var(--agui-fg-muted);
 }
@@ -2064,4 +2061,201 @@ code {
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px solid var(--agui-border);
+}
+
+/* ── Runs (§9.2, design decisions R1–R3) ────────────────────────────────────────────────────────
+ *
+ * A grid rather than a `<table>`: `VirtualList` puts its own sizer and window between the table
+ * and its rows, and no table element may contain those. The columns are therefore declared once,
+ * as a custom property on the table, and inherited by BOTH the header row and every data row —
+ * two `grid-template-columns` declarations would drift the first time a column is resized, and a
+ * header that no longer sits over its column is worse than no header at all.
+ */
+
+.agui-runs {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.agui-runs__empty {
+  max-width: 78ch;
+  margin: 0;
+  padding: 12px 16px;
+  color: var(--agui-fg-muted);
+}
+
+/*
+ * R1 asks for a redacted capture to be legible as one. The note is `--agui-severity-info`, never
+ * the danger colour: P2 reserves red for protocol issues, and redaction is a property of the FILE
+ * rather than a finding about the run.
+ */
+.agui-runs__redacted {
+  margin: 8px 12px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--agui-severity-info);
+  border-radius: 3px;
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-fg);
+}
+
+.agui-runs__table {
+  --agui-runs-columns: minmax(110px, 1.6fr) minmax(90px, 1.2fr) minmax(90px, 1.2fr) 92px 96px 96px
+    72px 72px;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.agui-runs__head {
+  display: grid;
+  grid-template-columns: var(--agui-runs-columns);
+  gap: 8px;
+  align-items: center;
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--agui-border);
+  background: var(--agui-surface);
+  color: var(--agui-fg-muted);
+  font-weight: 600;
+}
+
+.agui-runs__th {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The four measured columns are right-aligned, so digits of different widths still line up. */
+.agui-runs__th[data-column='duration'],
+.agui-runs__th[data-column='ttft'],
+.agui-runs__th[data-column='events'],
+.agui-runs__th[data-column='issues'] {
+  text-align: right;
+}
+
+.agui-runs__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agui-runs__row {
+  display: grid;
+  grid-template-columns: var(--agui-runs-columns);
+  gap: 8px;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0 12px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--agui-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agui-runs__row:hover {
+  background: var(--agui-hover);
+}
+
+.agui-runs__row:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
+}
+
+/* The run the shell is scoped to. R2 makes this table the scope picker, so the row that is
+   already in force has to be findable without reading the run selector one band up. */
+.agui-runs__row[aria-current='true'] {
+  background: var(--agui-row-selected);
+}
+
+.agui-runs__cell {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.agui-runs__cell[data-column='duration'],
+.agui-runs__cell[data-column='ttft'],
+.agui-runs__cell[data-column='events'],
+.agui-runs__cell[data-column='issues'] {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * THE RULE THIS TAB TURNS ON.
+ *
+ * `data-known="false"` is a cell reporting the ABSENCE of a measurement — "still running", "no
+ * text", "no run start". Drawn like the measurements beside it, those read as values the panel
+ * computed, which is precisely the misreading R1 forbids. Muted and italic, so an absence is
+ * visibly not a number even before the words are read.
+ */
+.agui-runs__cell[data-known='false'] {
+  color: var(--agui-fg-muted);
+  font-style: italic;
+}
+
+.agui-runs__cell[data-column='run'] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.agui-runs__run-id {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.agui-runs__redacted-flag {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--agui-severity-info);
+  border-radius: 8px;
+  background: var(--agui-severity-info-bg);
+  color: var(--agui-severity-info);
+  font-family: inherit;
+  font-size: 10px;
+}
+
+/* An outcome is not a neutral label: `error` and `aborted` are how a run went wrong, and
+   `orphaned` means there was never a RUN_STARTED to attribute these events to. */
+.agui-runs__cell[data-outcome='error'],
+.agui-runs__cell[data-outcome='aborted'] {
+  color: var(--agui-severity-error);
+}
+
+.agui-runs__cell[data-outcome='orphaned'] {
+  color: var(--agui-severity-warning);
+}
+
+.agui-runs__cell[data-outcome='running'] {
+  color: var(--agui-severity-info);
+}
+
+/*
+ * The issue count, toned by the WORST issue on the run — an error must not be hidden behind a
+ * co-located info. `none` is deliberately left plain: zero issues is the ordinary case, and a
+ * table where every row is coloured says nothing.
+ */
+.agui-runs__cell[data-tone='error'] {
+  color: var(--agui-severity-error);
+  font-weight: 600;
+}
+
+.agui-runs__cell[data-tone='warning'] {
+  color: var(--agui-severity-warning);
+  font-weight: 600;
+}
+
+.agui-runs__cell[data-tone='info'] {
+  color: var(--agui-severity-info);
 }

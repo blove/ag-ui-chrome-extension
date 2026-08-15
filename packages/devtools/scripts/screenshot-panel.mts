@@ -370,7 +370,7 @@ async function checkFixtures(browser: Browser, origin: string): Promise<void> {
 
     // The drop zone that showed the per-line detail unmounts with the tab. The summary must not.
     await session.page.click('button[role="tab"][id="agui-tab-runs"]');
-    await session.page.waitForSelector('.agui-coming');
+    await session.page.waitForSelector('.agui-runs');
     const afterSwitch = (await session.page.textContent('.agui-app__load-error'))?.trim() ?? '';
     if (!/1 line could not be decoded/i.test(afterSwitch)) {
       fail(

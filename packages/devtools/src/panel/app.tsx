@@ -16,34 +16,9 @@ import { TabStrip, tabPanelId } from './shell/tab-strip';
 import { Toolbar } from './shell/toolbar';
 import { Timeline } from './tabs/timeline/timeline';
 import { Messages } from './tabs/messages/messages';
+import { Runs } from './tabs/runs/runs';
 import { State } from './tabs/state/state';
 import { Session } from './tabs/session/session';
-
-/**
- * Which milestone of the sequencing each unbuilt tab belongs to.
- *
- * The order is the one set out in the export-and-remaining-tabs design §9: Export, then Messages,
- * then State, then Runs. The first three have shipped, so this is what is left.
- */
-const COMING_NEXT: Record<'runs', string> = {
-  runs: 'Runs is the last milestone of the sequencing, after State. It is a table of runs — thread, agent, outcome, duration, TTFT, event and issue counts — clicking through to Timeline scoped to that run.',
-};
-
-/**
- * A tab that exists in the strip but has no implementation yet.
- *
- * It names the milestone rather than showing an empty pane or fake content: a blank tab is
- * indistinguishable from a broken one, and stub content is worse — it invites a reader to trust
- * a number nothing computed.
- */
-function ComingNext({ title, detail }: { title: string; detail: string }): JSX.Element {
-  return (
-    <section class="agui-coming" aria-label={title}>
-      <h2 class="agui-coming__title">{title} — not built yet</h2>
-      <p class="agui-coming__detail">{detail}</p>
-    </section>
-  );
-}
 
 /**
  * Resolve the inspected page's origin, so the capture banner can name it.
@@ -206,7 +181,7 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
       body = <Session store={store} onLoaded={commit} />;
       break;
     case 'runs':
-      body = <ComingNext title="Runs" detail={COMING_NEXT.runs} />;
+      body = <Runs store={store} />;
       break;
     case 'state':
       body = <State store={store} />;
