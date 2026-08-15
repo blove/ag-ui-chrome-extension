@@ -4,6 +4,27 @@
     <meta charset="utf-8" />
     <title>small promo tile</title>
     <link rel="stylesheet" href="./frame.css" />
+    <!--
+      Three things worth knowing before this file is next touched:
+
+      1. The gradient is not on .tile itself - it lives on body in frame.css. A screenshot of
+         .tile shows a gradient only because .tile's own background is transparent and the paint
+         from body shows through underneath it. Give .tile an opaque background of its own and
+         this quietly becomes a screenshot of a different design, with no error to flag it.
+
+      2. This tile's pixel size is stated three times: the width/height on .tile below, the
+         matching entry in TILES (listing-assets.mts), and the output filename. downsample()
+         cross-checks the raw screenshot against the TILES entry, so the CSS and TILES cannot
+         silently drift apart - but the filename is not checked against either one, it is a label
+         for humans and the store, not an assertion.
+
+      3. ../icon.svg resolves only because listing/ is mounted whole at /listing/ (the mounts
+         argument to startServer in panel-harness.ts), putting this document at
+         /listing/frames/tile.html and the mark exactly one directory above it. Move this file, or
+         change the mount, and the mark fails silently into a broken-image icon rather than a
+         build error - the exact failure mode that already cost a rasterised SVG once in this
+         project.
+    -->
     <style>
       .tile {
         width: 440px;
@@ -23,6 +44,10 @@
     <div class="tile">
       <img class="tile__mark" src="../icon.svg" alt="" />
       <h1 class="tile__name">AG-UI DevTools</h1>
+      <!-- Deliberately short-form, not copy.md's summary verbatim: this frame has ~440px of
+           width to fit it in and copy.md's line does not. verify-listing-copy.ts validates only
+           copy.md, so this and marquee.html's sub are hand-maintained near-copies of that summary
+           and can drift from it silently - keep them saying the same thing when copy.md changes. -->
       <p class="tile__sub">Capture, decode and validate AG-UI agent streams — on any page.</p>
     </div>
   </body>

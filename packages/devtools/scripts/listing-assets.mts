@@ -24,6 +24,17 @@
  * failure this script exists to prevent, so it exits 1 with each refusal naming what must exist
  * first. Two good screenshots and a loud list of blockers beats five and a rejected submission.
  *
+ * The two promo tiles below (`TILES`) are NOT gated the same way, and that is deliberate rather
+ * than an oversight: a screenshot photographs the built panel, so an entry the product cannot yet
+ * back is a caption arguing with the pixels beneath it, which is exactly what the storyboard
+ * refuses above. A tile is prose over a static mark — the same category of asset as
+ * `listing/copy.md`'s store description, which already describes the finished tool rather than
+ * today's build. That is why the marquee's copy can say "replay" in the same run that refuses to
+ * caption the Session tab with that word: one is a claim about an image, the other is a claim
+ * about the product's destination. The gap between the tiles' prose and today's build is the same
+ * one the design doc already records as a deferred requirement; closing it is a product task, not
+ * a bug in this script.
+ *
  * Run: `pnpm build && pnpm listing:assets`
  */
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -31,6 +42,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Browser, FrameLocator } from 'playwright';
 import { chromium } from 'playwright';
+import type { Session } from './panel-harness';
 import { importFixture, openPanel, PANEL_PATH, startServer } from './panel-harness';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -287,35 +299,44 @@ const STORYBOARD: Shot[] = [
 
 /**
  * Screenshot at 2× and resample to the exact pixel dimensions the store requires. Playwright
- * cannot downscale, and CWS accepts only 1280×800 or 640×400 — so a raw 2× shot is rejected and a
- * 1× shot renders panel text at half the quality this is capable of.
+ * cannot downscale, and CWS accepts only exact pixel sizes per asset type — so a raw 2× shot is
+ * rejected and a 1× shot renders text at half the quality this is capable of.
+ *
+ * `selector` and `doc` name nothing functional — they exist only so the size-mismatch error below
+ * can point at the right file. Four call sites now share this function (`.frame` in
+ * `screenshot.html`/`frame.css`, `.tile` in `tile.html`, `.marquee` in `marquee.html`), and a
+ * message hard-coded to `.frame`/`frame.css` sent a reader chasing the wrong file for the other
+ * three the day this stopped being screenshot-only.
  */
 async function downsample(
   browser: Browser,
   png: Buffer,
   width: number,
   height: number,
+  selector: string,
+  doc: string,
 ): Promise<Buffer> {
   const page = await browser.newPage({ viewport: { width: 8, height: 8 } });
   try {
     const dataUrl = await page.evaluate(
-      async ([src, w, h]) => {
+      async ([src, w, h, sel, source]) => {
         const image = new Image();
         image.src = src as string;
         await image.decode();
         /*
-         * The 2× contract, stated where it can be violated. Nothing else checks it: `.frame` is
-         * sized in `frame.css`, and editing that to anything but 1280×800 would leave this
-         * silently squashing or stretching a differently shaped source into the store's exact
-         * dimensions — producing a PNG that passes every size check while looking wrong. The raw
-         * shot must be exactly twice the output.
+         * The 2× contract, stated where it can be violated. Nothing else checks it: the subject's
+         * size is set in its own document, and editing that to anything but the expected size
+         * would leave this silently squashing or stretching a differently shaped source into the
+         * store's exact dimensions — producing a PNG that passes every size check while looking
+         * wrong. The raw shot must be exactly twice the output.
          */
         if (image.naturalWidth !== (w as number) * 2 || image.naturalHeight !== (h as number) * 2) {
           throw new Error(
             `the raw screenshot is ${String(image.naturalWidth)}×${String(image.naturalHeight)}, ` +
               `expected exactly ${String((w as number) * 2)}×${String((h as number) * 2)} (the ` +
-              'output size at deviceScaleFactor 2). Either `.frame` is no longer 1280×800 in ' +
-              'frame.css, or the shot was taken at a different scale factor.',
+              `output size at deviceScaleFactor 2). Either \`${sel as string}\` is no longer ` +
+              `${String(w as number)}×${String(h as number)} in ${source as string}, or the shot ` +
+              'was taken at a different scale factor.',
           );
         }
         const canvas = document.createElement('canvas');
@@ -328,12 +349,59 @@ async function downsample(
         ctx.drawImage(image, 0, 0, w as number, h as number);
         return canvas.toDataURL('image/png');
       },
-      [`data:image/png;base64,${png.toString('base64')}`, width, height] as const,
+      [`data:image/png;base64,${png.toString('base64')}`, width, height, selector, doc] as const,
     );
     return Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
   } finally {
     await page.close();
   }
+}
+
+interface CaptureSpec {
+  file: string;
+  /** Element to screenshot. */
+  selector: string;
+  /** Where `selector`'s pixel size is set, so a mismatch error names the file to go fix. */
+  doc: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * The shared tail of every asset this script produces: settle, screenshot, downsample, gate on
+ * panel errors, write. `shoot` and `shootTile` differ only in how they get their subject on
+ * screen — everything from here on is one function on purpose, so a third asset type added later
+ * cannot quietly drop one of the three things a hand-rolled tail dropped here once already:
+ *
+ *   - the settle wait, which is not screenshot-specific — any DOM that just finished a driven
+ *     interaction or a style-sheet load can still be mid-transition when the shutter fires;
+ *   - the `session.errors` gate, whose absence let a `.tile` with a 404'd `img src` write a
+ *     broken-image PNG and log it as a success, because nothing after the screenshot call ever
+ *     looked at what the page itself had logged;
+ *   - writing LAST. A throw from `downsample`'s own size check, or from the `screenshot()` call
+ *     timing out because a selector stopped matching, must reach the caller before a single byte
+ *     lands in `outDir` — see `main`'s catch blocks, which delete on the paths that throw before
+ *     this function is even entered.
+ *
+ * Both incidents above were reproduced against `shootTile` before this function existed: a
+ * renamed `.tile` selector left a stale, byte-identical PNG on disk under a FAILing run, and a
+ * missing mark image wrote a corrupt tile that this script reported as delivered.
+ */
+async function capture(browser: Browser, session: Session, spec: CaptureSpec): Promise<void> {
+  // Let streamed layout and any transition settle before the shutter.
+  await session.page.waitForTimeout(250);
+
+  const raw = await session.page.locator(spec.selector).screenshot();
+  const png = await downsample(browser, raw, spec.width, spec.height, spec.selector, spec.doc);
+
+  // Every reason to reject this asset is settled BEFORE anything reaches disk. The write used to
+  // come first in `shoot`, and a panel that logged an error then left its PNG in `listing/out/`
+  // while the run exited 1 — a rejected shot masquerading as a delivered asset, which is the
+  // exact failure this script is supposed to make impossible.
+  if (session.errors.length > 0) {
+    throw new Error(`${spec.file}: the panel logged errors: ${session.errors.join(' | ')}`);
+  }
+  writeFileSync(join(outDir, spec.file), png);
 }
 
 async function shoot(browser: Browser, origin: string, shot: Shot): Promise<void> {
@@ -359,20 +427,13 @@ async function shoot(browser: Browser, origin: string, shot: Shot): Promise<void
     await importFixture(panel, fixture);
     await shot.drive(panel);
 
-    // Let streamed layout and any transition settle before the shutter.
-    await page.waitForTimeout(250);
-
-    const raw = await page.locator('.frame').screenshot();
-    const png = await downsample(browser, raw, SHOT_WIDTH, SHOT_HEIGHT);
-
-    // Every reason to reject this shot is settled BEFORE anything reaches disk. The write used to
-    // come first, and a panel that logged an error then left its PNG in `listing/out/` while the
-    // run exited 1 — a rejected shot masquerading as a delivered asset, which is the exact
-    // failure this script is supposed to make impossible. `main` deletes on the other paths.
-    if (session.errors.length > 0) {
-      throw new Error(`${shot.file}: the panel logged errors: ${session.errors.join(' | ')}`);
-    }
-    writeFileSync(join(outDir, shot.file), png);
+    await capture(browser, session, {
+      file: shot.file,
+      selector: '.frame',
+      doc: 'frame.css',
+      width: SHOT_WIDTH,
+      height: SHOT_HEIGHT,
+    });
     console.log(`  ${shot.file}  ${shot.headline}`);
   } finally {
     await session.close();
@@ -400,9 +461,7 @@ async function shootTile(browser: Browser, origin: string, tile: Tile): Promise<
     url: `${origin}/listing/frames/${tile.doc}`,
   });
   try {
-    const raw = await session.page.locator(tile.selector).screenshot();
-    const png = await downsample(browser, raw, tile.width, tile.height);
-    writeFileSync(join(outDir, tile.file), png);
+    await capture(browser, session, tile);
     console.log(`  ${tile.file}`);
   } finally {
     await session.close();
@@ -447,6 +506,14 @@ async function main(): Promise<void> {
       try {
         await shootTile(browser, server.origin, tile);
       } catch (error) {
+        // Same incident as the storyboard catch above, and this is the second time this file has
+        // shipped this exact bug: a reviewer renamed `.tile` mid-development and got a `FAIL: 4 of
+        // 5` run that nonetheless left a stale, byte-identical PNG sitting in `listing/out/` — the
+        // run said "blocked", the directory said "delivered". `capture` writes last, but that only
+        // protects failures that happen INSIDE it; `openPanel`'s `page.goto` can still throw on a
+        // renamed or missing `doc` before `capture` is ever called, and that path needs the same
+        // cleanup as the storyboard catch above.
+        rmSync(join(outDir, tile.file), { force: true });
         failures.push(`${tile.file}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -455,12 +522,16 @@ async function main(): Promise<void> {
     await server.close();
   }
 
+  // The real denominator: every asset this run attempted, not just the storyboard. Counting
+  // against `STORYBOARD.length` alone used to print "FAIL: 4 of 5" the moment a tile failed too,
+  // and would print "7 of 5" if every asset in both lists failed at once.
+  const attempted = STORYBOARD.length + TILES.length;
   if (failures.length > 0) {
-    console.error(`\nFAIL: ${String(failures.length)} of ${String(STORYBOARD.length)} shots:\n`);
+    console.error(`\nFAIL: ${String(failures.length)} of ${String(attempted)} assets:\n`);
     for (const failure of failures) console.error(`  - ${failure}\n`);
     process.exit(1);
   }
-  console.log(`\n${String(STORYBOARD.length)} screenshots written to ${outDir}`);
+  console.log(`\n${String(attempted)} assets written to ${outDir}`);
 }
 
 await main();
