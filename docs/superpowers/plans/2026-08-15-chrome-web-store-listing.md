@@ -345,8 +345,8 @@ Create `packages/devtools/listing/icon.svg`:
     Colours are the panel's own tokens: agui-accent, and agui-severity-error's DARK-scheme
     value for the flagged tick. The light-scheme error red (#b3261e) is near-unreadable on this
     blue at 16px. (Those token names are written without their leading double hyphen on purpose:
-    XML forbids `--` anywhere inside a comment body, and Chrome responds by silently refusing to
-    parse the whole SVG — which still rasterises to a PNG of exactly the right dimensions, so
+    XML forbids two adjacent hyphens anywhere inside a comment body, not only at the delimiters,
+    and Chrome responds by silently refusing to parse the whole SVG — which still rasterises to a PNG of exactly the right dimensions, so
     `file` reports success on a broken-image placeholder.)
 
     Every tick shares the baseline y=100 (y + height === 100).
@@ -1943,7 +1943,49 @@ still a placeholder — see
 [the listing design](docs/superpowers/specs/2026-08-15-chrome-web-store-listing-design.md).
 ```
 
-- [ ] **Step 3: Run the entire workspace suite**
+- [ ] **Step 3: Assert the committed rasters are fresh**
+
+Editing `listing/icon.svg` without re-running `pnpm icons` leaves stale PNGs committed, silently —
+Task 3's `checkIcons` asserts the files exist in `dist/`, not that they match their source. The
+same gap hides cross-version drift: the PNGs are antialiased Chromium output, so a Playwright bump
+changes the committed bytes and nothing says so.
+
+Add to `packages/devtools/scripts/verify-build.ts`, alongside `checkIcons`:
+
+```ts
+/**
+ * The icons are generated and committed, so they can go stale against `listing/icon.svg` with no
+ * signal at all — and they are antialiased Chromium output, so a Playwright upgrade silently
+ * changes their bytes too. Re-render to a temp dir and compare.
+ */
+function checkIconsAreFresh(): void {
+  const rendered = mkdtempSync(join(tmpdir(), 'agui-icons-'));
+  const result = spawnSync('pnpm', ['icons'], {
+    cwd: packageRoot,
+    env: { ...process.env, ICON_OUT: rendered },
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    fail(`could not re-render the icons to check freshness: ${result.stderr}`);
+    return;
+  }
+  for (const size of ICON_SIZES) {
+    const name = `icon-${size}.png`;
+    const committed = readFileSync(join(packageRoot, 'public/icons', name));
+    if (!committed.equals(readFileSync(join(rendered, name)))) {
+      fail(`public/icons/${name} is stale against listing/icon.svg. Run \`pnpm icons\`.`);
+    }
+  }
+}
+```
+
+This needs `render-icons.mts` to honour an output override. Change its `outDir` to:
+
+```ts
+const outDir = process.env.ICON_OUT ?? join(packageRoot, 'public/icons');
+```
+
+- [ ] **Step 4: Run the entire workspace suite**
 
 ```bash
 pnpm typecheck && pnpm lint && pnpm build && pnpm test && pnpm verify:build && pnpm screenshot:panel && pnpm verify:listing
@@ -1953,10 +1995,10 @@ Expected: every command exits 0.
 
 Note `pnpm listing:assets` is deliberately **not** in this chain — it exits 1 until the State tab exists, which is decision L1 and must not be turned into a passing no-op.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add README.md package.json
+git add README.md package.json packages/devtools/scripts/verify-build.ts packages/devtools/scripts/render-icons.mts
 git commit -m "docs: the listing asset pipeline and its release sequence
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
