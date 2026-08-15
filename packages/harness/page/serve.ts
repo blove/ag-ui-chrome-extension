@@ -59,6 +59,43 @@ function proxy(req: IncomingMessage, res: ServerResponse, agentUrl: string): voi
   req.pipe(upstream);
 }
 
+/**
+ * The one endpoint `EventSource` can reach: a GET stream, for `document-start.html`.
+ *
+ * The harness server answers `POST /` only — it serves the real client, which always POSTs — and
+ * `EventSource` cannot POST at all (§5.3). This exists so the document_start page can open a
+ * stream that actually delivers frames: a connection with no frames has no first `frames`
+ * message for the MAIN world to re-state its `conn-open` alongside, so it could not test the
+ * async-load window at all.
+ */
+export const DOCUMENT_START_PATH = '/agui-document-start';
+
+const EARLY_EVENTS = [
+  { type: 'RUN_STARTED', threadId: 't_early', runId: 'r_early' },
+  { type: 'RUN_FINISHED', threadId: 't_early', runId: 'r_early' },
+];
+
+/**
+ * Frames arrive later than the `conn-open` that announced the connection, which is true of every
+ * real network response and is what gives the MAIN world something to re-state the open
+ * alongside. Writing them in the same tick would put open and frames inside the same instant,
+ * which no HTTP response ever is.
+ */
+const EARLY_FIRST_FRAME_DELAY_MS = 300;
+
+function writeEarlyStream(res: ServerResponse): void {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  setTimeout(() => {
+    if (res.writableEnded || res.socket?.destroyed === true) return;
+    for (const event of EARLY_EVENTS) res.write(`data: ${JSON.stringify(event)}\n\n`);
+    res.end();
+  }, EARLY_FIRST_FRAME_DELAY_MS);
+}
+
 export function startPageServer(opts: { agentUrl: string; port?: number }): Promise<PageServer> {
   if (!existsSync(join(distRoot, 'index.html'))) {
     throw new Error(
@@ -70,6 +107,10 @@ export function startPageServer(opts: { agentUrl: string; port?: number }): Prom
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (url.pathname === '/agui') {
       proxy(req, res, opts.agentUrl);
+      return;
+    }
+    if (url.pathname === DOCUMENT_START_PATH) {
+      writeEarlyStream(res);
       return;
     }
     // Chrome asks unprompted, and an unhandled 404 shows up as a console error, which the

@@ -29,6 +29,9 @@ export async function buildPage(): Promise<void> {
     logLevel: 'warning',
   });
   copyFileSync(join(pageRoot, 'index.html'), join(outDir, 'index.html'));
+  // No bundle of its own: the point of this page is an INLINE script in `<head>`, which is the
+  // earliest page code that can run after the document_start content scripts.
+  copyFileSync(join(pageRoot, 'document-start.html'), join(outDir, 'document-start.html'));
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

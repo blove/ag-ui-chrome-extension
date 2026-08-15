@@ -11,19 +11,26 @@
  * anything above it went red — a cascade that hides the real failure. Every test below reads
  * state the hook produced, so each one fails on its own merits.
  *
- * The last test asserts capture is EMPTY. That is the current truth: `inject/` patches no page
- * API and `src/sw/index.ts` installs no `__AGUI_DT_TEST__` hook. Each capture commit that
- * follows flips part of it positive.
+ * The capture assertions read the service worker's ring buffer through `__AGUI_DT_TEST__` and
+ * fold it with the real `core/` pipeline. The `malformed` block is the point of the whole
+ * milestone: a live capture, reconstructed, must produce the same three issues at the same seqs
+ * as the golden fixture that scenario was converted from.
  */
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 
-import type { AguiEvent } from '@devtools/core/model/types';
+import type { AguiEvent, CaptureRecord } from '@devtools/core/model/types';
 
 import { SCENARIOS, type Scenario } from '../fixtures/index.js';
 import { startPageServer, type PageServer } from '../page/serve.js';
 import { startHarnessServer, type HarnessServer } from '../server/agui-server.js';
 
-import { launchWithExtension, readCapture } from './fixtures.js';
+import {
+  clearCapture,
+  launchWithExtension,
+  readCapture,
+  reconstruct,
+  type CaptureSnapshot,
+} from './fixtures.js';
 
 const SCENARIO_NAME = 'happy';
 const PROMPT = 'happy';
@@ -68,12 +75,20 @@ function expectedLines(scenario: Scenario): RenderedLine[] {
   ];
 }
 
+/** Event types only, in stream order — what a captured run must agree with the corpus on. */
+function capturedEventTypes(records: CaptureRecord[]): string[] {
+  return records
+    .filter((record) => record.kind === 'event')
+    .map((record) => String(record.event?.type ?? '<unparsed>'));
+}
+
 let harness: HarnessServer;
 let pageServer: PageServer;
 let ctx: BrowserContext;
 let extensionId: string;
 let page: Page;
 let rendered: RenderedLine[] = [];
+let capture: CaptureSnapshot;
 const pageErrors: string[] = [];
 const posts: { url: string; accept: string }[] = [];
 
@@ -102,6 +117,7 @@ test.beforeAll(async () => {
   rendered = await page.$$eval('#messages li', (items) =>
     items.map((item) => ({ role: item.getAttribute('data-role'), text: item.textContent })),
   );
+  capture = await readCapture(ctx);
 });
 
 test.afterAll(async () => {
@@ -142,13 +158,151 @@ test('the request the capture layer must intercept is a POST asking for SSE', ()
   expect(posts).toEqual([{ url: `${pageServer.url}agui`, accept: 'text/event-stream' }]);
 });
 
-test('capture sees nothing yet, because inject/ is still a stub', async () => {
-  // The honest current state. `inject/` patches no page API, so nothing is posted to the
-  // relay; `src/sw/index.ts` installs no `__AGUI_DT_TEST__`, so `readCapture` reports empties.
-  // Turning each field of this positive is the definition of done for the capture commits.
-  expect(await readCapture(ctx)).toEqual({
-    records: [],
-    requests: [],
-    droppedBefore: 0,
+test('the whole capture path delivers the happy run to the ring buffer', () => {
+  const scenario = SCENARIOS[SCENARIO_NAME];
+  if (!scenario) throw new Error(`SCENARIOS.${SCENARIO_NAME} is missing`);
+
+  // MAIN world -> relay -> port -> per-tab buffer, with nothing lost and nothing invented: the
+  // captured events are the scenario's events, in order.
+  expect(capturedEventTypes(capture.records)).toEqual(
+    scenario.events.map((event: AguiEvent) => String(event.type)),
+  );
+  // Keepalives are frames too, and are what a `keepalive-gap` anchors to.
+  expect(capture.records.filter((record) => record.kind === 'keepalive').length).toBe(
+    scenario.keepalives?.length ?? 0,
+  );
+  // seq is assigned by the service worker, per tab, from 1.
+  expect(capture.records.map((record) => record.seq)).toEqual(
+    capture.records.map((_record, index) => index + 1),
+  );
+  expect(capture.droppedBefore).toBe(0);
+});
+
+test('the captured request line carries the RunAgentInput the client sent', () => {
+  // Verified fact 4: without `input` every run additionally reports `run-started-without-input`,
+  // which reads as a finding about the user's server. One connection, one request line.
+  expect(capture.requests.length).toBe(1);
+  const request = capture.requests[0];
+  if (!request) throw new Error('no request line was captured');
+  expect(request.method).toBe('POST');
+  expect(request.url).toBe(`${pageServer.url}agui`);
+  expect((request.input as { threadId?: unknown }).threadId).toEqual(expect.any(String));
+  expect((request.input as { messages?: { content?: unknown }[] }).messages?.[0]?.content).toBe(
+    PROMPT,
+  );
+});
+
+test('the captured happy run reconstructs to a clean run', () => {
+  const scenario = SCENARIOS[SCENARIO_NAME];
+  if (!scenario) throw new Error(`SCENARIOS.${SCENARIO_NAME} is missing`);
+
+  const { runs, issues } = reconstruct(capture);
+
+  expect(issues.map((issue) => issue.code)).toEqual(scenario.expectIssues);
+  expect(runs.length).toBe(1);
+  expect(runs[0]?.outcome).toBe('finished');
+});
+
+test.describe('the malformed scenario, captured live', () => {
+  let malformed: CaptureSnapshot;
+
+  test.beforeAll(async () => {
+    // A NEW tab, not a reload: `seq` is monotonic per tab and a clear does not reset it, so the
+    // absolute seq assertions below need a buffer that has never held anything.
+    await clearCapture(ctx);
+    harness.use('malformed');
+
+    const second = await ctx.newPage();
+    await second.goto(pageServer.url);
+    await second.fill('#prompt', 'malformed');
+    await second.click('#run');
+    // `malformed` has no terminal event, so the real client ends the run by whichever path it
+    // chooses. Either terminal status means the stream is over and capture is complete.
+    await second.waitForFunction(
+      () => {
+        const status = document.getElementById('status')?.textContent;
+        return status === 'done' || status === 'error';
+      },
+      { timeout: 30_000 },
+    );
+    malformed = await readCapture(ctx);
+    await second.close();
+  });
+
+  test('captures exactly the scenario stream', () => {
+    const scenario = SCENARIOS['malformed'];
+    if (!scenario) throw new Error('SCENARIOS.malformed is missing');
+    expect(capturedEventTypes(malformed.records)).toEqual(
+      scenario.events.map((event: AguiEvent) => String(event.type)),
+    );
+  });
+
+  test('reconstructs to exactly the three known issues at the known seqs', () => {
+    const scenario = SCENARIOS['malformed'];
+    if (!scenario) throw new Error('SCENARIOS.malformed is missing');
+
+    const { runs, issues } = reconstruct(malformed);
+
+    // This is the end-to-end equivalence proof. `SCENARIOS.malformed` was converted from
+    // `packages/devtools/src/test/fixtures/malformed.agui.jsonl`, whose issues were OBSERVED by
+    // folding the fixture through `core/` (see the integration suite, Done-when #5). Serving
+    // those same events over a real socket, intercepting them in the page, relaying them to the
+    // service worker and folding the ring buffer's contents must land on the same three issues
+    // anchored to the same seqs — the empty delta at 5, the parentless patch at 9, and the
+    // missing terminal event at 10. A capture layer that dropped, reordered, re-chunked or
+    // re-numbered a single frame cannot satisfy this.
+    expect(
+      [...issues].sort((a, b) => a.seq - b.seq).map((issue) => [issue.code, issue.seq]),
+    ).toEqual([
+      ['empty-text-delta', 5],
+      ['state-patch-failed', 9],
+      ['run-never-terminated', 10],
+    ]);
+    expect([...issues].map((issue) => issue.code).sort()).toEqual(
+      [...scenario.expectIssues].sort(),
+    );
+
+    expect(runs.length).toBe(1);
+    expect(runs[0]?.runId).toBe('r_bad');
+    // Not `run-started-without-input`: the request line was captured, so the only findings are
+    // the three that are genuinely in the stream.
+    expect(issues.map((issue) => issue.code)).not.toContain('run-started-without-input');
+  });
+});
+
+test.describe('the document_start window', () => {
+  test('a conn-open posted before the relay is listening still reaches the buffer', async () => {
+    // The decision this task implements: the relay's `message` listener registers a tick after
+    // `document_start`, because CRXJS wraps a content script that has imports in an async
+    // loader. `EventSource` posts `conn-open` synchronously from its constructor, so an inline
+    // script in `<head>` can post one into that window — and `conn-open` is the message that
+    // carries `RunAgentInput`. Losing it makes a healthy run report
+    // `run-started-without-input`, i.e. a finding about the USER'S server rather than about our
+    // capture. The MAIN world therefore re-states the open ahead of the first frames batch and
+    // the worker ignores a duplicate, which is what makes this assertion deterministic instead
+    // of a coin flip on loader ordering.
+    await clearCapture(ctx);
+    const early = await ctx.newPage();
+    await early.goto(`${pageServer.url}document-start.html`);
+    await early.waitForSelector('#ready');
+
+    // The stream's frames are delayed server-side, so wait for the whole thing rather than for
+    // the first thing to arrive.
+    await expect
+      .poll(async () => capturedEventTypes((await readCapture(ctx)).records), { timeout: 10_000 })
+      .toEqual(['RUN_STARTED', 'RUN_FINISHED']);
+
+    const earlyCapture = await readCapture(ctx);
+    // Recorded verbatim as the page passed it: `eventsource-patch.ts` stores `String(url)`, so a
+    // relative specifier stays relative. (`fetch-patch.ts` resolves against the document, so the
+    // two transports disagree — noted, and not this task's to change.)
+    expect(earlyCapture.requests.map((request) => request.url)).toEqual([
+      '/agui-document-start',
+    ]);
+    // `EventSource` cannot carry a body, so `input` is honestly null (§5.3) — the point here is
+    // that the request line EXISTS, not what it carries.
+    expect(earlyCapture.requests[0]?.method).toBe('GET');
+
+    await early.close();
   });
 });
