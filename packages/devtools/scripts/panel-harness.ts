@@ -27,19 +27,69 @@ const MIME: Record<string, string> = {
 };
 
 /**
+ * The origin `devtools-ungranted` reports as the inspected page.
+ *
+ * Three constraints, all load-bearing. It must be RESERVED — RFC 2606 sets `example.com` aside
+ * precisely so documentation and screenshots do not name a real third party, and a store asset
+ * showing a real site is an implied claim about that site. It must be NON-LOCALHOST: `grant.ts`
+ * auto-enables `localhost`/`127.0.0.1`/`0.0.0.0` from the static manifest matches, so a localhost
+ * origin here would flip capture straight to `on` and the offer would never render. And it must be
+ * FIXED, because it is rendered into `5-privacy.png` twice (banner head and button label) and the
+ * asset is committed — anything derived from the harness's own ephemeral port would change the
+ * PNG's bytes on every run.
+ */
+export const HARNESS_INSPECTED_ORIGIN = 'https://app.example.com';
+
+/**
  * Enough of `chrome` for the panel bundle to boot outside DevTools. Deliberately minimal: the
  * point is to render the panel's own markup, not to simulate Chrome.
  *
  * `no-devtools` leaves `chrome.devtools` absent, so the detection and origin paths take their
  * documented no-DevTools branch and the capture banner reads "Live capture only runs inside the
  * DevTools panel." That is the shape the gate has always asserted against.
+ *
+ * `devtools-ungranted` adds ONE more call — `inspectedWindow.eval` — and nothing else. That single
+ * API is what `app.tsx:32` uses to name the inspected origin, and naming it is the whole of what
+ * moves capture from `unsupported` (no page to attach to) to `off` (a page, and an offer to
+ * capture it). Everything else the panel would consult on that path is deliberately still absent,
+ * and each absence is the panel's own documented branch rather than a gap this shim gets away with:
+ *
+ *   - no `chrome.permissions`, so `hasOriginGrant` returns false (`grant.ts:69`) and the origin
+ *     stays ungranted. That is the state being photographed; stubbing `contains` to return false
+ *     would say the same thing at the cost of a second lie.
+ *   - no `chrome.devtools.network`, so `observeNetwork` returns its no-op unsubscribe
+ *     (`detect.ts:49`) and the banner's signal stays `none`. It also keeps the shot deterministic:
+ *     a `stream` signal would re-word the banner, and whether it arrived would depend on what the
+ *     page happened to request.
+ *   - no `chrome.runtime.connect`, which is never reached — the port effect returns early while
+ *     capture is `off` (`use-live-capture.ts:130`). Faking a service-worker port is the line this
+ *     shim must not cross: past it the panel is being told capture works, which is the one thing
+ *     the privacy shot must not stage.
+ *
+ * `eval` answers `location.origin` and NOTHING else. `probeFramework` reaches the same function
+ * with its `ng-version` expression (`detect.ts:103`), and answering that with the origin string
+ * would label the session with a framework fingerprint that was never read from any page — the
+ * screenshot would then carry a fabricated fact. `null` is the honest answer and the one the panel
+ * already handles.
  */
-export type ShimKind = 'no-devtools';
+export type ShimKind = 'no-devtools' | 'devtools-ungranted';
 
 export const SHIMS: Record<ShimKind, string> = {
   'no-devtools': `
     globalThis.chrome = {
       runtime: { getManifest: () => ({ version: '0.0.0-harness' }) },
+    };
+  `,
+  'devtools-ungranted': `
+    globalThis.chrome = {
+      runtime: { getManifest: () => ({ version: '0.0.0-harness' }) },
+      devtools: {
+        inspectedWindow: {
+          eval: (expression, callback) => {
+            callback(expression === 'location.origin' ? ${JSON.stringify(HARNESS_INSPECTED_ORIGIN)} : null);
+          },
+        },
+      },
     };
   `,
 };

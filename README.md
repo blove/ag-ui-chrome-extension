@@ -24,8 +24,8 @@ the validator rules, run metrics, the RFC 6902 JSON Patch state timeline, and th
 codec with redaction. 1,369 tests, plus a Playwright harness that drives the extension in a real
 browser against real sockets.
 
-What is not done: the Chrome Web Store submission itself. The listing pipeline is built and two of
-its five screenshots are still blocked — see [Store listing assets](#store-listing-assets).
+What is not done: the Chrome Web Store submission itself. The listing pipeline is built and all five
+of its screenshots render — see [Store listing assets](#store-listing-assets).
 
 ## Privacy
 
@@ -95,9 +95,9 @@ silently ignores.
 
 Everything the Chrome Web Store form needs is generated from the build, in this order — icons are
 *source* (Vite copies `public/` into `dist/`), screenshots read `dist/`, so they sit on opposite
-sides of `pnpm build`. Run each command on its own line rather than chaining with `&&`:
-`listing:assets` exits 1 today, by design (see below), and a chained sequence would never reach
-`verify:listing`.
+sides of `pnpm build`. `listing:assets` exits non-zero the moment a storyboard shot's subject goes
+missing, so run each command on its own line rather than chaining with `&&`, or a refusal will take
+`verify:listing` down with it.
 
     pnpm icons
     pnpm build
@@ -106,9 +106,12 @@ sides of `pnpm build`. Run each command on its own line rather than chaining wit
 
 Copy lives in `packages/devtools/listing/copy.md`; the generated upload set lands in
 `packages/devtools/listing/out/`. `pnpm listing:assets` fails while any storyboard shot's subject is
-unreachable, rather than quietly shipping a short gallery. **Four of five shots render today.** The
-one that does not is the privacy shot, whose subject is the per-origin capture grant prompt — that
-needs a live, granted origin, which this harness cannot produce. See
+unreachable, rather than quietly shipping a short gallery, and a refused shot deletes its own stale
+PNG so the directory can never claim a delivery the run denied. **All five shots render today**, so
+the command exits 0 — which is the gallery having caught up with the product, not the gates being
+relaxed. The last one to land was the privacy shot: its subject is the per-origin capture grant
+offer, and what it needed turned out to be an *un*granted origin and no imported capture, so the
+frame is the extension's honest first-run state. See
 [the listing design](docs/superpowers/specs/2026-08-15-chrome-web-store-listing-design.md).
 
 ### Tests

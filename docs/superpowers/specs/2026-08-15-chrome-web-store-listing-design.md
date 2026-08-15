@@ -145,15 +145,16 @@ Five screenshots, one message each, hero first.
 | 2 | Protocol violations, named and located | The flagged row selected in context, detail showing the rule | ✅ |
 | 3 | Watch state rebuild, patch by patch | State tab, RFC 6902 patch timeline | ✅ since the State tab shipped |
 | 4 | Record a run. Replay it anywhere. | The export panel: §11's five redaction groups, and the `.agui.jsonl` download | ✅ since the export panel shipped |
-| 5 | No network egress. Ever. | Per-origin capture grant | ⏳ needs a live, granted source |
+| 5 | No network egress. Ever. | The capture banner over an empty panel: `Enable capture for https://app.example.com` | ✅ since the `devtools-ungranted` shim |
 
-**This table has been wrong three times, in both directions.** It first claimed 4 and 5 were
+**This table has been wrong four times, in both directions.** It first claimed 4 and 5 were
 renderable and building them proved otherwise; it then listed 3 as blocked and the State tab
 shipped, at which point the generator produced that shot with no change to this pipeline at all;
-then it recorded shot 4 as blocked on harness work that could never have unblocked it. Every
-correction is kept rather than smoothed away, because this is the table someone reads to plan the
-submission — and because the second one is the evidence that L1 works: the gallery filled itself in
-as the product caught up.
+then it recorded shot 4 as blocked on harness work that could never have unblocked it; and finally
+it said shot 5 needed a *live, granted* source, when what it actually needed was the opposite — an
+UNGRANTED one. Every correction is kept rather than smoothed away, because this is the table
+someone reads to plan the submission — and because the second one is the evidence that L1 works:
+the gallery filled itself in as the product caught up.
 
 **Shot 4's blocker was mis-diagnosed, not merely unfinished.** This document previously said the one
 thing still refusing it was the harness shim, which leaves capture reporting `unavailable in this
@@ -174,16 +175,46 @@ because the Source row's `(imported 11:36:29 AM)` wall clock now sits above the 
 was rewritten to describe the redaction choice that is now on screen; the headline still carries the
 round trip.
 
-Shot 5 keeps the whole-tab scan, where it is the right test: its caption *is* a claim about the
-whole tab, and a column of "not detected" under "No network egress. Ever." reads as a broken product
-rather than a deliberate one. Its own subject is the grant prompt — privacy here is a choice the
-user is offered, not a sentence in a caption — and that banner is suppressed for an imported source,
-which is what every shot in this storyboard loads.
+**Shot 5's blocker was the frame, not the product.** It was recorded here as needing "a live,
+granted source", and that was backwards. `CaptureBanner` returns `null` outright for an imported
+source (`capture-status.tsx:54`) and renders no control at all while capture is `unsupported` — so
+what the shot needed was an inspected origin that has NOT been granted, and no fixture. Both were
+reachable without touching the product:
+
+- **A second harness shim, `devtools-ungranted`.** It adds exactly one call to `no-devtools`:
+  `chrome.devtools.inspectedWindow.eval`, answering `location.origin` with the RFC 2606 reserved
+  `https://app.example.com` and `null` to anything else. That is the whole API `resolveOrigin`
+  (`app.tsx:32`) uses to name the inspected page, and naming it is what moves capture from
+  `unsupported` to `off`. `chrome.permissions`, `chrome.devtools.network` and
+  `chrome.runtime.connect` stay absent — each is a branch the panel already handles honestly, and
+  faking a service-worker port would mean staging capture in the one shot about not capturing.
+- **No fixture.** Shot 5 is the one storyboard entry that imports nothing, which is what lets the
+  banner render at all.
+
+What is left is the extension's honest first-run state: an empty panel offering to enable capture on
+a site. The empty timeline is the **subject**, not a shortcoming — the tool ships inert and asks
+before it does anything, and a frame full of somebody's captured prompts under "No network egress.
+Ever." would argue the opposite.
+
+The shot **drops the whole-tab unbuilt-capability scan entirely**, and that scan is now deleted from
+`listing-assets.mts` rather than left unused. It was shot 5's second gate while shot 5 photographed
+the Session tab; the frame is now the Timeline, `.agui-session` is not in the image, and a gate
+looking at a tab its shot never opens is the same defect this document already records twice. The
+one gate left checks exactly one `.agui-banner__action` reading `Enable capture for <origin>`.
+
+The sub-caption changed with the framing. "Nothing is uploaded, synced, or persisted to disk" was
+written for a Session-tab frame; the toolbar is in this one, `Export (unredacted)` with it, and a
+flat no-disk claim over a visible export control is a caption arguing with its own pixels. It now
+reads "Per-origin opt-in, offered up front. No remote host permissions, no fetch, no telemetry." —
+`copy.md`'s own list under this same headline, every clause asserted by `pnpm verify:build`. It
+stops short of "capture is off until you grant an origin", which is false for the localhost family.
 
 `listing-assets.mts` **fails loudly** when a storyboard entry's required UI is absent, and a
 refused shot deletes its own stale asset, so the directory can never claim a delivery the run
-denied. Shot 2 is deliberately *not* filtered to the flagged row: "located" is a claim a
-one-row list cannot make.
+denied. All five render today, so the script now exits 0 — that is the L1 gallery filling in, not
+the gates being relaxed; both of shot 5's failure paths (the shim reverted, and a localhost origin
+that auto-enables straight to `on`) were re-verified to refuse and delete. Shot 2 is deliberately
+*not* filtered to the flagged row: "located" is a claim a one-row list cannot make.
 
 Promo tiles carry the mark, the name, and the summary line: 440×280 small tile, and a 1400×560
 marquee that is only used if the store features the item but costs nothing to emit alongside.
