@@ -31,6 +31,25 @@ describe('parseCopy', () => {
   it('rejects a document with no front matter', () => {
     expect(() => parseCopy('# no front matter')).toThrow(/front matter/i);
   });
+
+  // The one input that used to parse cleanly to the wrong string: there is no unquoting step, so
+  // `"AG-UI DevTools"` is 16 characters with the quotes in them, and every length check passes.
+  // Asserted at BOTH nesting levels because `rejectQuoted` has two call sites.
+  it('rejects a quoted value rather than keeping the quotes', () => {
+    const quotedTitle = VALID.replace(/^title: .*$/m, 'title: "AG-UI DevTools"');
+    expect(() => parseCopy(quotedTitle)).toThrow(/quoted/i);
+
+    const quotedPermission = VALID.replace(
+      /^ {2}storage: .*$/m,
+      "  storage: 'Per-origin opt-in only.'",
+    );
+    expect(() => parseCopy(quotedPermission)).toThrow(/quoted/i);
+  });
+
+  it('blames the indent, not the colon, when a nested key is misindented', () => {
+    const misindented = VALID.replace(/^ {2}storage: .*$/m, '    storage: Per-origin opt-in only.');
+    expect(() => parseCopy(misindented)).toThrow(/two spaces/i);
+  });
 });
 
 describe('checkCopy', () => {
@@ -76,5 +95,28 @@ describe('checkCopy', () => {
   it('fails an empty detailed description', () => {
     const empty = VALID.slice(0, VALID.lastIndexOf('---') + 3);
     expect(checkCopy(parseCopy(empty), MANIFEST_PERMISSIONS).join(' ')).toMatch(/description/i);
+  });
+
+  it('fails a detailed description over 16,000 characters', () => {
+    const bloated = VALID + 'x'.repeat(16_001);
+    expect(checkCopy(parseCopy(bloated), MANIFEST_PERMISSIONS).join(' ')).toMatch(
+      /description.*16000/i,
+    );
+  });
+
+  // The store's summary field is plain text; markup is rendered literally, not interpreted.
+  it('fails a summary containing markup', () => {
+    const markup = VALID.replace(/^summary: .*$/m, 'summary: Inspect <b>every</b> AG-UI event.');
+    expect(checkCopy(parseCopy(markup), MANIFEST_PERMISSIONS).join(' ')).toMatch(/markup/i);
+  });
+
+  it('fails a privacy_policy_url that is not https', () => {
+    const insecure = VALID.replace(
+      /^privacy_policy_url: .*$/m,
+      'privacy_policy_url: http://example.com/privacy',
+    );
+    expect(checkCopy(parseCopy(insecure), MANIFEST_PERMISSIONS).join(' ')).toMatch(
+      /privacy_policy_url.*https/i,
+    );
   });
 });
