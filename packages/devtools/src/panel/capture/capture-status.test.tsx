@@ -139,3 +139,33 @@ describe('CaptureBanner', () => {
     expect(screen.getByRole('status').textContent).not.toMatch(/angular/i);
   });
 });
+
+/*
+ * The one capture-on state that has no records and is not waiting for anything.
+ *
+ * "Waiting for a run — trigger one in the page" is the wrong sentence here: the run already
+ * happened, over a transport this phase cannot decode (requirements §5.4). Saying it anyway
+ * would send the reader to trigger runs forever.
+ */
+describe('CaptureBanner — binary transport', () => {
+  it('labels the binary transport instead of waiting for a run that already happened', () => {
+    const store = createPanelStore({
+      ...initialPanelState(),
+      capture: { kind: 'on', origin: 'http://localhost:3000' },
+      source: { kind: 'live', origin: 'http://localhost:3000' },
+      binaryTransport: {
+        connId: 'c1',
+        tMs: 3,
+        contentType: 'application/vnd.ag-ui.event+proto',
+        bytes: 512,
+      },
+    });
+    render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+
+    const banner = screen.getByRole('status');
+    expect(banner.textContent).toMatch(/binary transport/i);
+    expect(banner.textContent).toContain('application/vnd.ag-ui.event+proto');
+    expect(banner.textContent).toMatch(/decoding is not supported yet/i);
+    expect(banner.textContent).not.toMatch(/waiting for a run/i);
+  });
+});

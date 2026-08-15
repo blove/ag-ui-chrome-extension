@@ -71,6 +71,33 @@ export function CaptureBanner({ store, onEnable }: CaptureBannerProps): JSX.Elem
   }
 
   if (capture.kind === 'on') {
+    /*
+     * §5.4 / resolution C3, and it is checked BEFORE the records test on purpose.
+     *
+     * A binary connection carries no decodable frames, so this state has zero records and would
+     * otherwise fall through to "Waiting for a run — trigger one in the page". The run already
+     * happened; the panel simply cannot read it. Saying "waiting" would send the reader off to
+     * trigger runs forever, and an unlabelled empty capture is exactly the "silently capturing
+     * nothing" failure requirements §15 names.
+     */
+    const binary = state.binaryTransport;
+    if (binary !== null) {
+      return (
+        <div class="agui-banner agui-banner--info" role="status">
+          <p class="agui-banner__head">
+            This connection used a binary transport — decoding is not supported yet.
+          </p>
+          <p class="agui-banner__body">
+            Capture is on for {capture.origin} and saw {binary.bytes} bytes of{' '}
+            <code>{binary.contentType}</code> on connection <code>{binary.connId}</code>. AG-UI over
+            protobuf is detected and labelled in this phase but not decoded (requirements §5.4
+            defers that to phase 3), so no events can be shown for it. An SSE run on the same origin
+            still captures normally.
+          </p>
+        </div>
+      );
+    }
+
     if (state.records.length > 0) {
       return null;
     }

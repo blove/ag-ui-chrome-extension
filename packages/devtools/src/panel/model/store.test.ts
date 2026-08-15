@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { CaptureRecord, Run } from '../../core/model/types';
 import { initialPanelState, type DetectionSignal, type PanelState } from './panel-types';
 import {
+  captureOn,
   createPanelStore,
   loadFailed,
   raiseSignal,
@@ -11,9 +12,11 @@ import {
   selectTab,
   setCapture,
   setFramework,
+  setRecording,
   setTextFilter,
   toggleExpandChunks,
   toggleIssuesOnly,
+  togglePreserveLog,
 } from './store';
 
 function makeRecord(seq: number): CaptureRecord {
@@ -422,5 +425,73 @@ describe('createPanelStore', () => {
     store.set(initialPanelState());
     store.set(initialPanelState());
     expect(b).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('captureOn', () => {
+  it('sets capture and source together', () => {
+    const next = captureOn(initialPanelState(), 'http://localhost:5173');
+    expect(next.capture).toEqual({ kind: 'on', origin: 'http://localhost:5173' });
+    expect(next.source).toEqual({ kind: 'live', origin: 'http://localhost:5173' });
+  });
+
+  it('drops an imported capture rather than mixing it with a live one', () => {
+    const imported: PanelState = {
+      ...initialPanelState(),
+      source: { kind: 'imported', filename: 'happy.agui.jsonl', importedAtMs: 5 },
+      records: [makeRecord(1)],
+      runs: [makeRun('r1', [1])],
+      scope: 'r1',
+      selectedSeq: 1,
+      droppedBefore: 3,
+      loadError: 'one line could not be decoded',
+    };
+
+    const next = captureOn(imported, 'https://app.example');
+
+    expect(next.records).toEqual([]);
+    expect(next.runs).toEqual([]);
+    expect(next.issues).toEqual([]);
+    expect(next.scope).toBeNull();
+    expect(next.selectedSeq).toBeNull();
+    expect(next.droppedBefore).toBe(0);
+    expect(next.loadError).toBeNull();
+  });
+
+  it('drops a binary-transport label left over from an imported capture', () => {
+    const imported: PanelState = {
+      ...initialPanelState(),
+      source: { kind: 'imported', filename: 'happy.agui.jsonl', importedAtMs: 5 },
+      binaryTransport: { connId: 'c1', tMs: 1, contentType: 'application/proto', bytes: 9 },
+    };
+    expect(captureOn(imported, 'https://app.example').binaryTransport).toBeNull();
+  });
+
+  it('keeps live records when the origin is re-affirmed', () => {
+    const live = captureOn(initialPanelState(), 'https://app.example');
+    const withData: PanelState = { ...live, records: [makeRecord(1)], selectedSeq: 1 };
+    const next = captureOn(withData, 'https://app.example');
+    expect(next.records).toHaveLength(1);
+    expect(next.selectedSeq).toBe(1);
+  });
+});
+
+describe('recording and preserve-log', () => {
+  it('starts recording, so Enable begins capturing', () => {
+    expect(initialPanelState().recording).toBe(true);
+    expect(initialPanelState().preserveLog).toBe(false);
+  });
+
+  it('sets recording without touching capture', () => {
+    const on = captureOn(initialPanelState(), 'https://app.example');
+    const paused = setRecording(on, false);
+    expect(paused.recording).toBe(false);
+    expect(paused.capture).toEqual({ kind: 'on', origin: 'https://app.example' });
+  });
+
+  it('toggles preserve-log', () => {
+    const once = togglePreserveLog(initialPanelState());
+    expect(once.preserveLog).toBe(true);
+    expect(togglePreserveLog(once).preserveLog).toBe(false);
   });
 });

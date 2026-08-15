@@ -31,15 +31,36 @@ export type PanelSource =
 export type DetectionSignal = { level: 'none' } | { level: 'stream' };
 
 /**
- * Capture availability for the inspected origin. Phase 1 never reaches 'on'.
+ * Capture availability for the inspected origin.
  *
  * `unsupported` means there is no `chrome.devtools` to ask — the panel HTML opened outside
  * DevTools, which is what unit tests and the screenshot harness do.
+ *
+ * `on` says the origin is capture-enabled, NOT that records are arriving: pausing is
+ * `recording`, a separate field, because a paused panel is still attached to an enabled origin
+ * and folding the two would make Resume indistinguishable from a fresh grant.
  */
 export type CaptureStatus =
   | { kind: 'unsupported' }
   | { kind: 'off'; origin: string; signal: DetectionSignal }
   | { kind: 'on'; origin: string };
+
+/**
+ * A non-SSE transport seen on the inspected origin (requirements §5.4, resolution C3).
+ *
+ * Detected and LABELLED, never decoded — protobuf decoding is deferred to phase 3. The label is
+ * not decoration: a binary connection produces no records at all, so without it a protobuf
+ * stream reaches the panel as an empty capture, which is indistinguishable from capture being
+ * broken. §15 names exactly that as the failure to avoid.
+ */
+export interface BinaryTransport {
+  connId: string;
+  /** Arrival time of the first binary body on this connection. */
+  tMs: number;
+  contentType: string;
+  /** Bytes seen on this connection. Zero is meaningful — an empty binary body was still binary. */
+  bytes: number;
+}
 
 export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'session';
 
@@ -71,9 +92,32 @@ export interface PanelState {
   runs: Run[];
   records: CaptureRecord[];
   issues: Issue[];
-  /** Records evicted before the earliest retained one. Always 0 in phase 1; the UI reads it now so
-   *  P9 needs no retrofit when capture lands. */
+  /** Records evicted before the earliest retained one, counted by the live session (P9). */
   droppedBefore: number;
+  /**
+   * Record/pause. True means new records are wanted; false means the service worker has been
+   * told to stop buffering for this tab.
+   *
+   * Separate from `capture` on purpose — see the note there. It is `true` from the start so
+   * that enabling capture starts recording, which is what a user who just pressed Enable
+   * expects; the button reads Pause from the moment capture is on.
+   */
+  recording: boolean;
+  /**
+   * Keep the captured records across a navigation of the inspected page.
+   *
+   * Off by default, matching Chrome's own Network panel. When off, a navigation clears both
+   * ends: the panel's fold and the worker's buffer.
+   */
+  preserveLog: boolean;
+  /**
+   * The binary transport seen on this capture, if any. `null` until one is.
+   *
+   * Held beside the records rather than inside them because it is not a record: nothing was
+   * decoded, and inventing a `CaptureRecord` for it would be a claim about content this phase
+   * cannot make.
+   */
+  binaryTransport: BinaryTransport | null;
   expandChunks: boolean;
   selectedSeq: number | null;
   /** Set when a load fails; cleared on the next successful load. */
@@ -87,8 +131,9 @@ export interface PanelState {
  * immutable, but a shared `runs: []` array leaking into two stores is the kind of aliasing bug that
  * only shows up once a second panel exists.
  *
- * `capture` starts `unsupported` because phase 1 ships no capture layer (design §7) — the panel is
- * driven entirely by import until `setCapture` is called with something better.
+ * `capture` starts `unsupported` because there is nothing to ask until `chrome.devtools` has
+ * answered — the panel is driven entirely by import until `setCapture` or `captureOn` is called
+ * with something better.
  */
 export function initialPanelState(): PanelState {
   return {
@@ -102,6 +147,9 @@ export function initialPanelState(): PanelState {
     records: [],
     issues: [],
     droppedBefore: 0,
+    recording: true,
+    preserveLog: false,
+    binaryTransport: null,
     expandChunks: false,
     selectedSeq: null,
     loadError: null,
