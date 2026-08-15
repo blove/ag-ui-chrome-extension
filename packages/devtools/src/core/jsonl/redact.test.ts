@@ -265,7 +265,9 @@ describe('redactLine — state group', () => {
       },
     });
 
-    const out = redactLine(request, ['state']) as JsonlRequest;
+    // `text`, not `state`: message content is authored text, and that is the group a user
+    // deselects when they want their prompts kept out of a bug report.
+    const out = redactLine(request, ['text']) as JsonlRequest;
 
     expect(out).toEqual({
       kind: 'request',
@@ -285,7 +287,7 @@ describe('redactLine — state group', () => {
     });
   });
 
-  it('leaves the request alone when the state group is not selected', () => {
+  it('redacts request message content under the text group, which owns authored text', () => {
     const request: JsonlRequest = {
       kind: 'request',
       connId: 'c1',
@@ -295,7 +297,130 @@ describe('redactLine — state group', () => {
       input: { messages: [{ id: 'm_user_1', role: 'user', content: 'secret' }] },
     };
 
-    expect(redactLine(request, ['text', 'toolArgs'])).toEqual(request);
+    // The user selected `text`. Their own message IS text; leaving it verbatim because a
+    // different group was unselected published exactly what they asked to have removed.
+    expect(redactLine(request, ['text'])).toEqual({
+      ...request,
+      input: { messages: [{ id: 'm_user_1', role: 'user', content: '«redacted: 6 chars»' }] },
+    });
+  });
+
+  it('leaves the request alone when no group owning its payload is selected', () => {
+    const request: JsonlRequest = {
+      kind: 'request',
+      connId: 'c1',
+      tMs: 0,
+      method: 'POST',
+      url: '/run',
+      input: { messages: [{ id: 'm_user_1', role: 'user', content: 'secret' }] },
+    };
+
+    expect(redactLine(request, ['reasoning'])).toEqual(request);
+  });
+
+  it('redacts request input state, context and forwardedProps under the state group', () => {
+    const request: JsonlRequest = deepFreeze({
+      kind: 'request',
+      connId: 'c1',
+      tMs: 0,
+      method: 'POST',
+      url: '/run',
+      input: {
+        threadId: 't_1',
+        messages: [],
+        // Developer-authored schema, not user content: no §11 group owns it, and it is what
+        // makes a captured run readable.
+        tools: [{ name: 'get_weather', description: 'Look up weather' }],
+        state: { city: 'Paris', visits: 3 },
+        context: [{ description: 'user tier', value: 'enterprise' }],
+        forwardedProps: { sessionSecret: 'abc123' },
+      },
+    });
+
+    expect(redactLine(request, ['state'])).toEqual({
+      ...request,
+      input: {
+        threadId: 't_1',
+        messages: [],
+        tools: [{ name: 'get_weather', description: 'Look up weather' }],
+        state: { city: '«redacted: 5 chars»', visits: '«redacted: 1 chars»' },
+        context: [
+          { description: '«redacted: 9 chars»', value: '«redacted: 10 chars»' },
+        ],
+        forwardedProps: { sessionSecret: '«redacted: 6 chars»' },
+      },
+    });
+  });
+
+  it('redacts tool call arguments carried on an input message under the toolArgs group', () => {
+    const request: JsonlRequest = {
+      kind: 'request',
+      connId: 'c1',
+      tMs: 0,
+      method: 'POST',
+      url: '/run',
+      input: {
+        messages: [
+          {
+            id: 'm_a_1',
+            role: 'assistant',
+            content: null,
+            toolCalls: [
+              {
+                id: 'tc_1',
+                type: 'function',
+                function: { name: 'get_weather', arguments: '{"city":"Paris"}' },
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    expect(redactLine(request, ['toolArgs'])).toEqual({
+      ...request,
+      input: {
+        messages: [
+          {
+            id: 'm_a_1',
+            role: 'assistant',
+            content: null,
+            toolCalls: [
+              {
+                id: 'tc_1',
+                type: 'function',
+                // The name survives — it is structure. The arguments do not.
+                function: { name: 'get_weather', arguments: '«redacted: 16 chars»' },
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it('treats a tool-role input message body as a tool result, not as text', () => {
+    const request: JsonlRequest = {
+      kind: 'request',
+      connId: 'c1',
+      tMs: 0,
+      method: 'POST',
+      url: '/run',
+      input: {
+        messages: [{ id: 'm_t_1', role: 'tool', toolCallId: 'tc_1', content: '{"tempC":18}' }],
+      },
+    };
+
+    expect(redactLine(request, ['toolResults'])).toEqual({
+      ...request,
+      input: {
+        messages: [
+          { id: 'm_t_1', role: 'tool', toolCallId: 'tc_1', content: '«redacted: 12 chars»' },
+        ],
+      },
+    });
+    // ...and the text group must NOT reach it, or `toolResults` would be unable to protect it.
+    expect(redactLine(request, ['text'])).toEqual(request);
   });
 });
 
@@ -351,5 +476,85 @@ describe('redactLine — passthrough cases', () => {
       threadId: 't_1',
       runId: 'r_1',
     });
+  });
+
+  /*
+   * `RUN_STARTED.input` is an OPTIONAL protocol field (@ag-ui/core: RunStartedEventSchema) that
+   * echoes the whole `RunAgentInput` back on the wire — the same payload the request line
+   * carries, including the user's own messages.
+   *
+   * This was found by Tier B recording against a live agent, not by any test here: all three
+   * hand-written golden fixtures omit `input`, so the entire suite agreed that lifecycle events
+   * carry no payload. A real deployment sends it on every run. Redacting the request body while
+   * publishing the identical content from an event field is not partial protection — the
+   * exported bundle contains the user's prompts either way.
+   */
+  it('redacts RUN_STARTED.input, which echoes the whole RunAgentInput back on the wire', () => {
+    const line = ev({
+      type: 'RUN_STARTED',
+      threadId: 't_1',
+      runId: 'r_1',
+      input: {
+        threadId: 't_1',
+        runId: 'r_1',
+        messages: [{ id: 'u1', role: 'user', content: 'What is the weather in Paris?' }],
+        tools: [],
+        context: [],
+        state: { city: 'Paris' },
+        forwardedProps: {},
+      },
+    });
+
+    expect((redactLine(line, [...ALL_REDACTION_GROUPS]) as JsonlEvent).event).toEqual({
+      type: 'RUN_STARTED',
+      threadId: 't_1',
+      runId: 'r_1',
+      input: {
+        threadId: 't_1',
+        runId: 'r_1',
+        messages: [{ id: 'u1', role: 'user', content: '«redacted: 29 chars»' }],
+        tools: [],
+        context: [],
+        state: { city: '«redacted: 5 chars»' },
+        forwardedProps: {},
+      },
+    });
+  });
+
+  it('redacts RUN_STARTED.input by the same group ownership as a request line', () => {
+    const input = {
+      messages: [{ id: 'u1', role: 'user', content: 'secret' }],
+      state: { k: 'v' },
+    };
+    const line = ev({ type: 'RUN_STARTED', threadId: 't_1', runId: 'r_1', input });
+
+    // `text` reaches the message, not the state.
+    expect((redactLine(line, ['text']) as JsonlEvent).event).toEqual({
+      type: 'RUN_STARTED',
+      threadId: 't_1',
+      runId: 'r_1',
+      input: {
+        messages: [{ id: 'u1', role: 'user', content: '«redacted: 6 chars»' }],
+        state: { k: 'v' },
+      },
+    });
+
+    // `state` reaches the state, not the message.
+    expect((redactLine(line, ['state']) as JsonlEvent).event).toEqual({
+      type: 'RUN_STARTED',
+      threadId: 't_1',
+      runId: 'r_1',
+      input: {
+        messages: [{ id: 'u1', role: 'user', content: 'secret' }],
+        state: { k: '«redacted: 1 chars»' },
+      },
+    });
+  });
+
+  it('does not invent an input field on a RUN_STARTED that has none', () => {
+    const line = ev({ type: 'RUN_STARTED', threadId: 't_1', runId: 'r_1' });
+    const out = (redactLine(line, [...ALL_REDACTION_GROUPS]) as JsonlEvent).event;
+
+    expect(Object.keys(out as Record<string, unknown>)).toEqual(['type', 'threadId', 'runId']);
   });
 });
