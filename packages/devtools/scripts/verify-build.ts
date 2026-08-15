@@ -75,6 +75,14 @@ function listDistFiles(dir: string = distDir, prefix = ''): string[] {
  * legitimately end up one hop away. Following relative `.js` specifiers keeps the assertions
  * honest under code splitting instead of brittle. The service worker in particular is reached
  * through `service-worker-loader.js`, which is nothing but an import of the real chunk.
+ *
+ * Two specifier shapes, because CRXJS emits two. A content-script loader that runs in the MAIN
+ * world imports its chunk with a plain relative specifier (`"./inject.ts-hash.js"`), resolved
+ * against the loader's own directory. One that runs in the ISOLATED world has `chrome.runtime`
+ * available and uses `chrome.runtime.getURL("assets/relay.ts-hash.js")` instead — an
+ * extension-root path with no `./`, which the relative pattern does not match. Missing the
+ * second shape would silently reduce this guard to "the loader exists", which is exactly the
+ * class of blind spot the whole script was written to close.
  */
 function readBundle(entryRelative: string): { text: string; files: string[] } | undefined {
   const seen = new Set<string>();
@@ -101,6 +109,14 @@ function readBundle(entryRelative: string): { text: string; files: string[] } | 
       const specifier = match[1];
       if (specifier !== undefined) {
         queue.push(posix.normalize(posix.join(posix.dirname(rel), specifier)));
+      }
+    }
+    // `chrome.runtime.getURL("assets/…")` — resolved from the extension root, i.e. `dist/`.
+    const extensionUrls = text.matchAll(/getURL\(\s*["']([^"']+\.js)["']\s*\)/g);
+    for (const match of extensionUrls) {
+      const specifier = match[1];
+      if (specifier !== undefined) {
+        queue.push(posix.normalize(specifier));
       }
     }
   }
@@ -144,6 +160,16 @@ interface EntryExpectation {
   role: string;
   /** Source module this entry is declared with in `manifest.config.ts`. */
   sourceFile: string;
+  /**
+   * Extra source modules the entry statically imports, which also count towards the
+   * "is this token still in the source?" staleness check.
+   *
+   * A required token has to live in the source somewhere, or the assertion against the bundle
+   * is a tautology. It does not have to live in the entry file itself: a string constant that
+   * an entry imports is just as much a rename-detector, and pinning it to the file that owns it
+   * is better than duplicating the literal to keep this script happy.
+   */
+  tokenSources?: string[];
   /** Emitted file named by `dist/manifest.json` for this entry. */
   emitted: string;
   /** Tokens that must appear in both the source and the emitted bundle. */
@@ -153,7 +179,7 @@ interface EntryExpectation {
 }
 
 function checkEntry(expectation: EntryExpectation): void {
-  const { role, sourceFile, emitted, required, forbidden } = expectation;
+  const { role, sourceFile, tokenSources = [], emitted, required, forbidden } = expectation;
 
   const sourceAbs = join(packageRoot, sourceFile);
   if (!existsSync(sourceAbs)) {
@@ -163,12 +189,24 @@ function checkEntry(expectation: EntryExpectation): void {
     );
     return;
   }
-  const sourceText = readFileSync(sourceAbs, 'utf8');
+  const searched = [sourceFile, ...tokenSources];
+  const missingSource = searched.filter((file) => !existsSync(join(packageRoot, file)));
+  if (missingSource.length > 0) {
+    fail(
+      `verify-build guard is stale (${role})`,
+      `tokenSources names ${missingSource.join(', ')}, which does not exist. ` +
+        `Point it at the module that now owns the marker.`,
+    );
+    return;
+  }
+  const sourceText = searched
+    .map((file) => readFileSync(join(packageRoot, file), 'utf8'))
+    .join('\n');
   for (const token of required) {
     if (!sourceText.includes(token)) {
       fail(
         `verify-build guard is stale (${role})`,
-        `Expected marker ${JSON.stringify(token)} no longer appears in ${sourceFile}. ` +
+        `Expected marker ${JSON.stringify(token)} no longer appears in ${searched.join(' or ')}. ` +
           `The build assertion for this entry is now meaningless — update the expectation ` +
           `table in scripts/verify-build.ts to a string the current source actually contains.`,
       );
@@ -247,7 +285,13 @@ function main(): void {
 
   const entryChunks: { role: string; file: string }[] = [];
 
-  const worlds: { world: string; role: string; required: string[]; forbidden: string[] }[] = [
+  const worlds: {
+    world: string;
+    role: string;
+    required: string[];
+    tokenSources?: string[];
+    forbidden: string[];
+  }[] = [
     {
       world: 'MAIN',
       role: 'MAIN-world content script',
@@ -263,8 +307,12 @@ function main(): void {
     {
       world: 'ISOLATED',
       role: 'ISOLATED-world relay content script',
-      // The postMessage listener and the message tag it filters on.
-      required: ['addEventListener', 'message', 'agui-dt'],
+      // The postMessage listener, the message tag it filters on, and the port name it
+      // forwards over — enough that no other module's chunk could satisfy all three.
+      required: ['addEventListener', 'message', 'agui-dt', 'agui-devtools-relay'],
+      // Both literals moved into the protocol modules the relay imports when the relay stopped
+      // being a stub; they are still exactly as rename-sensitive there.
+      tokenSources: ['src/inject/protocol.ts', 'src/sw/protocol.ts'],
       forbidden: [],
     },
   ];
@@ -293,6 +341,7 @@ function main(): void {
     checkEntry({
       role: spec.role,
       sourceFile,
+      tokenSources: spec.tokenSources,
       emitted,
       required: spec.required,
       forbidden: spec.forbidden,
