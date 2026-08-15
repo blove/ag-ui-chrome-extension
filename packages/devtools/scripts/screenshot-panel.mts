@@ -737,9 +737,18 @@ async function checkState(browser: Browser, origin: string): Promise<void> {
     }
 
     const firstFailed = ticks.find((tick) => tick.failed);
-    const firstOk = ticks.find((tick) => !tick.failed);
+    /*
+     * The comparison has to be against a position of the SAME kind.
+     *
+     * Measured, by deleting the `[data-failed='true']` rule and re-running this gate: a failed
+     * delta tick reverts to the plain tick background, which still differs from the SNAPSHOT
+     * tick's — so comparing against "the first surviving position" passed a panel with no red in
+     * it at all. Every surviving delta is the honest reference.
+     */
+    const survivingDeltas = ticks.filter((tick) => !tick.failed && tick.kind === 'delta');
+    const firstOk = survivingDeltas[0];
     if (firstFailed === undefined || firstOk === undefined) {
-      fail('the state-edge scrubber has no failed position, or no surviving one, to compare.');
+      fail('the state-edge scrubber has no failed position, or no surviving delta, to compare.');
     } else {
       // The point of §9.3, measured: the mark is where the failure happened, not summarized at
       // the end. Frame 4 of 7 sits just past the middle of the track.
@@ -754,11 +763,12 @@ async function checkState(browser: Browser, origin: string): Promise<void> {
             'is a mark the reader has to scrub to interpret.',
         );
       }
-      if (firstFailed.background === firstOk.background) {
+      const clash = survivingDeltas.find((tick) => tick.background === firstFailed.background);
+      if (clash !== undefined) {
         fail(
-          `a failed position is painted ${firstFailed.background}, exactly like a position whose ` +
-            'patch applied. §9.3 asks for failed patches marked RED at their position; an ' +
-            'unmarked tick is indistinguishable from a clean timeline.',
+          `a failed position is painted ${firstFailed.background}, exactly like position ` +
+            `${String(clash.index)}, whose patch applied. §9.3 asks for failed patches marked RED ` +
+            'at their position; an unmarked tick is indistinguishable from a clean timeline.',
         );
       }
       if (
