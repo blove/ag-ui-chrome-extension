@@ -1,5 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { installInject, MARKER_VERSION, type InjectHost } from './inject';
+// Side-effect import, and load-bearing: `inject.ts` is the manifest entry and its whole job is to
+// call `installInject(window)` when it is loaded. Two tests below assert that it did — an entry
+// that stopped installing itself would be a dead content script, and importing only `./install`
+// would let that pass. Kept first so the install happens before any test reads `window`.
+import './inject';
+// `./install`, not `./inject`, for the exports: the entry is built as a standalone IIFE and must
+// export nothing, because rollup gives an IIFE with exports a named global to hang them on and
+// that would put a `window.inject` on every page. So the implementation lives one module in.
+import { installInject, MARKER_VERSION, type InjectHost } from './install';
 import { AGUI_DT_SOURCE, PROTOCOL_VERSION, isInjectMessage, type InjectMessage } from './protocol';
 
 const SSE = 'text/event-stream';

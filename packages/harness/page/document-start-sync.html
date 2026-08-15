@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AG-UI harness — synchronous document_start</title>
+    <script>
+      // The HARDEST case for capture: a stream opened by the page's first synchronous inline
+      // script, with no wait for anything.
+      //
+      // `document-start.html` polls for `window.__AGUI_DEVTOOLS__` before opening its stream, so
+      // it can only ever test the window between the MAIN patch being installed and the ISOLATED
+      // relay listening. This page waits for nothing at all. It is therefore a direct test of
+      // whether the content scripts are SYNCHRONOUS: while they were emitted as CRXJS loaders
+      // that `await import(...)`ed their real chunk, `EventSource` was still the page's own at
+      // the moment this line runs, this connection was never patched, and the whole stream was
+      // invisible to capture — silently, with nothing in the ring buffer to show for it.
+      //
+      // Both scripts are now built as self-contained IIFEs (`contentScripts.standaloneFiles`),
+      // so both have finished running before the parser reaches this script. If this page ever
+      // captures nothing again, the loader is back.
+      (function () {
+        const source = new EventSource('/agui-document-start?sync=1');
+        source.onmessage = (event) => {
+          // Closing on the terminal event stops `EventSource` reconnecting on its own; a retry
+          // would open a SECOND connection and the test asserts on exactly one request line.
+          if (String(event.data).includes('RUN_FINISHED')) source.close();
+        };
+        source.onerror = () => {
+          source.close();
+        };
+      })();
+    </script>
+  </head>
+  <body>
+    <h1>synchronous document_start capture</h1>
+    <p id="ready">ready</p>
+  </body>
+</html>

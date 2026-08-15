@@ -13,6 +13,14 @@ import { defineManifest } from '@crxjs/vite-plugin';
  * Entry-point values are SOURCE paths, not the built filenames shown in §12. CRXJS
  * resolves them relative to the Vite project root and rewrites them in the emitted
  * dist/manifest.json.
+ *
+ * BOTH content-script paths below are ALSO listed in `contentScripts.standaloneFiles` in
+ * `vite.config.ts`, and the two lists must not drift. Without that listing CRXJS emits a content
+ * script as an async loader that dynamic-imports its real chunk, and publishes that chunk in
+ * `web_accessible_resources` scoped to the matches below — i.e. to localhost. A MAIN-world script
+ * runs in the PAGE's world, so on an origin granted at runtime (D3) the import is denied and
+ * capture silently never starts. `scripts/verify-build.ts` fails the build if the two files drift,
+ * or if the emitted scripts stop being self-contained.
  */
 
 const LOCALHOST_MATCHES = [

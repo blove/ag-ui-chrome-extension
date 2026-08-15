@@ -4,25 +4,25 @@
     <meta charset="utf-8" />
     <title>AG-UI harness — document_start</title>
     <script>
-      // The async-load window, reproduced.
+      // The conn-open re-statement, exercised.
       //
-      // BOTH content scripts are injected at `document_start` and BOTH are wrapped by CRXJS in a
-      // loader that `await import(...)`s the real chunk, so neither has run when the parser
-      // reaches this inline script. The MAIN-world loader resolves a plain relative specifier;
-      // the ISOLATED one additionally goes through `chrome.runtime.getURL` and a
-      // web-accessible-resource fetch, so MAIN is the likelier of the two to win.
-      //
-      // This page therefore starts the moment the MAIN-world marker appears — the earliest
-      // instant at which capture exists at all — which is squarely inside the window where the
-      // ISOLATED relay may not yet be listening. `EventSource` posts `conn-open` synchronously
+      // This page starts its stream the moment the MAIN-world marker appears — the earliest
+      // instant at which capture exists at all. `EventSource` posts `conn-open` synchronously
       // from its constructor, and `conn-open` is the message carrying `RunAgentInput`, so that
-      // is the message at risk. The MAIN world re-states it ahead of the first `frames` batch;
-      // the stream's first event is delayed server-side, exactly as a real network response is.
+      // is the message at risk if the ISOLATED relay is not listening yet. The MAIN world
+      // re-states it ahead of the first `frames` batch; the stream's first event is delayed
+      // server-side, exactly as a real network response is.
       //
-      // MEASURED LIMITATION, not covered by the re-statement: a stream opened before the
-      // MAIN-world loader resolves — an inline script at the very top of `<head>` with no wait —
-      // is invisible to capture entirely, because `EventSource` has not been patched yet. That
-      // needs an import-free MAIN entry, not a protocol change.
+      // HISTORY, because it explains the shape of this file. Both content scripts used to be
+      // emitted as CRXJS loaders that `await import(...)`ed their real chunk, so neither had run
+      // when the parser reached this script and the wait above was the only way to reach capture
+      // at all. Both are now self-contained IIFEs, so the wait is no longer load-bearing here —
+      // but the re-statement it exercises still is, because MAIN and ISOLATED injection order is
+      // not guaranteed, least of all for the two independent scripts
+      // `chrome.scripting.registerContentScripts` creates on a runtime-granted origin.
+      //
+      // `document-start-sync.html` is the version of this page that waits for nothing, and is
+      // what covers the synchronous case the loader made impossible.
       (function waitForCapture() {
         if (!window.__AGUI_DEVTOOLS__) {
           setTimeout(waitForCapture, 0);

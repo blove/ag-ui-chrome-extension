@@ -4,7 +4,17 @@ import { crx } from '@crxjs/vite-plugin';
 import manifest from './manifest.config';
 
 export default defineConfig(({ mode }) => ({
-  plugins: [preact(), crx({ manifest })],
+  plugins: [
+    preact(),
+    crx({
+      manifest,
+      contentScripts: {
+        // See the long comment in manifest.config.ts. Both content-script entries are built as
+        // SELF-CONTAINED IIFE bundles rather than as CRXJS's default async loader + chunk pair.
+        standaloneFiles: ['src/inject/inject.ts', 'src/relay/relay.ts'],
+      },
+    }),
+  ],
   build: {
     target: 'es2022',
     outDir: 'dist',

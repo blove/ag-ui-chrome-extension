@@ -32,6 +32,11 @@ export async function buildPage(): Promise<void> {
   // No bundle of its own: the point of this page is an INLINE script in `<head>`, which is the
   // earliest page code that can run after the document_start content scripts.
   copyFileSync(join(pageRoot, 'document-start.html'), join(outDir, 'document-start.html'));
+  // Same reason, one notch earlier: this one does not wait for the marker either.
+  copyFileSync(
+    join(pageRoot, 'document-start-sync.html'),
+    join(outDir, 'document-start-sync.html'),
+  );
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
