@@ -187,7 +187,7 @@ describe('Toolbar controls', () => {
     const store = createPanelStore(
       stateWith({
         source: { kind: 'imported', filename: 'happy-run.agui.jsonl', importedAtMs: 5 },
-        capture: { kind: 'off', origin: 'https://example.test', aguiDetected: true },
+        capture: { kind: 'off', origin: 'https://example.test', signal: { level: 'stream' } },
         records: [record(1)],
         issues: [ERROR_ISSUE],
         scope: 'r_1',
@@ -208,7 +208,7 @@ describe('Toolbar controls', () => {
     expect(after.capture).toEqual({
       kind: 'off',
       origin: 'https://example.test',
-      aguiDetected: true,
+      signal: { level: 'stream' },
     });
   });
 

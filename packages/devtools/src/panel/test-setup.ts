@@ -48,9 +48,13 @@ interface ChromeStub {
     inspectedWindow: {
       tabId: number;
       /**
-       * Accepts the callback `App` passes but never invokes it, so the inspected origin stays
-       * unresolved and `capture` stays `unsupported` — which is the honest default for a test
-       * that has no inspected page. A test that wants an origin sets `capture` on the store.
+       * Answers every expression with `undefined`.
+       *
+       * The callback must actually be invoked — `probePageMarkers` returns a promise that only
+       * settles when it is, and a test that left it pending would leak an unresolved promise into
+       * the next one. `undefined` is the honest answer for a test with no inspected page: the
+       * origin stays unresolved, `capture` stays `unsupported`, and the marker probe resolves
+       * null. A test that wants either sets `capture` on the store or replaces this function.
        */
       eval: (expression: string, callback?: (result: unknown) => void) => void;
     };
@@ -61,7 +65,12 @@ const chromeStub: ChromeStub = {
   runtime: { getManifest: () => ({ version: '0.1.0' }) },
   devtools: {
     network: { onRequestFinished: createRequestEvent() },
-    inspectedWindow: { tabId: 1, eval: () => {} },
+    inspectedWindow: {
+      tabId: 1,
+      eval: (_expression, callback) => {
+        callback?.(undefined);
+      },
+    },
   },
 };
 

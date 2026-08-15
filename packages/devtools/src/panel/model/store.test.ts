@@ -1,10 +1,11 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
 import type { CaptureRecord, Run } from '../../core/model/types';
-import { initialPanelState, type PanelState } from './panel-types';
+import { initialPanelState, type DetectionSignal, type PanelState } from './panel-types';
 import {
   createPanelStore,
   loadFailed,
+  raiseSignal,
   selectScope,
   selectSeq,
   selectTab,
@@ -226,12 +227,12 @@ describe('toggleExpandChunks', () => {
 describe('setCapture', () => {
   it('replaces the capture status without mutating the input', () => {
     const next = expectPure(loadedState(), (s) =>
-      setCapture(s, { kind: 'off', origin: 'https://example.test', aguiDetected: true }),
+      setCapture(s, { kind: 'off', origin: 'https://example.test', signal: { level: 'stream' } }),
     );
     expect(next.capture).toEqual({
       kind: 'off',
       origin: 'https://example.test',
-      aguiDetected: true,
+      signal: { level: 'stream' },
     });
   });
 
@@ -239,6 +240,66 @@ describe('setCapture', () => {
     const on: PanelState = { ...loadedState(), capture: { kind: 'on', origin: 'https://a.test' } };
     const next = expectPure(on, (s) => setCapture(s, { kind: 'unsupported' }));
     expect(next.capture).toEqual({ kind: 'unsupported' });
+  });
+});
+
+/**
+ * P11's monotonic rule.
+ *
+ * Two independent detectors write this field — a page-load probe and a network watcher — and
+ * neither knows what the other found. Without a rule that the level only ever moves UP, a probe
+ * that resolves late would overwrite "a stream was seen" with the weaker "this looks like an AG-UI
+ * app", and the panel would quietly walk back a claim it had already earned.
+ */
+describe('raiseSignal', () => {
+  function off(signal: DetectionSignal): PanelState {
+    return { ...loadedState(), capture: { kind: 'off', origin: 'https://example.test', signal } };
+  }
+
+  it('raises none to markers', () => {
+    const next = expectPure(off({ level: 'none' }), (s) =>
+      raiseSignal(s, { level: 'markers', detail: 'ag-ui-shell element' }),
+    );
+    expect(next.capture).toEqual({
+      kind: 'off',
+      origin: 'https://example.test',
+      signal: { level: 'markers', detail: 'ag-ui-shell element' },
+    });
+  });
+
+  it('raises markers to stream', () => {
+    const next = raiseSignal(off({ level: 'markers', detail: 'Angular 21.1.6' }), {
+      level: 'stream',
+    });
+    expect(next.capture).toEqual({
+      kind: 'off',
+      origin: 'https://example.test',
+      signal: { level: 'stream' },
+    });
+  });
+
+  it('never lets markers arriving later downgrade a stream that was already seen', () => {
+    const seen = off({ level: 'stream' });
+    const next = raiseSignal(seen, { level: 'markers', detail: 'ag-ui-shell element' });
+    expect(next).toBe(seen);
+  });
+
+  it('ignores a repeat of the level already held, detail and all', () => {
+    const held = off({ level: 'markers', detail: 'ag-ui-shell element' });
+    expect(raiseSignal(held, { level: 'markers', detail: 'Angular 21.1.6' })).toBe(held);
+  });
+
+  it('ignores a level of none, which can never be an upgrade', () => {
+    const held = off({ level: 'none' });
+    expect(raiseSignal(held, { level: 'none' })).toBe(held);
+  });
+
+  it('leaves a capture that is not off alone — there is no offer to strengthen', () => {
+    const on: PanelState = { ...loadedState(), capture: { kind: 'on', origin: 'https://a.test' } };
+    expect(raiseSignal(on, { level: 'stream' })).toBe(on);
+
+    const unsupported = loadedState();
+    expect(raiseSignal(unsupported, { level: 'stream' })).toBe(unsupported);
   });
 });
 

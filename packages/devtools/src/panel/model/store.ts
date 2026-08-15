@@ -6,7 +6,7 @@
  * outside the store so they can be tested without constructing one, and so a component can compose
  * two of them into a single `update` without an intermediate render.
  */
-import type { CaptureStatus, PanelState, RunScope, TabId } from './panel-types';
+import type { CaptureStatus, DetectionSignal, PanelState, RunScope, TabId } from './panel-types';
 import { initialPanelState } from './panel-types';
 
 export interface PanelStore {
@@ -95,6 +95,29 @@ export function toggleExpandChunks(s: PanelState): PanelState {
 
 export function setCapture(s: PanelState, capture: CaptureStatus): PanelState {
   return { ...s, capture };
+}
+
+/** How much a level is worth. Only the ORDER matters; the numbers are never stored or shown. */
+const SIGNAL_RANK: Record<DetectionSignal['level'], number> = { none: 0, markers: 1, stream: 2 };
+
+/**
+ * Strengthen the detection signal on a capture-off origin. The level only ever moves UP.
+ *
+ * Two independent detectors write this field and neither knows what the other found: a page-load
+ * marker probe (one `inspectedWindow.eval` round trip) and a network watcher (whenever a response
+ * happens to finish). They race, so without a monotonic rule a probe that resolved late would
+ * overwrite "an event stream was seen" with the weaker "this looks like an AG-UI app" — the panel
+ * would visibly walk back a claim it had already earned, for no reason the user could see.
+ *
+ * Returns the input unchanged — the same object, so a memoized subscriber sees no change — when
+ * the new signal is not stronger, or when there is no offer to strengthen because capture is not
+ * `off`. An equal level is not stronger: a second markers probe does not replace the first
+ * probe's `detail`, since neither reading is better evidence than the other.
+ */
+export function raiseSignal(s: PanelState, signal: DetectionSignal): PanelState {
+  if (s.capture.kind !== 'off') return s;
+  if (SIGNAL_RANK[signal.level] <= SIGNAL_RANK[s.capture.signal.level]) return s;
+  return { ...s, capture: { ...s.capture, signal } };
 }
 
 export function loadFailed(s: PanelState, message: string): PanelState {

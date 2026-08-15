@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { JSX } from 'preact';
 import type { PanelStore } from './model/store';
-import { selectTab, setCapture } from './model/store';
+import { raiseSignal, selectTab, setCapture } from './model/store';
 import { usePanelState } from './model/use-panel-state';
 import { applyLoaded } from './import/apply-loaded';
 import { DropZone } from './import/drop-zone';
 import type { LoadedCapture } from './import/load-jsonl';
 import { loadJsonl } from './import/load-jsonl';
-import { observeNetwork } from './capture/detect';
+import { observeNetwork, probePageMarkers } from './capture/detect';
 import { CaptureBanner } from './capture/capture-status';
 import { ScopeBar } from './shell/scope-bar';
 import { RunSelector } from './shell/run-selector';
@@ -89,28 +89,41 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
   const retained = useRef<RetainedSource | null>(null);
   const appliedExpandChunks = useRef(state.expandChunks);
 
+  /*
+   * Name the origin, then fingerprint the page.
+   *
+   * The two are chained rather than run side by side because the signal has nowhere to live until
+   * the origin resolves: `signal` is a field of the capture-off status, and without an inspected
+   * window there is no capture-off status and nothing to strengthen. Both are one
+   * `inspectedWindow.eval` round trip and neither blocks a render.
+   *
+   * The offer does not wait for either of them — P11 — and the marker probe cannot lower what the
+   * network watcher below may already have raised, which is `raiseSignal`'s job.
+   */
   useEffect(() => {
+    let live = true;
     resolveOrigin((origin) => {
+      if (!live) return;
       store.update((s) =>
         s.capture.kind === 'unsupported'
-          ? setCapture(s, { kind: 'off', origin, aguiDetected: false })
+          ? setCapture(s, { kind: 'off', origin, signal: { level: 'none' } })
           : s,
       );
+      void probePageMarkers().then((markers) => {
+        if (live && markers !== null) store.update((s) => raiseSignal(s, markers));
+      });
     });
+    return () => {
+      live = false;
+    };
   }, [store]);
 
-  // P5's weaker detection path. It can say "an event stream finished on this origin" and nothing
-  // more, so all it does is flip `aguiDetected` — the offer to enable capture. It never claims
-  // the stream is AG-UI and never produces a record.
+  // The weaker of the two detection paths, and the strongest signal available. It can say "an
+  // event stream finished on this origin" and nothing more — it never claims the stream is AG-UI,
+  // never decodes, and never produces a record. All it does is strengthen the wording on an offer
+  // that was already on screen.
   useEffect(
-    () =>
-      observeNetwork(() => {
-        store.update((s) =>
-          s.capture.kind === 'off' && !s.capture.aguiDetected
-            ? setCapture(s, { ...s.capture, aguiDetected: true })
-            : s,
-        );
-      }),
+    () => observeNetwork(() => store.update((s) => raiseSignal(s, { level: 'stream' }))),
     [store],
   );
 

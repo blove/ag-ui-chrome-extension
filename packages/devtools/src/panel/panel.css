@@ -1015,11 +1015,12 @@ li[data-severity='warning'] .agui-detail__severity {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-/* --- Capture banner (P5, design §5) --------------------------------------
- * Three honest states plus phase 1's "no capture layer" one. The offer variant
- * is the only one that carries an action, so it is the only one tinted with the
- * accent; the quiet variant is deliberately unalarming — "nothing detected yet"
- * is a normal state, not a fault.
+/* --- Capture banner (P11, design §5) -------------------------------------
+ * Three honest states plus phase 1's "no capture layer" one. Under P11 every
+ * capture-off state carries the Enable button, so all three take the accent
+ * tint of the offer variant — a quieter treatment for the weakest signal would
+ * re-introduce exactly the "nothing here" reading P11 removed from the words.
+ * The info variant, which has no action, stays untinted.
  */
 
 .agui-banner {

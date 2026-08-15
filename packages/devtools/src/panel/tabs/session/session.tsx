@@ -30,6 +30,13 @@ function describeSource(source: PanelSource): string {
   }
 }
 
+/**
+ * The capture row, in the same three honest levels the banner uses (design decision P11).
+ *
+ * The `none` wording is the one that matters: it reports what the PANEL has seen, not a verdict
+ * on the page. A production AG-UI app sends nothing until the user types, so "nothing detected"
+ * would read as a finding when it is only an absence of evidence.
+ */
 function describeCapture(capture: CaptureStatus): string {
   switch (capture.kind) {
     case 'unsupported':
@@ -37,9 +44,14 @@ function describeCapture(capture: CaptureStatus): string {
     case 'on':
       return `on for ${capture.origin}`;
     case 'off':
-      return capture.aguiDetected
-        ? `off for ${capture.origin} — an event stream was detected`
-        : `off for ${capture.origin} — nothing detected yet`;
+      switch (capture.signal.level) {
+        case 'stream':
+          return `off for ${capture.origin} — an event stream was seen here`;
+        case 'markers':
+          return `off for ${capture.origin} — ${capture.signal.detail}`;
+        case 'none':
+          return `off for ${capture.origin} — nothing on the wire yet, which is normal before the first message`;
+      }
   }
 }
 

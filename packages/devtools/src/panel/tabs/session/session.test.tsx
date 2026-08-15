@@ -46,6 +46,32 @@ describe('Session', () => {
     expect(screen.getByText('on for http://localhost:3000')).toBeTruthy();
   });
 
+  it('reports a capture-off origin without claiming nothing is there', () => {
+    const store = createPanelStore({
+      ...initialPanelState(),
+      capture: { kind: 'off', origin: 'https://app.example', signal: { level: 'none' } },
+    });
+    render(<Session store={store} />);
+    const value = screen.getByText(/^off for https:\/\/app\.example/);
+    expect(value.textContent).toMatch(/nothing on the wire yet/i);
+    expect(value.textContent).not.toMatch(/nothing detected/i);
+  });
+
+  it('quotes the page-load markers behind a capture-off origin', () => {
+    const store = createPanelStore({
+      ...initialPanelState(),
+      capture: {
+        kind: 'off',
+        origin: 'https://app.example',
+        signal: { level: 'markers', detail: 'ag-ui-shell element · Angular 21.1.6' },
+      },
+    });
+    render(<Session store={store} />);
+    expect(
+      screen.getByText('off for https://app.example — ag-ui-shell element · Angular 21.1.6'),
+    ).toBeTruthy();
+  });
+
   it('reports undetected framework and endpoints rather than omitting them', () => {
     render(<Session store={createPanelStore()} />);
     expect(screen.getByText('Framework')).toBeTruthy();

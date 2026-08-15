@@ -27,10 +27,15 @@ export type DetectionSignal =
   | { level: 'markers'; detail: string }
   | { level: 'stream' };
 
-/** Capture availability for the inspected origin. Phase 1 never reaches 'on'. */
+/**
+ * Capture availability for the inspected origin. Phase 1 never reaches 'on'.
+ *
+ * `unsupported` means there is no `chrome.devtools` to ask — the panel HTML opened outside
+ * DevTools, which is what unit tests and the screenshot harness do.
+ */
 export type CaptureStatus =
   | { kind: 'unsupported' }
-  | { kind: 'off'; origin: string; aguiDetected: boolean }
+  | { kind: 'off'; origin: string; signal: DetectionSignal }
   | { kind: 'on'; origin: string };
 
 export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'session';

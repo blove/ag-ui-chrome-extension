@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { App } from './app';
 import { createPanelStore } from './model/store';
@@ -27,6 +27,54 @@ const CHUNKED =
 /** How many messages the run builder reconstructed — 0 unexpanded, 1 expanded. */
 function messageCount(store: ReturnType<typeof createPanelStore>): number {
   return store.get().runs[0]?.messages.size ?? -1;
+}
+
+/** Fire the DevTools network log's "a finished SSE response" event at `observeNetwork`. */
+function emitEventStream(): void {
+  const event = chrome.devtools.network.onRequestFinished as unknown as {
+    emit: (request: unknown) => void;
+  };
+  event.emit({ response: { content: { mimeType: 'text/event-stream', size: 0 }, headers: [] } });
+}
+
+type EvalFn = (expression: string, callback?: (result: unknown) => void) => void;
+
+interface EvalStub {
+  /** Answer the marker probe, at the moment the test chooses — the two detectors race. */
+  answerProbe: (result: unknown) => void;
+}
+
+/** Undo whatever `stubEval` installed, even for a test that failed before restoring it. */
+let restoreEval: (() => void) | null = null;
+afterEach(() => {
+  restoreEval?.();
+  restoreEval = null;
+});
+
+/**
+ * Give `App` an inspected page to talk to.
+ *
+ * The shared stub in `test-setup.ts` answers every `eval` with `undefined`, which is the honest
+ * default for a test with no inspected page. These two paths need one: `location.origin` is
+ * answered immediately, and the probe is held so the test can land it before or after a stream.
+ */
+function stubEval(origin: string): EvalStub {
+  const inspected = chrome.devtools.inspectedWindow as unknown as { eval: EvalFn };
+  const original = inspected.eval;
+  restoreEval = () => {
+    inspected.eval = original;
+  };
+  let pending: ((result: unknown) => void) | undefined;
+
+  inspected.eval = (expression, callback) => {
+    if (expression === 'location.origin') {
+      callback?.(origin);
+      return;
+    }
+    pending = callback;
+  };
+
+  return { answerProbe: (result) => pending?.(result) };
 }
 
 function dropOn(target: HTMLElement, name: string, text: string): void {
@@ -224,7 +272,7 @@ describe('App', () => {
   it('says why Enable cannot turn capture on in this build', () => {
     const store = createPanelStore({
       ...initialPanelState(),
-      capture: { kind: 'off', origin: 'https://app.example', aguiDetected: true },
+      capture: { kind: 'off', origin: 'https://app.example', signal: { level: 'stream' } },
     });
     render(<App store={store} />);
     fireEvent.click(screen.getByRole('button', { name: /enable capture for/i }));
@@ -232,29 +280,80 @@ describe('App', () => {
     expect(store.get().tab).toBe('session');
   });
 
-  it('flips the capture offer when the network observer detects an event stream', () => {
+  it('raises the signal to stream when the network observer sees one, offering Enable throughout', () => {
     const store = createPanelStore({
       ...initialPanelState(),
-      capture: { kind: 'off', origin: 'https://app.example', aguiDetected: false },
+      capture: { kind: 'off', origin: 'https://app.example', signal: { level: 'none' } },
     });
     render(<App store={store} />);
-    expect(screen.getByText(/no ag-ui stream detected/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /enable capture for/i })).toBeTruthy();
 
-    const event = chrome.devtools.network.onRequestFinished as unknown as {
-      emit: (request: unknown) => void;
-    };
     act(() => {
-      event.emit({
-        response: { content: { mimeType: 'text/event-stream', size: 0 }, headers: [] },
-      });
+      emitEventStream();
     });
 
     expect(store.get().capture).toEqual({
       kind: 'off',
       origin: 'https://app.example',
-      aguiDetected: true,
+      signal: { level: 'stream' },
     });
-    expect(screen.getByRole('button', { name: /enable capture for/i })).toBeTruthy();
+    expect(screen.getByText(/event stream was seen/i)).toBeTruthy();
+  });
+
+  it('raises the signal to markers from the page-load probe', async () => {
+    const stub = stubEval('https://app.example');
+    const store = createPanelStore();
+    render(<App store={store} />);
+
+    expect(store.get().capture).toEqual({
+      kind: 'off',
+      origin: 'https://app.example',
+      signal: { level: 'none' },
+    });
+
+    await act(async () => {
+      stub.answerProbe({ agui: 'ag-ui-shell', ngVersion: '21.1.6' });
+    });
+
+    expect(store.get().capture).toEqual({
+      kind: 'off',
+      origin: 'https://app.example',
+      signal: { level: 'markers', detail: 'ag-ui-shell element · Angular 21.1.6' },
+    });
+    expect(screen.getByText(/ag-ui-shell element · Angular 21\.1\.6/)).toBeTruthy();
+  });
+
+  /*
+   * P11's monotonic rule, end to end.
+   *
+   * The two detectors race: the page-load probe is one `inspectedWindow.eval` round trip, and a
+   * stream can finish before it answers. Whichever order they land in, the panel must never walk
+   * back from "a stream was seen" to the weaker "this looks like an AG-UI app".
+   */
+  it('never lets a late marker probe downgrade a stream already seen', async () => {
+    const stub = stubEval('https://app.example');
+    const store = createPanelStore();
+    render(<App store={store} />);
+
+    act(() => {
+      emitEventStream();
+    });
+    expect(store.get().capture).toEqual({
+      kind: 'off',
+      origin: 'https://app.example',
+      signal: { level: 'stream' },
+    });
+
+    await act(async () => {
+      stub.answerProbe({ agui: 'ag-ui-shell', ngVersion: '21.1.6' });
+    });
+
+    expect(store.get().capture).toEqual({
+      kind: 'off',
+      origin: 'https://app.example',
+      signal: { level: 'stream' },
+    });
+    expect(screen.getByText(/event stream was seen/i)).toBeTruthy();
   });
 
   it('leaves capture unsupported when there is no inspected window to ask', () => {

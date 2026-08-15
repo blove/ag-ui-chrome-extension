@@ -113,11 +113,19 @@ expected. Custom-element names beat framework globals, and the DOM attribute bea
 
 ## 5. Capture-off and first run
 
-Three honest states, never a silent empty one:
+Three honest states, never a silent empty one. Under P11 all three of the capture-off states offer
+Enable; the detection signal changes only the wording:
 
-- **AG-UI detected, capture off** — names the origin, offers Enable, explains the reload requirement
-- **Nothing detected yet** — says so plainly, so the panel does not read as broken
+- **An event stream was seen** (strongest) — names the origin, and says only what the network log
+  can support: an SSE response finished here, contents unknown
+- **This looks like an AG-UI app** — quotes the page-load markers of §4a, e.g. `ag-ui-shell element ·
+  Angular 21.1.6`, and says they are markup rather than traffic
+- **Capture is off for this origin** — says that AG-UI traffic often only appears once the user
+  sends a message, so the panel cannot tell yet. It may NOT say "nothing detected": that reads as a
+  verdict on the page when it is only an absence of evidence
 - **Capture on, idle** — waiting for a run
+
+All four explain the reload requirement, and the first three carry the same Enable button.
 
 Import is first-class here rather than a fallback. Dropping a `.agui.jsonl` on a panel with no
 capture loads it read-only with every tab working, which is the shareable-bug-report workflow from

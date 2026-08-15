@@ -11,31 +11,70 @@ function storeWith(capture: CaptureStatus, source: PanelSource = { kind: 'empty'
 }
 
 describe('CaptureBanner', () => {
-  it('offers Enable and states the reload requirement when AG-UI is detected', () => {
+  it('leads with the stream when one was seen, and states the reload requirement', () => {
     const onEnable = vi.fn();
     render(
       <CaptureBanner
-        store={storeWith({ kind: 'off', origin: 'https://app.example', aguiDetected: true })}
+        store={storeWith({
+          kind: 'off',
+          origin: 'https://app.example',
+          signal: { level: 'stream' },
+        })}
         onEnable={onEnable}
       />,
     );
 
-    expect(screen.getByText(/detected on https:\/\/app\.example/i)).toBeTruthy();
+    expect(screen.getByText(/event stream was seen on https:\/\/app\.example/i)).toBeTruthy();
     expect(screen.getByText(/requires a reload of the inspected page/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /enable capture for/i }));
     expect(onEnable).toHaveBeenCalledTimes(1);
   });
 
-  it('says plainly that nothing has been detected, with no Enable button', () => {
+  it('quotes the page-load markers it found, and still offers Enable', () => {
     render(
       <CaptureBanner
-        store={storeWith({ kind: 'off', origin: 'https://app.example', aguiDetected: false })}
+        store={storeWith({
+          kind: 'off',
+          origin: 'https://app.example',
+          signal: { level: 'markers', detail: 'ag-ui-shell element · Angular 21.1.6' },
+        })}
         onEnable={vi.fn()}
       />,
     );
 
-    expect(screen.getByText(/no ag-ui stream detected on https:\/\/app\.example yet/i)).toBeTruthy();
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByText(/looks like an AG-UI app/i)).toBeTruthy();
+    expect(screen.getByText(/ag-ui-shell element · Angular 21\.1\.6/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /enable capture for/i })).toBeTruthy();
+  });
+
+  /*
+   * The whole point of P11.
+   *
+   * The old wording here claimed "no AG-UI stream detected on this origin", which is true and
+   * useless: measured against a real deployment, a production AG-UI app emits no AG-UI traffic
+   * until the user sends a message, so the detector has nothing to see at exactly the moment the
+   * user first opens the panel. The banner must say that the panel cannot tell yet — not that
+   * there is nothing there — and must offer Enable regardless.
+   */
+  it('never claims nothing is there when it has seen nothing, and offers Enable anyway', () => {
+    const onEnable = vi.fn();
+    render(
+      <CaptureBanner
+        store={storeWith({ kind: 'off', origin: 'https://app.example', signal: { level: 'none' } })}
+        onEnable={onEnable}
+      />,
+    );
+
+    expect(screen.getByText(/capture is off for https:\/\/app\.example/i)).toBeTruthy();
+    expect(screen.getByText(/only appears once you send a message/i)).toBeTruthy();
+    expect(screen.getByText(/cannot tell yet/i)).toBeTruthy();
+
+    const banner = screen.getByRole('status');
+    expect(banner.textContent).not.toMatch(/nothing detected/i);
+    expect(banner.textContent).not.toMatch(/no ag-ui stream/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /enable capture for/i }));
+    expect(onEnable).toHaveBeenCalledTimes(1);
   });
 
   it('says capture is on and idle while no records have arrived', () => {
@@ -78,17 +117,34 @@ describe('CaptureBanner', () => {
     expect(container.textContent).toBe('');
   });
 
-  it('re-renders when capture status changes', () => {
-    const store = storeWith({ kind: 'off', origin: 'https://app.example', aguiDetected: false });
+  it('re-renders as the signal is raised, and keeps offering Enable throughout', () => {
+    const store = storeWith({
+      kind: 'off',
+      origin: 'https://app.example',
+      signal: { level: 'none' },
+    });
     render(<CaptureBanner store={store} onEnable={vi.fn()} />);
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByRole('button', { name: /enable capture for/i })).toBeTruthy();
 
     act(() => {
       store.update((s) => ({
         ...s,
-        capture: { kind: 'off', origin: 'https://app.example', aguiDetected: true },
+        capture: {
+          kind: 'off',
+          origin: 'https://app.example',
+          signal: { level: 'markers', detail: 'ag-ui-shell element' },
+        },
       }));
     });
+    expect(screen.getByText(/looks like an AG-UI app/i)).toBeTruthy();
+
+    act(() => {
+      store.update((s) => ({
+        ...s,
+        capture: { kind: 'off', origin: 'https://app.example', signal: { level: 'stream' } },
+      }));
+    });
+    expect(screen.getByText(/event stream was seen/i)).toBeTruthy();
     expect(screen.getByRole('button', { name: /enable capture for/i })).toBeTruthy();
   });
 });

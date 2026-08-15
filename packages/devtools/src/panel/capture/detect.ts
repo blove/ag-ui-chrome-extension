@@ -20,7 +20,12 @@ function isEventStream(request: chrome.devtools.network.Request): boolean {
 }
 
 /**
- * Passive AG-UI detection over the DevTools network log (design decision P5).
+ * Passive AG-UI detection over the DevTools network log (design decision P11, formerly P5).
+ *
+ * Under P11 this no longer gates anything: the offer to enable capture is unconditional, and a
+ * detection here only strengthens the banner's wording. That is the correction P5 needed — it
+ * assumed the panel could wait for traffic before offering, and a production AG-UI app sends none
+ * until the user types.
  *
  * This is the WEAKER of the two detection paths, and deliberately so. The strong path is the
  * content classifier in `core/detect`, which reads live frames off the wire and can tell an
