@@ -128,10 +128,16 @@ describe('Session', () => {
     expect(value('Total')).toBe('4');
   });
 
-  it('states that export is not available rather than offering one', () => {
+  it('carries the export controls, disabled with a reason on an empty capture', () => {
     render(<Session store={createPanelStore()} />);
-    expect(screen.getByText('not available in phase 1')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /export/i })).toBeNull();
+
+    const download = screen.getByRole('button', {
+      name: /Download capture/,
+    }) as HTMLButtonElement;
+    expect(download.disabled).toBe(true);
+    expect(screen.getByTestId('agui-export-blocked').textContent).toBe(
+      'Nothing has been captured yet, so there is nothing to export.',
+    );
   });
 
   it('carries the import control and commits a dropped capture to the store', async () => {

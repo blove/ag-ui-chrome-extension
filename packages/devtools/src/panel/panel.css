@@ -1258,3 +1258,109 @@ code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.95em;
 }
+
+/* --- Export (Session tab, and the toolbar's error line) -------------------
+ * Every colour here is a token already declared in both schemes above. The
+ * controls reuse `.agui-toolbar__button` verbatim rather than restating it:
+ * one rule, so a control cannot end up styled in one band and bare in the
+ * other — which is exactly how this panel once shipped with no stylesheet at
+ * all.
+ */
+
+.agui-export {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 78ch;
+  color: var(--agui-fg);
+}
+
+.agui-export__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  background: var(--agui-surface);
+}
+
+.agui-export__groups:disabled {
+  opacity: 0.55;
+}
+
+.agui-export__legend {
+  padding: 0 4px;
+  color: var(--agui-fg-muted);
+  font-weight: 600;
+}
+
+.agui-export__group {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.agui-export__groups .agui-toolbar__button {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.agui-export__summary {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: var(--agui-surface-raised);
+  color: var(--agui-fg);
+  font-weight: 600;
+}
+
+/*
+ * The disabled-with-a-reason line. Not styled as an error: an empty capture is
+ * a normal state, and colouring it red would put the panel's one danger colour
+ * on something that is not a protocol error.
+ */
+.agui-export__blocked {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+  background: var(--agui-surface);
+  color: var(--agui-fg-muted);
+}
+
+/* Redaction that arrived with the file and cannot be undone (E3), and the cost
+ * of redacting tool arguments. Both are warnings about the FILE, not errors. */
+.agui-export__inherited,
+.agui-export__warning {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-warning-border);
+  border-radius: 3px;
+  background: var(--agui-warning-bg);
+  color: var(--agui-fg);
+}
+
+.agui-export__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agui-export__ok {
+  margin: 0;
+  color: var(--agui-fg-muted);
+}
+
+.agui-export__error,
+.agui-toolbar__export-error {
+  margin: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--agui-danger-border);
+  border-radius: 3px;
+  background: var(--agui-danger-bg);
+  color: var(--agui-danger);
+}
