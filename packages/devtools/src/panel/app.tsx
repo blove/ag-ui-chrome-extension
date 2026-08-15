@@ -18,11 +18,16 @@ import { Timeline } from './tabs/timeline/timeline';
 import { Messages } from './tabs/messages/messages';
 import { Session } from './tabs/session/session';
 
-/** Which milestone of the design's §7 sequencing each unbuilt tab belongs to. */
+/**
+ * Which milestone of the sequencing each unbuilt tab belongs to.
+ *
+ * The order is the one set out in the export-and-remaining-tabs design §9: Export, then Messages,
+ * then State, then Runs. Export and Messages have shipped, so these two are what is left.
+ */
 const COMING_NEXT: Record<'runs' | 'state', string> = {
-  runs: 'Runs is milestone 2 of the design §7 sequencing (Runs, then State, then Messages), built against the same imported fixtures as Timeline.',
+  runs: 'Runs is the last milestone of the sequencing, after State. It is a table of runs — thread, agent, outcome, duration, TTFT, event and issue counts — clicking through to Timeline scoped to that run.',
   state:
-    'State is milestone 2 of the design §7 sequencing, after Runs. It renders the reconstructed document with a scrubber over Run.stateTimeline.',
+    'State is the next milestone, after Messages. It renders the reconstructed document as a JSON tree with a scrubber over Run.stateTimeline, marking failed patches red at their position.',
 };
 
 /**

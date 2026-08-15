@@ -144,7 +144,7 @@ describe('App', () => {
   ])('names the milestone for the %s placeholder', (tab, heading) => {
     render(<App store={createPanelStore({ ...initialPanelState(), tab })} />);
     expect(screen.getByRole('heading', { name: heading })).toBeTruthy();
-    expect(screen.getByText(/milestone 2 of the design §7 sequencing/i)).toBeTruthy();
+    expect(screen.getByText(/milestone/i)).toBeTruthy();
   });
 
   it('renders Messages on the messages tab', () => {
