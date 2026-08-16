@@ -627,3 +627,134 @@ describe('the request lines an export has to put back', () => {
     expect(state.requests).toEqual([requestLine()]);
   });
 });
+
+/**
+ * `/info` agent discovery through the fold (spec §13 done-when #2).
+ *
+ * Two delivery routes, and the second is the one that matters: a panel is normally opened after
+ * the client has already connected, so the SNAPSHOT is how this fact usually arrives.
+ */
+describe('createLiveSession — /info agent discovery', () => {
+  const RUNTIME = {
+    version: '1.52.1-next.1',
+    mode: 'multi-route' as const,
+    agents: [
+      { id: 'a2ui_chat', name: 'a2ui_chat', description: '' },
+      { id: 'default', name: 'default', description: '' },
+    ],
+  };
+
+  it('starts with nothing, which is the common case rather than a failure', () => {
+    expect(initialPanelState().runtime).toBeNull();
+  });
+
+  it('folds a pushed info message into state', () => {
+    const session = createLiveSession();
+    const next = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: 'http://localhost:3000/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    expect(next.runtime).toEqual(RUNTIME);
+  });
+
+  it('adds no record and moves no seq', () => {
+    const session = createLiveSession();
+    const next = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: 'http://localhost:3000/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    expect(next.records).toEqual([]);
+    expect(next.runs).toEqual([]);
+    expect(next.issues).toEqual([]);
+  });
+
+  it('takes it off a snapshot, which is how a late panel gets it', () => {
+    const session = createLiveSession();
+    const next = session.apply(initialPanelState(), {
+      kind: 'snapshot',
+      records: [],
+      requests: [],
+      closed: [],
+      droppedBefore: 0,
+      loaded: true,
+      info: RUNTIME,
+    });
+    expect(next.runtime).toEqual(RUNTIME);
+  });
+
+  it('lets a snapshot with no runtime clear one this session was holding', () => {
+    // The worker retains this fact and states it on every snapshot, so the snapshot is the
+    // authority. Keeping the held value would carry a previous page's agent list across a
+    // reconnect that reported none.
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: 'http://localhost:3000/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    state = session.apply(state, {
+      kind: 'snapshot',
+      records: [],
+      requests: [],
+      closed: [],
+      droppedBefore: 0,
+      loaded: true,
+      info: null,
+    });
+    expect(state.runtime).toBeNull();
+  });
+
+  it('keeps the most recent answer rather than merging two', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c1',
+      tMs: 1,
+      url: '/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    state = session.apply(state, {
+      kind: 'info',
+      connId: 'c2',
+      tMs: 2,
+      url: '/api/copilotkit',
+      info: { version: '2.0.0', mode: 'single-route', agents: [] },
+    });
+    expect(state.runtime).toEqual({ version: '2.0.0', mode: 'single-route', agents: [] });
+  });
+
+  it('survives a refold, so Expand chunks does not erase it', () => {
+    const session = createLiveSession();
+    const state = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: '/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    // Metadata vanishing when the user pressed a display toggle would look exactly like metadata
+    // that was never captured.
+    expect(session.refold(state, { expandChunks: true }).runtime).toEqual(RUNTIME);
+  });
+
+  it('drops it on a clear, matching the worker', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: '/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    state = session.apply(state, { kind: 'cleared' });
+    expect(state.runtime).toBeNull();
+  });
+});

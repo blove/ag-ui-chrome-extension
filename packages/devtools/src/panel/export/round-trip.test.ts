@@ -15,6 +15,7 @@ import happyJsonl from '../../test/fixtures/happy-run.agui.jsonl?raw';
 import malformedJsonl from '../../test/fixtures/malformed.agui.jsonl?raw';
 import chunkedJsonl from '../../test/fixtures/chunked-run.agui.jsonl?raw';
 import edgeJsonl from '../../test/fixtures/messages-edge.agui.jsonl?raw';
+import infoJsonl from '../../test/fixtures/copilotkit-info.agui.jsonl?raw';
 import { encodeJsonl } from '../../core/jsonl/codec';
 import { ALL_REDACTION_GROUPS, type RedactionGroup } from '../../core/jsonl/redact';
 import { applyLoaded } from '../import/apply-loaded';
@@ -263,5 +264,78 @@ describe('done-when #7: a redacted export has no message text, and still validat
       'state-patch-failed@9',
       'run-never-terminated@10',
     ]);
+  });
+});
+
+/**
+ * Done-when #6 applied to the Session tab's own metadata.
+ *
+ * §10 says an imported capture loads "with every tab working", and Session is a tab. The `/info`
+ * agent list a capture saw is part of what that tab shows, so a round trip that lost it would
+ * hand a colleague a file whose Session tab reported an absence the original never had.
+ */
+describe('done-when #6: the /info metadata survives export and re-import', () => {
+  const AGENTS = ['a2ui_chat', 'default'];
+
+  test('the agent list an imported capture shows survives a re-export', () => {
+    const imported = afterImport(infoJsonl);
+    // Not vacuous: the capture really does carry the metadata before anything is exported.
+    expect(imported.runtime?.agents?.map((agent) => agent.id)).toEqual(AGENTS);
+    expect(imported.runtime?.version).toBe('1.52.1-next.1');
+    expect(imported.runtime?.mode).toBe('multi-route');
+
+    const reimported = afterImport(exportText(imported));
+    expect(reimported.runtime).toEqual(imported.runtime);
+  });
+
+  test('a LIVE capture exports its metadata, and the re-import shows the same Session', () => {
+    // The live path has no file to copy a header from — the metadata comes off the wire and
+    // `buildExport` is the only thing that can put it in the file.
+    const live: PanelState = {
+      ...afterImport(happyJsonl),
+      source: { kind: 'live', origin: 'http://localhost:3000' },
+      importedHeader: null,
+      runtime: {
+        version: '1.52.1-next.1',
+        mode: 'single-route',
+        agents: [{ id: 'default', name: 'default', description: '' }],
+      },
+    };
+    const reimported = afterImport(exportText(live));
+    expect(reimported.runtime).toEqual(live.runtime);
+    // Including the runtime MODE, which is a fact about the deployment requirements §4 asks for
+    // and which exists nowhere in the response body.
+    expect(reimported.runtime?.mode).toBe('single-route');
+  });
+
+  test('a redacted export keeps it, because no §11 group owns developer-authored metadata', () => {
+    /*
+     * The same reasoning already applied to `tools` in `redactInput` and to tool schemas
+     * elsewhere: §11's five groups are text, reasoning, toolArgs, toolResults and state, and an
+     * agent id, name, description or runtime version is none of those — it is source the
+     * developer wrote, not anything the user typed. Removing it would cost the reader of a shared
+     * bug report most of what makes the capture legible while protecting nothing.
+     */
+    const imported = afterImport(infoJsonl);
+    const redacted = afterImport(exportText(imported, [...ALL_REDACTION_GROUPS]));
+    expect(redacted.runtime).toEqual(imported.runtime);
+    expect(redacted.runtime?.agents?.map((agent) => agent.id)).toEqual(AGENTS);
+    // And the redaction that WAS asked for still happened, in the same file.
+    expect(exportText(imported, [...ALL_REDACTION_GROUPS])).toContain('«redacted:');
+  });
+
+  test('clearing and re-importing puts the same Session metadata back', () => {
+    const imported = afterImport(infoJsonl);
+    const text = exportText(imported);
+    const cleared = afterClear(imported);
+    expect(cleared.runtime).toBeNull();
+    expect(afterImport(text).runtime).toEqual(imported.runtime);
+  });
+
+  test('a capture that saw no /info response exports no claim about one', () => {
+    const imported = afterImport(happyJsonl);
+    expect(imported.runtime).toBeNull();
+    expect(exportText(imported)).not.toContain('"runtime"');
+    expect(afterImport(exportText(imported)).runtime).toBeNull();
   });
 });

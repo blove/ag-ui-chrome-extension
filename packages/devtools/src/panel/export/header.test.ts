@@ -166,3 +166,81 @@ describe('buildHeader', () => {
     expect(header.transport).toBe('binary');
   });
 });
+
+/**
+ * `/info` agent metadata in the header.
+ *
+ * It lives here rather than in a new line kind, and the reason is what an OLDER decoder does with
+ * each: `decodeJsonl` rejects an unknown `kind` and records an error for it, so a new kind would
+ * make a perfectly intact capture written by this build open in an older build reporting itself as
+ * damaged. An unknown object key is ignored by every JSON decoder ever written.
+ */
+describe('buildHeader — runtime metadata', () => {
+  const RUNTIME = {
+    version: '1.52.1-next.1',
+    mode: 'multi-route' as const,
+    agents: [{ id: 'default', name: 'default', description: '' }],
+  };
+
+  test('writes what this capture saw', () => {
+    const header = buildHeader({
+      previous: null,
+      groups: [],
+      toolVersion: '0.1.0',
+      exportedAtIso: '2026-08-15T12:00:00.000Z',
+      url: 'http://localhost:3000',
+      framework: null,
+      transport: 'sse',
+      runtime: RUNTIME,
+    });
+    expect(header.runtime).toEqual(RUNTIME);
+  });
+
+  test('omits the key entirely when the capture saw no /info response', () => {
+    // Absent rather than `null`: a `null` would decode as a claim that discovery ran and
+    // reported nothing, which is a different and false statement about the user's app.
+    const header = buildHeader({
+      previous: null,
+      groups: [],
+      toolVersion: '0.1.0',
+      exportedAtIso: '2026-08-15T12:00:00.000Z',
+      url: 'http://localhost:3000',
+      framework: null,
+      transport: 'sse',
+      runtime: null,
+    });
+    expect('runtime' in header).toBe(false);
+  });
+
+  test('preserves the imported capture’s runtime rather than this panel’s', () => {
+    // Same rule as `capturedAt`, `url` and `framework`: it describes the CAPTURE. Re-stamping it
+    // would say the shared file's stream came from a runtime it never touched.
+    const header = buildHeader({
+      previous: { ...IMPORTED, runtime: RUNTIME },
+      groups: [],
+      toolVersion: '0.1.0',
+      exportedAtIso: '2026-08-15T12:00:00.000Z',
+      url: null,
+      framework: null,
+      transport: 'sse',
+      runtime: { version: '9.9.9', mode: 'single-route', agents: [] },
+    });
+    expect(header.runtime).toEqual(RUNTIME);
+  });
+
+  test('copies rather than aliases the header it came from', () => {
+    const previous = { ...IMPORTED, runtime: RUNTIME };
+    const header = buildHeader({
+      previous,
+      groups: [],
+      toolVersion: '0.1.0',
+      exportedAtIso: '2026-08-15T12:00:00.000Z',
+      url: null,
+      framework: null,
+      transport: 'sse',
+      runtime: null,
+    });
+    expect(header.runtime).not.toBe(previous.runtime);
+    expect(header.runtime).toEqual(RUNTIME);
+  });
+});

@@ -318,3 +318,75 @@ describe('isInjectMessage — hostile input from the page', () => {
     }
   });
 });
+
+/**
+ * The `info` arm — the one message whose payload is a nested structure the panel renders and an
+ * export writes into a file someone shares. The MAIN world is the page's world, so a page can post
+ * a lookalike; the guard is what stands between one and the service worker.
+ */
+describe('isInjectMessage — the info arm', () => {
+  const info: InjectMessage = {
+    source: AGUI_DT_SOURCE,
+    v: PROTOCOL_VERSION,
+    kind: 'info',
+    connId: 'c1',
+    tMs: 4,
+    url: 'https://example.test/api/copilotkit/info',
+    info: {
+      version: '1.52.1-next.1',
+      mode: 'multi-route',
+      agents: [{ id: 'default', name: 'default', description: '' }],
+    },
+  };
+
+  it('accepts a well-formed info message in both runtime modes', () => {
+    expect(isInjectMessage(info)).toBe(true);
+    expect(isInjectMessage({ ...info, info: { ...info.info, mode: 'single-route' } })).toBe(true);
+    expect(isInjectMessage({ ...info, info: { version: null, mode: 'multi-route', agents: null } }))
+      .toBe(true);
+  });
+
+  it('rejects it without a connection, like every other arm', () => {
+    // Every arm belongs to a connection, and that is a privacy property rather than a convention:
+    // it is what makes "the page only sees traffic it caused" true by construction.
+    expect(isInjectMessage(without(info, 'connId'))).toBe(false);
+    expect(isInjectMessage({ ...info, connId: '' })).toBe(false);
+  });
+
+  it('rejects a missing or non-string url', () => {
+    expect(isInjectMessage(without(info, 'url'))).toBe(false);
+    expect(isInjectMessage({ ...info, url: 42 })).toBe(false);
+  });
+
+  it('rejects a missing or non-finite timestamp', () => {
+    expect(isInjectMessage(without(info, 'tMs'))).toBe(false);
+    expect(isInjectMessage({ ...info, tMs: Number.NaN })).toBe(false);
+  });
+
+  it('rejects a payload that is not a RuntimeInfo', () => {
+    expect(isInjectMessage(without(info, 'info'))).toBe(false);
+    expect(isInjectMessage({ ...info, info: null })).toBe(false);
+    expect(isInjectMessage({ ...info, info: 'agents' })).toBe(false);
+    expect(isInjectMessage({ ...info, info: { version: '1', agents: null } })).toBe(false);
+    expect(isInjectMessage({ ...info, info: { ...info.info, mode: 'sideways' } })).toBe(false);
+    expect(isInjectMessage({ ...info, info: { ...info.info, agents: [{ id: 'a' }] } })).toBe(false);
+  });
+
+  it('rejects a payload whose fields are inherited rather than owned', () => {
+    expect(isInjectMessage({ ...info, info: Object.create(info.info) as unknown })).toBe(false);
+  });
+
+  it('does not throw on a payload with a hostile getter', () => {
+    const hostile = {
+      ...info,
+      info: {
+        get version(): string {
+          throw new Error('boom');
+        },
+        mode: 'multi-route',
+        agents: null,
+      },
+    };
+    expect(isInjectMessage(hostile)).toBe(false);
+  });
+});

@@ -252,3 +252,61 @@ describe('loadJsonl: the header tells the fold what evidence is missing', () => 
     expect(key(loadJsonl(late).issues)).toEqual([]);
   });
 });
+
+/**
+ * The `/info` agent metadata a header can carry.
+ *
+ * `decodeJsonl` deliberately does not check field shapes, so a `runtime` key is whatever the file
+ * happened to contain — a hand-edited capture, a file from a later version, or something hostile.
+ * It reaches the Session tab and then a re-export, so it goes through the same grammar the relay
+ * and the service worker use.
+ */
+describe('loadJsonl: runtime metadata in the header', () => {
+  const RUNTIME = {
+    version: '1.52.1-next.1',
+    mode: 'multi-route',
+    agents: [{ id: 'default', name: 'default', description: '' }],
+  };
+
+  function withHeader(runtime: unknown): string {
+    const header: Record<string, unknown> = {
+      kind: 'header',
+      schemaVersion: 1,
+      tool: 'ag-ui-devtools@0.1.0',
+      capturedAt: '2026-08-15T10:00:00.000Z',
+      url: 'http://localhost:3000/',
+      transport: 'sse',
+      redacted: [],
+    };
+    if (runtime !== undefined) header.runtime = runtime;
+    return `${JSON.stringify(header)}\n`;
+  }
+
+  it('reads a well-formed runtime out of the header', () => {
+    expect(loadJsonl(withHeader(RUNTIME)).runtime).toEqual(RUNTIME);
+  });
+
+  it('reports no runtime when the header carries none — the common case', () => {
+    expect(loadJsonl(withHeader(undefined)).runtime).toBeNull();
+  });
+
+  it('drops a runtime this build cannot read, rather than repairing it', () => {
+    for (const bad of [null, 'runtime', { version: '1' }, { version: '1', mode: 'sideways', agents: null }]) {
+      expect(loadJsonl(withHeader(bad)).runtime).toBeNull();
+    }
+  });
+
+  it('keeps unknown fields out of what it hands the panel', () => {
+    const loaded = loadJsonl(
+      withHeader({ ...RUNTIME, extra: 'x', agents: [{ id: 'a', name: null, description: null, extra: 'y' }] }),
+    );
+    expect(JSON.stringify(loaded.runtime)).not.toContain('extra');
+    expect(loaded.runtime?.agents).toEqual([{ id: 'a', name: null, description: null }]);
+  });
+
+  it('does not treat an unreadable runtime as a decode error', () => {
+    // The line decoded fine; one of its optional fields did not. Reporting "this capture is
+    // incomplete" over a field the reader never asked about would be a false alarm.
+    expect(loadJsonl(withHeader('nonsense')).decodeErrors).toEqual([]);
+  });
+});

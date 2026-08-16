@@ -682,3 +682,117 @@ describe('relay — surviving a sleeping service worker (§15)', () => {
     expectSilent();
   });
 });
+
+/**
+ * The `info` arm across the boundary.
+ *
+ * `/info` agent discovery rides a request the page already made, so it crosses the same
+ * `postMessage` boundary as everything else and gets the same treatment: origin, source, shape,
+ * then a field-by-field rebuild. The rebuild matters more here than anywhere else — this is the
+ * one payload that ends up rendered in the panel and written into a shared `.agui.jsonl`.
+ */
+describe('relay — the info arm', () => {
+  function validInfo(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      source: AGUI_DT_SOURCE,
+      v: PROTOCOL_VERSION,
+      kind: 'info',
+      connId: 'c1',
+      tMs: 7,
+      url: 'https://example.test/api/copilotkit/info',
+      info: {
+        version: '1.52.1-next.1',
+        mode: 'multi-route',
+        agents: [{ id: 'default', name: 'default', description: '' }],
+      },
+      ...extra,
+    };
+  }
+
+  it('forwards it with the source tag dropped and nothing else changed', () => {
+    post(validInfo());
+    expect(forwarded(chromeHarness)).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        kind: 'info',
+        connId: 'c1',
+        tMs: 7,
+        url: 'https://example.test/api/copilotkit/info',
+        info: {
+          version: '1.52.1-next.1',
+          mode: 'multi-route',
+          agents: [{ id: 'default', name: 'default', description: '' }],
+        },
+      },
+    ]);
+    expectSilent();
+  });
+
+  it('strips extra keys from the message AND from the nested payload', () => {
+    // `isInjectMessage` proves the required fields are present; it does not prove nothing else
+    // is. `input` is the one value passed through by reference — this is not `input`.
+    post(
+      validInfo({
+        rogue: 'top level',
+        info: {
+          version: '1',
+          mode: 'single-route',
+          agents: [{ id: 'a', name: null, description: null, payload: 'nested' }],
+          audioFileTranscriptionEnabled: false,
+        },
+      }),
+    );
+    const [message] = forwarded(chromeHarness);
+    expect(JSON.stringify(message)).not.toContain('rogue');
+    expect(JSON.stringify(message)).not.toContain('nested');
+    expect(JSON.stringify(message)).not.toContain('audioFileTranscription');
+    expect(message).toEqual({
+      v: PROTOCOL_VERSION,
+      kind: 'info',
+      connId: 'c1',
+      tMs: 7,
+      url: 'https://example.test/api/copilotkit/info',
+      info: { version: '1', mode: 'single-route', agents: [{ id: 'a', name: null, description: null }] },
+    });
+    expectSilent();
+  });
+
+  it('drops a malformed payload silently', () => {
+    post(validInfo({ info: { version: '1', agents: null } }));
+    post(validInfo({ info: null }));
+    post(validInfo({ info: { version: '1', mode: 'multi-route', agents: [{ id: 3 }] } }));
+    expect(forwarded(chromeHarness)).toEqual([]);
+    expectSilent();
+  });
+
+  it('drops one posted from another origin or another frame', () => {
+    post(validInfo(), { origin: 'https://evil.test' });
+    post(validInfo(), { source: {} });
+    expect(forwarded(chromeHarness)).toEqual([]);
+    expectSilent();
+  });
+
+  it('drops one whose payload is not a plain clone', () => {
+    // A structured clone always has `Object.prototype`. Anything else did not come from
+    // `postMessage`, and its inherited properties may be accessors.
+    post(Object.assign(Object.create({ marker: 1 }) as object, validInfo()));
+    expect(forwarded(chromeHarness)).toEqual([]);
+    expectSilent();
+  });
+
+  it('does not throw when the payload fights back', () => {
+    const hostile = validInfo();
+    Object.defineProperty(hostile, 'info', {
+      get(): never {
+        throw new Error('boom');
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    expect(() => {
+      post(hostile);
+    }).not.toThrow();
+    expect(forwarded(chromeHarness)).toEqual([]);
+    expectSilent();
+  });
+});
