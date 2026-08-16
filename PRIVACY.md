@@ -73,6 +73,16 @@ arguments and results included. What happens to that file afterwards is up to yo
 you are about to attach to an issue, or send to anyone, with the same care as the conversation it
 came from.
 
+Selecting every category does not make the file empty of everything, and it is better to say so
+here than to let you find out from a diff. Structure survives by design, and so does anything the
+**developer** wrote rather than anything the **user** typed: event types, message and tool-call ids,
+JSON Pointer paths, tool names and their schemas, and — on a page backed by a CopilotKit runtime —
+the runtime version and the agent ids, names and descriptions its `/info` response reported. None of
+the five categories covers that material, because removing it would cost a bug report most of what
+makes it legible while protecting nothing anyone typed. If an agent id or description is itself
+sensitive in your deployment, a capture is not the place to find that out — check the file before
+you share it.
+
 ## Remote code
 
 None. The extension executes no remotely-hosted code, loads no external scripts, fonts, or styles,

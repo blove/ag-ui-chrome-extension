@@ -54,7 +54,9 @@ The tool sits on the wire where prompts and completions flow, so its posture is 
   actually needs, and the export header records exactly what was redacted. Until you select a
   group the control reads **Export (unredacted)** and the file carries the real content of the
   streams you captured — so treat a capture you are about to share the way you would treat the
-  conversation it came from.
+  conversation it came from. Selecting every group still leaves what the *developer* wrote rather
+  than what the *user* typed: ids, paths, tool names and schemas, and any `/info` agent metadata.
+  [PRIVACY.md](PRIVACY.md) says exactly what survives.
 - **Bounded memory.** The capture buffer caps at a configurable default of 5k events / 8 MB, oldest
   dropped.
 
