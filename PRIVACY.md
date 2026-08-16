@@ -58,14 +58,20 @@ manifest, and if any remote host permission is declared statically.
 
 Export is the only way data leaves the extension, and you initiate it.
 
-For bug-report bundles, redaction is on by default: message text, reasoning content, tool arguments,
-tool results, and state values are replaced with a marker recording only how many characters were
-removed. Structure, types, ordering, sizes, and timings survive — which is what a protocol bug
-report actually needs. The export header records exactly which categories were redacted.
+**Redaction is opt-in, and off by default.** This is the one thing on this page most worth reading
+carefully, because it is the one place where assuming the safer behaviour would be wrong.
 
-**Unredacted export is available and clearly labelled as such.** If you choose it, the resulting
-file contains the real content of the streams you captured. What happens to that file afterwards is
-up to you; treat it with the same care as the conversation it came from.
+The export panel offers five categories — message text, reasoning content, tool arguments, tool
+results, and state values. Selecting any of them replaces that content with a marker recording only
+how many characters were removed, while structure, types, ordering, sizes, and timings survive,
+which is what a protocol bug report actually needs. The export header records exactly which
+categories were redacted.
+
+Until you select at least one, the export control is labelled **Export (unredacted)** and the file
+you get contains the real content of the streams you captured — prompts, completions, tool
+arguments and results included. What happens to that file afterwards is up to you. Treat a capture
+you are about to attach to an issue, or send to anyone, with the same care as the conversation it
+came from.
 
 ## Remote code
 
