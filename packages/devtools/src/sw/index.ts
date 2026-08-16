@@ -899,15 +899,19 @@ function attachPanelPort(port: chrome.runtime.Port): void {
  * holds the emitted shape.
  *
  * AND IT USED TO BE DRIVEN BY EXACTLY ONE EVENT, WHICH IS THE SECOND HALF OF THE SAME BUG.
- * `chrome.permissions.onAdded` fires when an origin is granted and never again. Chrome DROPS
- * dynamically registered content scripts when the extension is reloaded or updated — the
- * permission survives, the registration does not — so from the user's second day onwards capture
- * silently stopped for every origin they had ever granted, permanently, and re-granting could not
- * repair it because the origin was still granted and `onAdded` had nothing left to fire about. The
- * `catch` below used to assert the opposite in a comment ("registerContentScripts persists across
- * sessions by default"): true of a browser RESTART, false of an extension reload or update, and
- * that difference was the whole bug. Everything below reconciles instead of assuming, and the
- * reconciliation runs at module scope — see `reconcileRegistrations`.
+ * `chrome.permissions.onAdded` fires when an origin is granted and never again, while a dynamic
+ * registration does NOT reliably outlive the worker that made it — the permission survives, the
+ * registration does not. So from the user's second day onwards capture silently stopped for every
+ * origin they had ever granted, permanently, and re-granting could not repair it because the origin
+ * was still granted and `onAdded` had nothing left to fire about.
+ *
+ * The `catch` below used to assert the opposite, in a comment: "registerContentScripts persists
+ * across sessions by default". Measured, on this build, with `persistAcrossSessions: true` stated
+ * explicitly and a probe registration the reconciliation below cannot touch: a registration made in
+ * one session was GONE in the next, across a plain browser restart on the same profile and across a
+ * version bump alike. The precise cause does not matter and is deliberately not encoded anywhere
+ * here — reload, update, restart and idle respawn all reach the same place, and the reconciliation
+ * repairs the state it finds rather than predicting how it got there.
  */
 
 /**

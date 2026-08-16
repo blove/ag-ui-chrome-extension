@@ -274,8 +274,24 @@ extension is reloaded or updated, and keeps the host permission.** So after any 
 Capture died silently and permanently for every origin the user had ever granted. The only escape
 was to revoke the origin and grant it again, which nothing told them to do. The service worker
 stated the wrong assumption in a comment on the `catch` that swallowed the evidence:
-`registerContentScripts` "persists across sessions by default" — true of a browser **restart**,
-false of an extension **reload or update**, and that difference was the whole bug.
+`registerContentScripts` "persists across sessions by default".
+
+**Measured, rather than reasoned about.** A probe registration was made with
+`persistAcrossSessions: true` stated explicitly, under an id the reconciliation can neither restore
+nor remove, and the browser was relaunched on the same profile:
+
+| Second session | Probe registration |
+|---|---|
+| same version (a plain browser restart) | **gone** |
+| bumped version (an extension update) | **gone** |
+
+So the comment was not merely wrong about updates — the registration did not survive a new session
+at all. That was measured on an unpacked extension under `--load-extension`, which is how the
+harness loads it, and it is not proof about a Web-Store-installed build; what it does establish is
+that the assumption the old code rested on fails, in at least one ordinary configuration, for the
+plainest case it claimed. **The fix deliberately encodes no cause.** Reload, update, restart and
+idle respawn all arrive at the same worker spawn, and the reconciliation repairs the state it finds
+rather than predicting how it got there.
 
 Measured in a real browser on 2026-08-15, on an origin granted that morning: `window.fetch`
 unpatched, `XMLHttpRequest.prototype.open` unpatched, `window.__AGUI_DEVTOOLS__` absent — **before
