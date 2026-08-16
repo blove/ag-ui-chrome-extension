@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AG-UI harness — CopilotKit runtime</title>
+  </head>
+  <body>
+    <h1>CopilotKit runtime discovery harness</h1>
+    <!--
+      The page a CopilotKit-backed app looks like from the capture layer's point of view: it asks
+      the runtime what agents it has BEFORE anything is run, and only then runs one. Which of the
+      two discovery transports it uses is chosen by `?mode=` so a spec can drive each on its own —
+      see `copilotkit.ts`.
+    -->
+    <p>discovery: <output id="info">pending</output></p>
+    <form id="run-form">
+      <input id="prompt" name="prompt" value="happy" size="40" />
+      <button id="run" type="submit">Run</button>
+    </form>
+    <p>status: <output id="status">idle</output></p>
+    <p id="error" hidden></p>
+    <script type="module" src="./copilotkit.js"></script>
+  </body>
+</html>

@@ -83,6 +83,72 @@ const EARLY_EVENTS = [
  */
 const EARLY_FIRST_FRAME_DELAY_MS = 300;
 
+/**
+ * The CopilotKit runtime's base path, and the two shapes discovery arrives in.
+ *
+ * `GET {base}/info` is multi-route; `POST {base}` carrying `{"method":"info"}` is single-route.
+ * Both answer with the SAME body, which is the point — the mode is a fact about the request, not
+ * about the response, and it exists nowhere in these bytes.
+ */
+export const RUNTIME_BASE_PATH = '/api/copilotkit';
+
+/**
+ * The response measured live against the AG-UI Dojo at `GET /api/copilotkitnext/builtin/info`,
+ * verbatim — including `className` and `audioFileTranscriptionEnabled`, which the panel makes no
+ * claim about and must therefore be seen to discard rather than never be handed.
+ */
+export const RUNTIME_INFO = {
+  version: '1.52.1-next.1',
+  agents: {
+    a2ui_chat: { name: 'a2ui_chat', description: '', className: 'BuiltInAgent' },
+    default: { name: 'default', description: '', className: 'BuiltInAgent' },
+  },
+  audioFileTranscriptionEnabled: false,
+};
+
+function writeInfo(res: ServerResponse): void {
+  const body = JSON.stringify(RUNTIME_INFO);
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Content-Length': String(Buffer.byteLength(body)),
+  });
+  res.end(body);
+}
+
+/**
+ * Answer a single-route POST, but only for the envelope that actually asks for discovery.
+ *
+ * A runtime answering `{"method":"run"}` with an agent list would let a classifier bug pass
+ * unnoticed — the capture would look right because the server was lax, not because the request
+ * was recognised. So this reads the envelope the same way the classifier does.
+ */
+function writeSingleRoute(req: IncomingMessage, res: ServerResponse): void {
+  const chunks: Buffer[] = [];
+  req.on('data', (chunk: Buffer) => chunks.push(chunk));
+  req.on('end', () => {
+    let envelope: unknown;
+    try {
+      envelope = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch {
+      envelope = null;
+    }
+    const method =
+      typeof envelope === 'object' && envelope !== null
+        ? (envelope as Record<string, unknown>).method
+        : undefined;
+    if (method !== 'info') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `unsupported single-route method ${String(method)}` }));
+      return;
+    }
+    writeInfo(res);
+  });
+  req.on('error', () => {
+    if (!res.headersSent) res.writeHead(400);
+    if (!res.writableEnded) res.end();
+  });
+}
+
 function writeEarlyStream(res: ServerResponse): void {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -111,6 +177,15 @@ export function startPageServer(opts: { agentUrl: string; port?: number }): Prom
     }
     if (url.pathname === DOCUMENT_START_PATH) {
       writeEarlyStream(res);
+      return;
+    }
+    // Agent discovery, in both of the runtime's transports (spec §13 done-when #2).
+    if (url.pathname === `${RUNTIME_BASE_PATH}/info` && req.method === 'GET') {
+      writeInfo(res);
+      return;
+    }
+    if (url.pathname === RUNTIME_BASE_PATH && req.method === 'POST') {
+      writeSingleRoute(req, res);
       return;
     }
     // Chrome asks unprompted, and an unhandled 404 shows up as a console error, which the
