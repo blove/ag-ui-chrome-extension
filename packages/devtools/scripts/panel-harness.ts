@@ -71,10 +71,9 @@ export const HARNESS_INSPECTED_ORIGIN = 'https://app.example.com';
  * would label the session with a framework fingerprint that was never read from any page — the
  * screenshot would then carry a fabricated fact. `null` is the honest answer and the one the panel
  * already handles.
- */
-/**
+ *
  * `devtools-granted-unregistered` is the third, and it is the ONE case that has to cross the line
- * the note above draws — deliberately, and in the opposite direction.
+ * the `runtime.connect` note above draws — deliberately, and in the opposite direction.
  *
  * It stages a granted origin whose capture content scripts are NOT registered: the state Chrome
  * leaves behind after an extension update, which discards dynamic registrations and keeps the
@@ -135,6 +134,8 @@ export const SHIMS: Record<ShimKind, string> = {
                     droppedBefore: 0,
                     loaded: false,
                     info: null,
+                    // A real answer, not \`null\`: the worker HAS read Chrome and nothing is
+                    // registered. \`null\` would mean "not known yet", which warns about nothing.
                     registration: { matches: [], error: null },
                   });
                 }

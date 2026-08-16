@@ -92,6 +92,8 @@ interface ChromeStub {
    * reload or update and the state no test in this suite could previously describe.
    */
   grantedOrigins: string[];
+  /** Resolve reads held back by `deferScriptRead`. */
+  releaseScriptRead(): void;
 }
 
 interface StubOptions {
@@ -102,6 +104,14 @@ interface StubOptions {
   granted?: string[];
   /** Make `registerContentScripts` reject with this message, for the error-reporting path. */
   failRegistration?: string;
+  /**
+   * Hold `getRegisteredContentScripts` open until `releaseScriptRead()`.
+   *
+   * The real shape of a freshly spawned worker: the read is two async IPC hops and a panel can
+   * subscribe before it lands. This is the only way to pin the worker in the moment where it does
+   * not yet know what is registered.
+   */
+  deferScriptRead?: boolean;
 }
 
 function installChrome(session: Map<string, unknown> = new Map(), options: StubOptions = {}): ChromeStub {
@@ -111,6 +121,7 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
   const onPermissionsRemoved = new FakeEvent<[{ origins?: string[] }]>();
   const held: (() => void)[] = [];
   const registered: RegisteredScript[] = [...(options.registered ?? [])];
+  const heldScriptReads: (() => void)[] = [];
   const grantedOrigins: string[] = [...(options.granted ?? [])];
 
   const storageSession = {
@@ -172,7 +183,13 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
      * cannot mutate the stub's list through the value it was handed.
      */
     getRegisteredContentScripts(): Promise<RegisteredScript[]> {
-      return Promise.resolve(registered.map((script) => ({ ...script })));
+      const answer = (): RegisteredScript[] => registered.map((script) => ({ ...script }));
+      if (options.deferScriptRead !== true) return Promise.resolve(answer());
+      return new Promise<RegisteredScript[]>((resolve) => {
+        heldScriptReads.push(() => {
+          resolve(answer());
+        });
+      });
     },
   };
 
@@ -218,6 +235,12 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
     },
     removeTab: (tabId) => {
       onRemoved.emit(tabId);
+    },
+    releaseScriptRead: () => {
+      while (heldScriptReads.length > 0) {
+        const resolve = heldScriptReads.shift();
+        if (resolve) resolve();
+      }
     },
     releaseGet: () => {
       while (held.length > 0) {
@@ -857,7 +880,7 @@ describe('service worker — a second session against an existing grant', () => 
     // would get the capture layer injected twice — and the panel would report a registration for
     // an origin the worker does not actually own.
     expect(stub.registered.flatMap((script) => script.matches ?? [])).toEqual([GRANTED, GRANTED]);
-    expect(testHook().registration().matches).not.toContain('http://localhost/*');
+    expect(testHook().registration()?.matches).not.toContain('http://localhost/*');
   });
 
   it('leaves live registrations alone rather than registering them twice', async () => {
@@ -913,7 +936,7 @@ describe('service worker — a second session against an existing grant', () => 
       `agui-dt-0-${GRANTED}`,
       `agui-dt-1-${GRANTED}`,
     ]);
-    expect(testHook().registration().matches).toEqual([GRANTED]);
+    expect(testHook().registration()?.matches).toEqual([GRANTED]);
   });
 
   it('reports a real registration failure instead of swallowing it', async () => {
@@ -947,8 +970,39 @@ describe('service worker — a second session against an existing grant', () => 
 
     // Genuinely fine: something else registered it first. Reporting it would put a failure in
     // front of the user for a capture layer that is working.
-    expect(testHook().registration().error).toBeNull();
+    expect(testHook().registration()?.error).toBeNull();
     expect(stub.registered).toEqual([]);
+  });
+
+  it('says "not known yet" rather than "nothing registered" before it has read Chrome', async () => {
+    // `deferScriptRead` pins the worker in the moment that actually happens on every spawn: the
+    // reconciliation is async, and a panel can subscribe before it lands.
+    const stub = installChrome(new Map(), { granted: [GRANTED], deferScriptRead: true });
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+
+    /*
+     * NULL, NOT AN EMPTY LIST.
+     *
+     * Answering with the empty set the worker happens to be holding would make the panel flash
+     * "the capture scripts are not registered" on every open — P12's false-warning failure,
+     * reintroduced by the very change that was meant to stop the panel being confidently wrong.
+     */
+    expect(snapshotOf(panel).registration).toBeNull();
+    expect(testHook().registration()).toBeNull();
+    expect(stub.registered).toEqual([]);
+
+    stub.releaseScriptRead();
+    await settle();
+    stub.releaseScriptRead();
+    await settle();
+
+    // And it stops being null the moment there is a real answer, rather than staying unknown.
+    expect(testHook().registration()).toEqual({ matches: [GRANTED], error: null });
   });
 
   it('puts the registration on the snapshot a panel is actually sent', async () => {
@@ -993,7 +1047,10 @@ describe('service worker — a second session against an existing grant', () => 
       `agui-dt-1-${GRANTED}`,
     ]);
     const pushed = messagesOfKind(panel, 'registration').at(-1);
-    expect(pushed).toEqual({ kind: 'registration', matches: [GRANTED], error: null });
+    expect(pushed).toEqual({
+      kind: 'registration',
+      registration: { matches: [GRANTED], error: null },
+    });
   });
 
   it('takes no origin from the panel: the command names nothing to register', async () => {
@@ -1818,7 +1875,7 @@ describe('service worker — a registration failure does not outlive the attempt
     });
     await loadWorker();
     await settle();
-    expect(testHook().registration().error).toBe('Invalid value for parameter matches');
+    expect(testHook().registration()?.error).toBe('Invalid value for parameter matches');
 
     // Whatever fixed it — a newer build, a retry, another path — the origin is now registered.
     // A field only ever cleared by a successful WRITE would strand this failure for the life of

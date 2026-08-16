@@ -326,7 +326,14 @@ is not reported; anything else is retained and travels to the panel.
 patterns, plus the last real registration failure — rides on the existing `snapshot` message and on
 a `registration` push. `isRegisteredForOrigin` reads it against the inspected origin, answering
 `true` for the manifest's static localhost family without consulting it, and `null` while no worker
-has answered so the P12 grace period is untouched. When it answers `false` the panel says the
+has answered so the P12 grace period is untouched.
+
+The state is a **tri-state at the worker too**, and that is not decoration. The reconciliation is
+two async IPC round-trips and a panel can subscribe before they land, so a worker that answered with
+the empty list it happens to be holding would make the panel flash *"the capture scripts are not
+registered"* on every open — P12's false-warning failure, reintroduced by the very change meant to
+stop the panel being confidently wrong. `registration` is therefore `null` until
+`getRegisteredContentScripts()` has actually been read, and nothing warns on `null`. When it answers `false` the panel says the
 scripts are not registered, names the failure if there was one, and offers **Register the capture
 scripts for &lt;origin&gt;**, which sends `reconcile-registrations`. It offers no reload, and the
 post-grant reload note is suppressed in that state too — a panel offering both would be

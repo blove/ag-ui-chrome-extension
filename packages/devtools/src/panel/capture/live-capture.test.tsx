@@ -817,7 +817,10 @@ describe('panel live wiring — a granted origin with nothing registered for it'
     // ORIGIN, and the document that predates the registration still has no capture layer in it —
     // which is the point at which "reload the inspected page" becomes the true answer.
     act(() => {
-      port.emit({ kind: 'registration', matches: [`${ORIGIN}/*`], error: null });
+      port.emit({
+        kind: 'registration',
+        registration: { matches: [`${ORIGIN}/*`], error: null },
+      });
     });
 
     await waitFor(() => {
@@ -845,8 +848,7 @@ describe('panel live wiring — a granted origin with nothing registered for it'
     act(() => {
       port.emit({
         kind: 'registration',
-        matches: [],
-        error: 'Invalid value for parameter matches',
+        registration: { matches: [], error: 'Invalid value for parameter matches' },
       });
     });
 

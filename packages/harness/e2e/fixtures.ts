@@ -75,7 +75,7 @@ export interface CaptureSnapshot {
    * being granted says nothing about whether anything is registered for it — and the panel, which
    * could only see the grant, advised a page reload that in that state does nothing at all.
    */
-  registration: RegistrationState;
+  registration: RegistrationState | null;
 }
 
 /** The shape `src/sw/index.ts` attaches to the SW global, unconditionally. */
@@ -87,7 +87,7 @@ interface TestHook {
   loaded(): boolean;
   closes(): ClosedConn[];
   info(): RuntimeInfo | null;
-  registration(): RegistrationState;
+  registration(): RegistrationState | null;
   reconcileRegistrations(): Promise<void>;
   clear(): void;
 }

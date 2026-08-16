@@ -82,7 +82,7 @@ declare global {
          * `chrome.scripting.getRegisteredContentScripts()` read directly would say what Chrome
          * holds without saying what this worker BELIEVES, which is the half that was wrong.
          */
-        registration(): RegistrationState;
+        registration(): RegistrationState | null;
         /**
          * Re-run the worker's boot-time reconciliation.
          *
@@ -943,6 +943,17 @@ const registeredMatches = new Set<string>();
  */
 let registrationError: string | null = null;
 
+/**
+ * Has `chrome.scripting.getRegisteredContentScripts()` ever been read successfully?
+ *
+ * Until it has, this worker does not know what is registered, and it must SAY so rather than
+ * answer with the empty set it happens to be holding. The read is async and a panel can subscribe
+ * before it lands, so answering "nothing is registered" in the meantime would flash
+ * "the capture scripts are not registered" on every panel open — P12's false-warning failure,
+ * reintroduced by the very change that was meant to stop the panel being confidently wrong.
+ */
+let registrationKnown = false;
+
 function scriptId(index: number, match: string): string {
   return `${SCRIPT_ID_PREFIX}${String(index)}-${match}`;
 }
@@ -996,6 +1007,7 @@ function describeError(error: unknown): string {
 async function readOurScripts(): Promise<chrome.scripting.RegisteredContentScript[]> {
   try {
     const all = await chrome.scripting.getRegisteredContentScripts();
+    registrationKnown = true;
     return all.filter((script) => script.id.startsWith(SCRIPT_ID_PREFIX));
   } catch (error) {
     registrationError = describeError(error);
@@ -1058,13 +1070,18 @@ function serializeRegistration(work: () => Promise<void>): Promise<void> {
   return registrationQueue;
 }
 
-/** The registration picture, as the panel is told it. One function, so the two cannot drift. */
-function registrationState(): RegistrationState {
+/**
+ * The registration picture, as the panel is told it. One function, so the two cannot drift.
+ *
+ * `null` until Chrome has actually been read — see `registrationKnown`.
+ */
+function registrationState(): RegistrationState | null {
+  if (!registrationKnown) return null;
   return { matches: [...registeredMatches].sort(), error: registrationError };
 }
 
 function broadcastRegistration(): void {
-  const message: SwMessage = { kind: 'registration', ...registrationState() };
+  const message: SwMessage = { kind: 'registration', registration: registrationState() };
   // Every panel, not only the ones subscribed to a tab: registration is per ORIGIN and global to
   // the extension, and a panel that has not sent `subscribe` yet still needs the answer.
   for (const port of panelPorts.keys()) port.postMessage(message);
@@ -1253,7 +1270,7 @@ globalThis.__AGUI_DT_TEST__ = {
     // describe neither.
     return everySnapshot().map((snapshot) => snapshot.info).find((info) => info !== null) ?? null;
   },
-  registration(): RegistrationState {
+  registration(): RegistrationState | null {
     /*
      * The SAME function `snapshotFor` embeds, not a second view of the same state.
      *

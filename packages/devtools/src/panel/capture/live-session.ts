@@ -309,8 +309,10 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
          *
          * Not folded into `s.registration` conditionally — the worker states the whole picture
          * every time, and a merge would keep an origin listed after it had been unregistered.
+         * `null` is a real value here and means "the worker has not read Chrome yet", so it is
+         * taken as stated rather than treated as "no news".
          */
-        registration = { matches: message.matches, error: message.error };
+        registration = message.registration;
         return project(s);
       }
       case 'capture-loaded': {

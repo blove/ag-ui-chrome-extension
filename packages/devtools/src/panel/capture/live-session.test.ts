@@ -821,7 +821,10 @@ describe('live session — content-script registration', () => {
   it('replaces the whole picture on a push rather than merging into it', () => {
     const session = createLiveSession();
     let state = session.apply(initialPanelState(), snapshot(REGISTERED));
-    state = session.apply(state, { kind: 'registration', matches: [], error: null });
+    state = session.apply(state, {
+      kind: 'registration',
+      registration: { matches: [], error: null },
+    });
 
     // A merge would keep an origin listed after it had been unregistered — the worker states the
     // entire picture every time, precisely so this cannot happen.
@@ -832,8 +835,7 @@ describe('live session — content-script registration', () => {
     const session = createLiveSession();
     const state = session.apply(initialPanelState(), {
       kind: 'registration',
-      matches: [],
-      error: 'Invalid value for parameter matches',
+      registration: { matches: [], error: 'Invalid value for parameter matches' },
     });
     expect(state.registration).toEqual({
       matches: [],
@@ -845,7 +847,7 @@ describe('live session — content-script registration', () => {
     const session = createLiveSession();
     const state = session.apply(initialPanelState(), {
       kind: 'registration',
-      ...REGISTERED,
+      registration: REGISTERED,
     });
     // Nothing about the extension's own plumbing is a protocol event. A Timeline row here would
     // be the panel asserting something the user's stream never contained.

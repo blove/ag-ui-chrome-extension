@@ -100,6 +100,13 @@ export interface ClosedConn {
  * (`panel/capture/grant.ts`'s `isAutoEnabledOrigin`) because a match pattern ignores the port and
  * a string comparison against `http://localhost:5173` would fail.
  *
+ * `null` WHEREVER ONE OF THESE IS EXPECTED means the worker has not managed to read
+ * `chrome.scripting.getRegisteredContentScripts()` yet — "not known", never "nothing registered".
+ * The read is async and a panel can subscribe before it lands, so a worker that answered with an
+ * empty list in the meantime would make the panel flash "the capture scripts are not registered"
+ * on every open. That is P12's false-warning failure, and the tri-state here is the same
+ * discipline `loaded` already has.
+ *
  * `error` is the other half of the same lesson. The registration `catch` used to discard
  * everything, which is how a registration that never happened stayed invisible for a whole
  * release. A duplicate-id rejection is genuinely fine and is not reported here; anything else is.
@@ -190,8 +197,11 @@ export type SwMessage =
        * does nothing at all and the user reloads, reads the identical message, and concludes the
        * tool is broken. A producer that forgets it is the defect, and a compile error is how that
        * gets caught.
+       *
+       * `null` is "the worker has not read Chrome yet" and nothing may warn on it — see
+       * `RegistrationState`.
        */
-      registration: RegistrationState;
+      registration: RegistrationState | null;
     }
   | {
       kind: 'append';
@@ -240,12 +250,13 @@ export type SwMessage =
    * The registration picture changed — the worker reconciled at startup, an origin was granted or
    * revoked, or a panel asked for a re-registration.
    *
-   * Spelled as `RegistrationState` so the pushed fact and the one retained on `snapshot` cannot
-   * drift apart: they are the same fact, delivered to whoever is listening at the time and to
-   * whoever arrives later. Not scoped to a tab — registration is per ORIGIN and global to the
-   * extension — so every subscribed panel is told.
+   * Carries the whole `RegistrationState`, nullable exactly as the `snapshot` field is, so the
+   * pushed fact and the one retained on `snapshot` cannot drift apart: they are the same fact,
+   * delivered to whoever is listening at the time and to whoever arrives later. Not scoped to a
+   * tab — registration is per ORIGIN and global to the extension — so every subscribed panel is
+   * told.
    */
-  | ({ kind: 'registration' } & RegistrationState)
+  | { kind: 'registration'; registration: RegistrationState | null }
   | { kind: 'cleared' };
 
 /** Panel → worker. */
