@@ -24,6 +24,7 @@ describe('CaptureBanner', () => {
           signal: { level: 'stream' },
         })}
         onEnable={onEnable}
+        onReRegister={vi.fn()}
       />,
     );
 
@@ -48,6 +49,7 @@ describe('CaptureBanner', () => {
       <CaptureBanner
         store={storeWith({ kind: 'off', origin: 'https://app.example', signal: { level: 'none' } })}
         onEnable={onEnable}
+        onReRegister={vi.fn()}
       />,
     );
 
@@ -68,6 +70,7 @@ describe('CaptureBanner', () => {
       <CaptureBanner
         store={storeWith({ kind: 'on', origin: 'http://localhost:3000' })}
         onEnable={vi.fn()}
+        onReRegister={vi.fn()}
       />,
     );
     expect(screen.getByText(/capture is on for http:\/\/localhost:3000/i)).toBeTruthy();
@@ -80,12 +83,12 @@ describe('CaptureBanner', () => {
       ...s,
       records: [{ kind: 'keepalive', seq: 1, tMs: 0, connId: 'c1', raw: '', comment: '', issues: [] }],
     }));
-    const { container } = render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    const { container } = render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
     expect(container.textContent).toBe('');
   });
 
   it('explains that this build has no capture layer rather than showing nothing', () => {
-    render(<CaptureBanner store={storeWith({ kind: 'unsupported' })} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={storeWith({ kind: 'unsupported' })} onEnable={vi.fn()} onReRegister={vi.fn()} />);
     expect(screen.getByText(/only runs inside the DevTools panel/i)).toBeTruthy();
     expect(screen.getByText(/\.agui\.jsonl/)).toBeTruthy();
   });
@@ -98,6 +101,7 @@ describe('CaptureBanner', () => {
           { kind: 'imported', filename: 'bug.agui.jsonl', importedAtMs: 0 },
         )}
         onEnable={vi.fn()}
+        onReRegister={vi.fn()}
       />,
     );
     expect(container.textContent).toBe('');
@@ -109,7 +113,7 @@ describe('CaptureBanner', () => {
       origin: 'https://app.example',
       signal: { level: 'none' },
     });
-    render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
     expect(screen.getByRole('button', { name: /enable capture for/i })).toBeTruthy();
 
     act(() => {
@@ -137,7 +141,7 @@ describe('CaptureBanner', () => {
       signal: { level: 'none' },
     });
     store.update((s) => ({ ...s, framework: 'Angular 21.1.6' }));
-    render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     expect(screen.getByRole('status').textContent).not.toMatch(/angular/i);
   });
@@ -167,7 +171,7 @@ describe('CaptureBanner — capture layer loaded, not loaded, or unreported', ()
   }
 
   it('warns that the capture layer is not loaded, and states the reload requirement once', () => {
-    render(<CaptureBanner store={onOrigin(false)} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={onOrigin(false)} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     const banner = screen.getByRole('status');
     expect(banner.textContent).toMatch(/capture layer is not loaded/i);
@@ -185,7 +189,7 @@ describe('CaptureBanner — capture layer loaded, not loaded, or unreported', ()
    * teaches the user to ignore the one that matters.
    */
   it('says it is still checking rather than warning, while nothing has been reported yet', () => {
-    render(<CaptureBanner store={onOrigin(null)} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={onOrigin(null)} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     const banner = screen.getByRole('status');
     expect(banner.textContent).toMatch(/checking/i);
@@ -203,7 +207,7 @@ describe('CaptureBanner — capture layer loaded, not loaded, or unreported', ()
    * records are the only stronger claim the panel ever makes (it goes quiet on them).
    */
   it('claims the capture layer is loaded, and claims nothing stronger', () => {
-    render(<CaptureBanner store={onOrigin(true)} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={onOrigin(true)} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     const text = screen.getByRole('status').textContent ?? '';
     expect(text).toMatch(/capture layer is loaded in this page/i);
@@ -221,7 +225,7 @@ describe('CaptureBanner — capture layer loaded, not loaded, or unreported', ()
         { kind: 'keepalive', seq: 1, tMs: 0, connId: 'c1', raw: '', comment: '', issues: [] },
       ],
     }));
-    render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     // Records from a previous document do not load a capture layer into the current one, and a
     // panel that went quiet here would be back to implying capture it does not have.
@@ -236,7 +240,7 @@ describe('CaptureBanner — capture layer loaded, not loaded, or unreported', ()
         { kind: 'keepalive', seq: 1, tMs: 0, connId: 'c1', raw: '', comment: '', issues: [] },
       ],
     }));
-    const { container } = render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    const { container } = render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     // A "checking…" note thrown over a full timeline on every navigation is noise. Absence of a
     // report is only worth saying once it has become a finding.
@@ -264,12 +268,106 @@ describe('CaptureBanner — binary transport', () => {
         bytes: 512,
       },
     });
-    render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     const banner = screen.getByRole('status');
     expect(banner.textContent).toMatch(/binary transport/i);
     expect(banner.textContent).toContain('application/vnd.ag-ui.event+proto');
     expect(banner.textContent).toMatch(/decoding is not supported yet/i);
     expect(banner.textContent).not.toMatch(/waiting for a run/i);
+  });
+});
+
+/**
+ * GRANTED IS NOT REGISTERED — the second time in one day the panel was confidently wrong about
+ * capture, and the correction.
+ *
+ * Chrome drops dynamically registered content scripts when the extension is reloaded or updated
+ * and keeps the permission. The origin is then granted with nothing registered for it,
+ * `chrome.permissions.onAdded` never fires again because nothing was added, and capture is dead
+ * for that origin until something reconciles. The panel had exactly one banner for this — "the
+ * capture layer is not loaded in this page" — and offered a page reload, which in this state does
+ * nothing whatsoever: there are no scripts registered to load. The user reloads, reads the
+ * identical message, and concludes the tool is broken.
+ */
+describe('CaptureBanner — granted, but not registered for this origin', () => {
+  const ORIGIN = 'https://app.example.com';
+
+  function granted(matches: string[], error: string | null = null): PanelStore {
+    return createPanelStore({
+      ...initialPanelState(),
+      capture: { kind: 'on', origin: ORIGIN },
+      source: { kind: 'live', origin: ORIGIN },
+      // The document has been waited on and reported nothing — which is what an unregistered
+      // origin looks like from the document's side, and is exactly why the two used to be
+      // indistinguishable.
+      loaded: false,
+      registration: { matches, error },
+    });
+  }
+
+  it('says the scripts are not registered, and never tells the user to reload', () => {
+    render(<CaptureBanner store={granted([])} onEnable={vi.fn()} onReRegister={vi.fn()} />);
+
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toMatch(/capture scripts are not registered/i);
+    expect(text).toMatch(new RegExp(ORIGIN.replace(/[./]/g, '\\$&')));
+    // THE ASSERTION THIS BLOCK EXISTS FOR. Every other capture-off wording in this file offers a
+    // reload, correctly. Here it is the one remedy that provably cannot work.
+    expect(text).not.toMatch(/reload/i);
+    expect(text).not.toMatch(/capture layer is not loaded/i);
+  });
+
+  it('offers re-registration, which is the action that can actually fix it', () => {
+    const onReRegister = vi.fn();
+    render(<CaptureBanner store={granted([])} onEnable={vi.fn()} onReRegister={onReRegister} />);
+
+    const action = screen.getByRole('button', {
+      name: `Register the capture scripts for ${ORIGIN}`,
+    });
+    fireEvent.click(action);
+    expect(onReRegister).toHaveBeenCalledTimes(1);
+    // Strictly better than the alternative the user is otherwise left with, which is to find
+    // chrome://extensions, revoke the origin and grant it again.
+    expect(screen.getByRole('status').textContent).not.toMatch(/revoke/i);
+  });
+
+  it('names a registration failure rather than letting it disappear', () => {
+    const store = granted([], 'Invalid value for parameter matches');
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
+
+    // The worker's `catch` used to discard everything, which is how a registration that never
+    // happened stayed invisible through a release. If it failed, the panel says what Chrome said.
+    expect(screen.getByRole('status').textContent).toMatch(/Invalid value for parameter matches/);
+  });
+
+  it('goes back to the reload remedy once the scripts ARE registered', () => {
+    const store = granted([`${ORIGIN}/*`]);
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
+
+    // The two states are sequential, not alternatives: registering fixes the origin, and the
+    // document that predates the registration still needs a reload. That is the point at which
+    // "reload the inspected page" becomes true, and it is offered then and not before.
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toMatch(/capture layer is not loaded/i);
+    expect(text).toMatch(/requires a reload of the inspected page/i);
+    expect(text).not.toMatch(/not registered/i);
+  });
+
+  it('says nothing about registration while no worker has answered', () => {
+    const store = createPanelStore({
+      ...initialPanelState(),
+      capture: { kind: 'on', origin: ORIGIN },
+      source: { kind: 'live', origin: ORIGIN },
+      loaded: null,
+      registration: null,
+    });
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
+
+    // P12's grace period, intact. `null` is "not known yet", and warning on it would flash a false
+    // alarm on every panel open — the failure this banner's tri-state was built to avoid.
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toMatch(/checking/i);
+    expect(text).not.toMatch(/not registered/i);
   });
 });

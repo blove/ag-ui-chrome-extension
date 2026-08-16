@@ -24,6 +24,7 @@ import {
   RELAY_PORT_NAME,
   type ClosedConn,
   type PanelCommand,
+  type RegistrationState,
   type RelayMessage,
   type RequestLine,
   type SwMessage,
@@ -72,6 +73,24 @@ declare global {
          * request at all.
          */
         info(): RuntimeInfo | null;
+        /**
+         * Which origins the capture content scripts are registered for, and the last real
+         * registration failure — the same `RegistrationState` a panel is sent.
+         *
+         * The fact the whole "capture dies after an extension update" defect turns on, and the one
+         * the harness cannot get at any other way: the panel is unreachable from Playwright, and
+         * `chrome.scripting.getRegisteredContentScripts()` read directly would say what Chrome
+         * holds without saying what this worker BELIEVES, which is the half that was wrong.
+         */
+        registration(): RegistrationState | null;
+        /**
+         * Re-run the worker's boot-time reconciliation.
+         *
+         * The harness's only way to reproduce a second session against an existing grant: it
+         * unregisters the scripts with the grant left in place and calls this, which is the same
+         * function module scope calls.
+         */
+        reconcileRegistrations(): Promise<void>;
         clear(): void;
       }
     | undefined;
@@ -732,6 +751,10 @@ function snapshotFor(tabId: number): Snapshot {
     // which is the ordinary case, and the one done-when #2 is about. The push arm covers the
     // panel that happened to already be watching.
     info: state.info,
+    // Whether the capture scripts are registered for the origin at all — the fact that separates
+    // "this document predates the registration, so reload it" from "there is no registration, so
+    // reloading achieves nothing". Not per tab: registration is per origin and global.
+    registration: registrationState(),
   };
 }
 
@@ -780,18 +803,56 @@ function handlePanelCommand(port: chrome.runtime.Port, command: PanelCommand): v
       scheduleMirror(tabId);
       return;
     }
+    case 'reconcile-registrations': {
+      /*
+       * The panel's own repair path, and the reason it exists: after an extension reload or update
+       * the origin is still granted and the registration is gone, so `permissions.onAdded` will
+       * never fire again and the user has no way back short of revoking and re-granting. The
+       * startup reconciliation covers the ordinary case; this covers the panel that is looking at
+       * a broken tab RIGHT NOW and can say what it is doing about it.
+       *
+       * It takes no argument. The origin comes from `chrome.permissions.getAll()`, so nothing that
+       * reaches this port can cause an origin the user never opted in to to be registered.
+       */
+      void reconcileRegistrations();
+      return;
+    }
   }
 }
 
-function asPanelCommand(value: unknown): PanelCommand | null {
+/**
+ * Narrow a panel port payload to `PanelCommand`.
+ *
+ * OWN PROPERTIES ONLY. The panel is our own document rather than a hostile peer — the relay is the
+ * boundary the page reaches, not this — but `Object.create({ kind: 'clear' })` would otherwise
+ * validate here, and a guard whose safety rests on who happens to be calling it is a guard that
+ * stops being safe the first time someone adds a sender. `reconcile-registrations` is the arm that
+ * made this worth tightening: it is the one command that causes the extension to inject code
+ * anywhere.
+ */
+function ownKind(value: unknown): string | null {
   if (!isRecord(value)) return null;
+  if (!Object.hasOwn(value, 'kind')) return null;
   const kind = value['kind'];
+  return typeof kind === 'string' ? kind : null;
+}
+
+function ownValue(value: Record<string, unknown>, key: string): unknown {
+  return Object.hasOwn(value, key) ? value[key] : undefined;
+}
+
+function asPanelCommand(value: unknown): PanelCommand | null {
+  const kind = ownKind(value);
+  if (kind === null || !isRecord(value)) return null;
   if (kind === 'subscribe') {
-    return typeof value['tabId'] === 'number' ? { kind, tabId: value['tabId'] } : null;
+    const tabId = ownValue(value, 'tabId');
+    return typeof tabId === 'number' ? { kind, tabId } : null;
   }
   if (kind === 'clear') return { kind };
+  if (kind === 'reconcile-registrations') return { kind };
   if (kind === 'set-recording') {
-    return typeof value['recording'] === 'boolean' ? { kind, recording: value['recording'] } : null;
+    const recording = ownValue(value, 'recording');
+    return typeof recording === 'boolean' ? { kind, recording } : null;
   }
   return null;
 }
@@ -836,15 +897,81 @@ function attachPanelPort(port: chrome.runtime.Port): void {
  * `web_accessible_resources` key at all, and registering an origin here is now sufficient on its
  * own. `packages/harness/e2e/non-localhost.spec.ts` holds that end to end; `scripts/verify-build.ts`
  * holds the emitted shape.
+ *
+ * AND IT USED TO BE DRIVEN BY EXACTLY ONE EVENT, WHICH IS THE SECOND HALF OF THE SAME BUG.
+ * `chrome.permissions.onAdded` fires when an origin is granted and never again, while a dynamic
+ * registration does NOT reliably outlive the worker that made it — the permission survives, the
+ * registration does not. So from the user's second day onwards capture silently stopped for every
+ * origin they had ever granted, permanently, and re-granting could not repair it because the origin
+ * was still granted and `onAdded` had nothing left to fire about.
+ *
+ * The `catch` below used to assert the opposite, in a comment: "registerContentScripts persists
+ * across sessions by default". Measured, on this build, with `persistAcrossSessions: true` stated
+ * explicitly and a probe registration the reconciliation below cannot touch: a registration made in
+ * one session was GONE in the next, across a plain browser restart on the same profile and across a
+ * version bump alike. The precise cause does not matter and is deliberately not encoded anywhere
+ * here — reload, update, restart and idle respawn all reach the same place, and the reconciliation
+ * repairs the state it finds rather than predicting how it got there.
+ */
+
+/**
+ * Every script this worker registers carries this prefix, so `getRegisteredContentScripts()` can
+ * be read back without claiming registrations that belong to nobody-knows-what.
+ */
+const SCRIPT_ID_PREFIX = 'agui-dt-';
+
+/**
+ * Match patterns this worker has DYNAMICALLY registered capture scripts for.
+ *
+ * REBUILT FROM `chrome.scripting.getRegisteredContentScripts()`, NEVER ASSUMED. It used to be a
+ * plain in-memory `Set` that only ever grew, from `onAdded` — which meant that on every worker
+ * respawn (MV3 terminates an idle worker at ~30 s, §15) it came back empty while the real
+ * registrations were still in place. Revoking an origin then unregistered nothing, because
+ * `unregisterForMatches` skipped any match the Set had never heard of: an origin the user had
+ * explicitly opted OUT of went on being captured. That is the same class of error as the bug this
+ * file is being corrected for — worker memory treated as the record of a fact that lives in
+ * Chrome — so the record is read back from Chrome every time.
  */
 const registeredMatches = new Set<string>();
 
+/**
+ * The last registration failure that was not a benign duplicate, or `null`.
+ *
+ * Retained rather than only logged: a service worker's console is not somewhere a user looks, and
+ * a swallowed failure here is indistinguishable from capture simply not being wired up. It rides
+ * on every `snapshot` and every `registration` push, so the panel can say what went wrong.
+ */
+let registrationError: string | null = null;
+
+/**
+ * Has `chrome.scripting.getRegisteredContentScripts()` ever been read successfully?
+ *
+ * Until it has, this worker does not know what is registered, and it must SAY so rather than
+ * answer with the empty set it happens to be holding. The read is async and a panel can subscribe
+ * before it lands, so answering "nothing is registered" in the meantime would flash
+ * "the capture scripts are not registered" on every panel open — P12's false-warning failure,
+ * reintroduced by the very change that was meant to stop the panel being confidently wrong.
+ */
+let registrationKnown = false;
+
 function scriptId(index: number, match: string): string {
-  return `agui-dt-${String(index)}-${match}`;
+  return `${SCRIPT_ID_PREFIX}${String(index)}-${match}`;
 }
 
-function manifestContentScripts(): chrome.runtime.ManifestV3['content_scripts'] {
+function manifestContentScripts(): NonNullable<chrome.runtime.ManifestV3['content_scripts']> {
   return chrome.runtime.getManifest().content_scripts ?? [];
+}
+
+/**
+ * The patterns the MANIFEST already covers.
+ *
+ * Skipped by every dynamic path below. `chrome.permissions.getAll()` reports content-script
+ * matches among its origins, so a reconciliation that did not exclude them would register a SECOND
+ * copy of both scripts for the localhost family under ids of its own — and the manifest's copy
+ * cannot be unregistered, so those pages would get the capture layer injected twice.
+ */
+function staticMatches(): ReadonlySet<string> {
+  return new Set(manifestContentScripts().flatMap((entry) => entry.matches ?? []));
 }
 
 function runAtOf(value: string | undefined): chrome.scripting.RegisteredContentScript['runAt'] {
@@ -860,44 +987,218 @@ function worldOf(value: string | undefined): `${chrome.scripting.ExecutionWorld}
   return value === 'MAIN' ? 'MAIN' : 'ISOLATED';
 }
 
-async function registerForMatches(matches: readonly string[]): Promise<void> {
-  for (const match of matches) {
-    if (registeredMatches.has(match)) continue;
-    const declared = manifestContentScripts() ?? [];
-    const scripts: chrome.scripting.RegisteredContentScript[] = declared.map((entry, index) => ({
-      id: scriptId(index, match),
-      matches: [match],
-      js: entry.js ?? [],
-      runAt: runAtOf(entry.run_at),
-      world: worldOf(entry.world),
-      allFrames: entry.all_frames ?? true,
-    }));
-    if (scripts.length === 0) continue;
-    // Mark before awaiting: two grants for the same origin in the same tick would otherwise both
-    // register and the second would reject with a duplicate id.
-    registeredMatches.add(match);
-    try {
-      await chrome.scripting.registerContentScripts(scripts);
-    } catch {
-      // Already registered from a previous browser session — `registerContentScripts` persists
-      // across sessions by default. Nothing to do, and nothing to log: a rejected promise left
-      // unhandled in a worker is a broken worker.
-    }
+/** The registrations one match needs, copied from the manifest's own declarations. */
+function scriptsFor(match: string): chrome.scripting.RegisteredContentScript[] {
+  return manifestContentScripts().map((entry, index) => ({
+    id: scriptId(index, match),
+    matches: [match],
+    js: entry.js ?? [],
+    runAt: runAtOf(entry.run_at),
+    world: worldOf(entry.world),
+    allFrames: entry.all_frames ?? true,
+  }));
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** What Chrome says is registered, ours only. A failed read reports itself and claims nothing. */
+async function readOurScripts(): Promise<chrome.scripting.RegisteredContentScript[]> {
+  try {
+    const all = await chrome.scripting.getRegisteredContentScripts();
+    registrationKnown = true;
+    return all.filter((script) => script.id.startsWith(SCRIPT_ID_PREFIX));
+  } catch (error) {
+    registrationError = describeError(error);
+    return [];
   }
 }
 
-async function unregisterForMatches(matches: readonly string[]): Promise<void> {
+/**
+ * Rebuild `registeredMatches` from what Chrome actually holds.
+ *
+ * A match counts as registered only when EVERY script the manifest declares is present for it. A
+ * half-registered origin — the MAIN-world patcher without the ISOLATED-world relay, say — is not a
+ * working capture layer, and calling it registered would put the panel straight back to reporting
+ * capture it does not have.
+ */
+function rebuildRegisteredMatches(
+  scripts: readonly chrome.scripting.RegisteredContentScript[],
+): void {
+  const wanted = manifestContentScripts().length;
+  const seen = new Map<string, number>();
+  for (const script of scripts) {
+    for (const match of script.matches ?? []) seen.set(match, (seen.get(match) ?? 0) + 1);
+  }
+  registeredMatches.clear();
+  if (wanted === 0) return;
+  for (const [match, count] of seen) {
+    if (count >= wanted) registeredMatches.add(match);
+  }
+}
+
+/**
+ * Is this rejection the one that is genuinely fine?
+ *
+ * `registerContentScripts` rejects with `Duplicate script ID '<id>'` when an id is already
+ * registered. That is the END STATE WE WANTED, so it is not reported. Everything else is a real
+ * failure, and used to go into the same silent `catch` — which is precisely how a registration
+ * that never happened stayed invisible through a release.
+ */
+function isDuplicateIdError(error: unknown): boolean {
+  return /duplicate script id/i.test(describeError(error));
+}
+
+/**
+ * One registration operation at a time.
+ *
+ * Each is a read-modify-write against Chrome's own list — read what is registered, register what
+ * is missing — and two of those interleaved would both see the same gap and both try to fill it,
+ * which is exactly the duplicate-id rejection the old code papered over. The startup
+ * reconciliation racing a concurrent `permissions.onAdded` is the real pairing; a panel's
+ * `reconcile-registrations` is a third. Serializing removes the race rather than tolerating it.
+ *
+ * The chain never rejects: each unit of work catches its own failure into `registrationError`, and
+ * the `catch` here is the belt to that's braces — an unhandled rejection in a worker is a broken
+ * worker.
+ */
+let registrationQueue: Promise<void> = Promise.resolve();
+
+function serializeRegistration(work: () => Promise<void>): Promise<void> {
+  registrationQueue = registrationQueue.then(work, work).catch(() => undefined);
+  return registrationQueue;
+}
+
+/**
+ * The registration picture, as the panel is told it. One function, so the two cannot drift.
+ *
+ * `null` until Chrome has actually been read — see `registrationKnown`.
+ */
+function registrationState(): RegistrationState | null {
+  if (!registrationKnown) return null;
+  return { matches: [...registeredMatches].sort(), error: registrationError };
+}
+
+function broadcastRegistration(): void {
+  const message: SwMessage = { kind: 'registration', registration: registrationState() };
+  // Every panel, not only the ones subscribed to a tab: registration is per ORIGIN and global to
+  // the extension, and a panel that has not sent `subscribe` yet still needs the answer.
+  for (const port of panelPorts.keys()) port.postMessage(message);
+}
+
+/**
+ * Register whatever `matches` needs and does not already have. Idempotent, and safe to call with
+ * matches that are already registered, statically covered, or both.
+ *
+ * Per match rather than one batch call: `registerContentScripts` rejects the WHOLE batch on a
+ * single bad entry, so batching would let one unregisterable origin silently take out every other
+ * origin the user had granted.
+ *
+ * `registrationError` is cleared at the START of the pass rather than on each success, so it always
+ * describes THIS attempt. Clearing it only on a successful write would strand a failure forever
+ * once the steady state had nothing left to register, and the panel would go on naming a failure
+ * for an origin that was working.
+ */
+async function registerMissing(matches: readonly string[]): Promise<void> {
+  const declared = manifestContentScripts();
+  if (declared.length === 0) return;
+  const statics = staticMatches();
+  registrationError = null;
+  const existing = await readOurScripts();
+  rebuildRegisteredMatches(existing);
+  const existingIds = new Set(existing.map((script) => script.id));
+
   for (const match of matches) {
-    if (!registeredMatches.delete(match)) continue;
-    const declared = manifestContentScripts() ?? [];
-    const ids = declared.map((_entry, index) => scriptId(index, match));
-    if (ids.length === 0) continue;
+    if (statics.has(match)) continue;
+    const missing = scriptsFor(match).filter((script) => !existingIds.has(script.id));
+    if (missing.length === 0) continue;
     try {
-      await chrome.scripting.unregisterContentScripts({ ids });
-    } catch {
-      // Never registered, or already gone. Either way the end state is the one we want.
+      await chrome.scripting.registerContentScripts(missing);
+      for (const script of missing) existingIds.add(script.id);
+    } catch (error) {
+      if (isDuplicateIdError(error)) continue;
+      // A real failure. Recorded rather than logged: it reaches the panel on the next snapshot or
+      // push, which is somewhere a user and a test can both see it.
+      registrationError = describeError(error);
     }
   }
+  // Re-read rather than trusting the writes above: what is registered is Chrome's fact, and a
+  // partial failure would otherwise leave this worker claiming an origin it does not have.
+  rebuildRegisteredMatches(await readOurScripts());
+}
+
+function registerForMatches(matches: readonly string[]): Promise<void> {
+  return serializeRegistration(async () => {
+    await registerMissing(matches);
+    broadcastRegistration();
+  });
+}
+
+/**
+ * THE FIX. Bring registrations back in line with the origins the user has actually granted.
+ *
+ * Read what is granted, read what is registered, register the difference. Idempotent, so it is
+ * safe on every worker spawn — which is exactly where it is called from.
+ *
+ * WHY MODULE SCOPE RATHER THAN `onInstalled` + `onStartup`. Those two are the obvious answer and
+ * they are not sufficient: neither fires when Chrome respawns a worker it terminated for idleness,
+ * which is the single most common way this worker starts. Module scope runs on EVERY spawn —
+ * install, update, browser start, idle respawn — so it is a strict superset of both, and it is one
+ * code path instead of three that have to agree with each other.
+ *
+ * The three objections, considered and answered:
+ *
+ *   - WORKER STARTUP COST. Two IPC round-trips (`permissions.getAll`,
+ *     `getRegisteredContentScripts`) and, in the steady state, no write at all. It is async and
+ *     nothing waits on it.
+ *   - ORDERING AGAINST `onConnect`. The listeners at the bottom of this file are added
+ *     synchronously at module scope, before this ever awaits, so a port that connects during the
+ *     reconciliation is still caught — Chrome's requirement is only that listeners are registered
+ *     in the first turn. Buffer traffic is gated on the session restore (`afterRestore`) and
+ *     deliberately not on this: reconciliation touches no tab state, and making frames wait on a
+ *     `permissions` round-trip would be a real cost for no benefit.
+ *   - A CONCURRENT `onAdded`. Serialized — see `serializeRegistration`.
+ */
+function reconcileRegistrations(): Promise<void> {
+  return serializeRegistration(async () => {
+    let granted: string[];
+    try {
+      granted = (await chrome.permissions.getAll()).origins ?? [];
+    } catch (error) {
+      registrationError = describeError(error);
+      broadcastRegistration();
+      return;
+    }
+    await registerMissing(granted);
+    broadcastRegistration();
+  });
+}
+
+function unregisterForMatches(matches: readonly string[]): Promise<void> {
+  return serializeRegistration(async () => {
+    const statics = staticMatches();
+    // Cleared first, for the same reason `registerMissing` clears first: the field describes THIS
+    // attempt, not the last one that happened to write to it.
+    registrationError = null;
+    const existingIds = new Set((await readOurScripts()).map((script) => script.id));
+    // Driven by what Chrome holds, NOT by `registeredMatches`: the old code skipped any match its
+    // in-memory Set had not seen, so after a worker respawn a revoked origin kept its scripts and
+    // went on being captured.
+    const ids = matches
+      .filter((match) => !statics.has(match))
+      .flatMap((match) => scriptsFor(match).map((script) => script.id))
+      .filter((id) => existingIds.has(id));
+    if (ids.length > 0) {
+      try {
+        await chrome.scripting.unregisterContentScripts({ ids });
+      } catch (error) {
+        registrationError = describeError(error);
+      }
+    }
+    rebuildRegisteredMatches(await readOurScripts());
+    broadcastRegistration();
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -969,11 +1270,38 @@ globalThis.__AGUI_DT_TEST__ = {
     // describe neither.
     return everySnapshot().map((snapshot) => snapshot.info).find((info) => info !== null) ?? null;
   },
+  registration(): RegistrationState | null {
+    /*
+     * The SAME function `snapshotFor` embeds, not a second view of the same state.
+     *
+     * It cannot go through `everySnapshot()` like the fields above, because registration is not per
+     * tab and the harness has to be able to read it before any page exists — which is exactly the
+     * moment the reconciliation being tested happens. The drift risk `everySnapshot` exists to
+     * prevent is closed instead by `sw/index.test.ts`, which asserts a real panel's `snapshot`
+     * carries the identical value.
+     */
+    return registrationState();
+  },
+  reconcileRegistrations(): Promise<void> {
+    // Literally the worker's boot path, called again. The harness uses this to reproduce a second
+    // session against an existing grant — the case no test could reach while the only trigger was
+    // `permissions.onAdded`, because every e2e granted inside the test.
+    return reconcileRegistrations();
+  },
   clear(): void {
     for (const [tabId, state] of tabs) clearTab(tabId, state);
   },
 };
 
 void restoreFromSession();
+
+/**
+ * Reconcile registrations on EVERY worker spawn — install, update, browser start, idle respawn.
+ *
+ * This line is the fix. See `reconcileRegistrations` for why it is here rather than under
+ * `chrome.runtime.onInstalled` + `onStartup`, which between them miss the most common spawn there
+ * is.
+ */
+void reconcileRegistrations();
 
 export {};

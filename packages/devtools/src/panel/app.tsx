@@ -222,7 +222,7 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
         </p>
       )}
 
-      <CaptureBanner store={store} onEnable={live.enable} />
+      <CaptureBanner store={store} onEnable={live.enable} onReRegister={live.reRegister} />
 
       {/*
        * What Enable did, and what to do next.

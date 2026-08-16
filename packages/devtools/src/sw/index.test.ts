@@ -83,18 +83,46 @@ interface ChromeStub {
   grantOrigins(origins: string[]): void;
   removeOrigins(origins: string[]): void;
   registered: RegisteredScript[];
+  /**
+   * Origins `chrome.permissions.getAll()` reports as granted, ALONE — nothing here registers a
+   * content script.
+   *
+   * That separation is the whole point: it is what lets a test express "the origin is granted and
+   * nothing is registered for it", which is the state Chrome leaves behind after an extension
+   * reload or update and the state no test in this suite could previously describe.
+   */
+  grantedOrigins: string[];
+  /** Resolve reads held back by `deferScriptRead`. */
+  releaseScriptRead(): void;
 }
 
-function installChrome(
-  session: Map<string, unknown> = new Map(),
-  options: { deferGet?: boolean } = {},
-): ChromeStub {
+interface StubOptions {
+  deferGet?: boolean;
+  /** Registrations Chrome already holds — a worker respawning onto live registrations. */
+  registered?: RegisteredScript[];
+  /** Origins granted before this worker ever ran. Registers nothing. */
+  granted?: string[];
+  /** Make `registerContentScripts` reject with this message, for the error-reporting path. */
+  failRegistration?: string;
+  /**
+   * Hold `getRegisteredContentScripts` open until `releaseScriptRead()`.
+   *
+   * The real shape of a freshly spawned worker: the read is two async IPC hops and a panel can
+   * subscribe before it lands. This is the only way to pin the worker in the moment where it does
+   * not yet know what is registered.
+   */
+  deferScriptRead?: boolean;
+}
+
+function installChrome(session: Map<string, unknown> = new Map(), options: StubOptions = {}): ChromeStub {
   const onConnect = new FakeEvent<[FakePort]>();
   const onRemoved = new FakeEvent<[number]>();
   const onAdded = new FakeEvent<[{ origins?: string[] }]>();
   const onPermissionsRemoved = new FakeEvent<[{ origins?: string[] }]>();
   const held: (() => void)[] = [];
-  const registered: RegisteredScript[] = [];
+  const registered: RegisteredScript[] = [...(options.registered ?? [])];
+  const heldScriptReads: (() => void)[] = [];
+  const grantedOrigins: string[] = [...(options.granted ?? [])];
 
   const storageSession = {
     get(keys: string | string[] | null): Promise<Record<string, unknown>> {
@@ -129,12 +157,18 @@ function installChrome(
 
   const scripting = {
     registerContentScripts(scripts: RegisteredScript[]): Promise<void> {
+      if (options.failRegistration !== undefined) {
+        return Promise.reject(new Error(options.failRegistration));
+      }
       for (const script of scripts) {
         if (registered.some((existing) => existing.id === script.id)) {
+          // Chrome rejects the WHOLE batch on a duplicate id, and rejects it before registering
+          // anything — modelled exactly, because the worker's "is this rejection benign" check
+          // reads the message.
           return Promise.reject(new Error(`Duplicate script ID '${script.id}'`));
         }
-        registered.push(script);
       }
+      registered.push(...scripts);
       return Promise.resolve();
     },
     unregisterContentScripts(filter: { ids?: string[] }): Promise<void> {
@@ -143,6 +177,19 @@ function installChrome(
         if (index >= 0) registered.splice(index, 1);
       }
       return Promise.resolve();
+    },
+    /**
+     * What Chrome holds, which is the only authority the worker now trusts. A COPY, so a caller
+     * cannot mutate the stub's list through the value it was handed.
+     */
+    getRegisteredContentScripts(): Promise<RegisteredScript[]> {
+      const answer = (): RegisteredScript[] => registered.map((script) => ({ ...script }));
+      if (options.deferScriptRead !== true) return Promise.resolve(answer());
+      return new Promise<RegisteredScript[]>((resolve) => {
+        heldScriptReads.push(() => {
+          resolve(answer());
+        });
+      });
     },
   };
 
@@ -153,18 +200,47 @@ function installChrome(
     },
     storage: { session: storageSession },
     tabs: { onRemoved },
-    permissions: { onAdded, onRemoved: onPermissionsRemoved },
+    permissions: {
+      onAdded,
+      onRemoved: onPermissionsRemoved,
+      /**
+       * The origins the user has actually granted, INDEPENDENT of what is registered.
+       *
+       * The whole defect lives in the gap between these two lists: a grant survives an extension
+       * reload or update and the registration made from it does not, so a stub that derived one
+       * from the other could not express the broken state at all — which is precisely why no test
+       * caught this.
+       *
+       * Seeded with the manifest's own content-script matches, because real Chrome reports those
+       * among `getAll().origins`. A reconciliation that did not exclude them would register a
+       * second, dynamic copy of both scripts for the localhost family.
+       */
+      getAll: (): Promise<{ origins: string[] }> =>
+        Promise.resolve({
+          origins: [
+            ...MANIFEST_CONTENT_SCRIPTS.flatMap((entry) => entry.matches),
+            ...grantedOrigins,
+          ],
+        }),
+    },
     scripting,
   } as unknown as typeof chrome;
 
   return {
     session,
     registered,
+    grantedOrigins,
     connect: (port) => {
       onConnect.emit(port);
     },
     removeTab: (tabId) => {
       onRemoved.emit(tabId);
+    },
+    releaseScriptRead: () => {
+      while (heldScriptReads.length > 0) {
+        const resolve = heldScriptReads.shift();
+        if (resolve) resolve();
+      }
     },
     releaseGet: () => {
       while (held.length > 0) {
@@ -173,9 +249,17 @@ function installChrome(
       }
     },
     grantOrigins: (origins) => {
+      // A real grant does BOTH: the permission becomes granted, and `onAdded` fires once.
+      for (const origin of origins) {
+        if (!grantedOrigins.includes(origin)) grantedOrigins.push(origin);
+      }
       onAdded.emit({ origins });
     },
     removeOrigins: (origins) => {
+      for (const origin of origins) {
+        const index = grantedOrigins.indexOf(origin);
+        if (index >= 0) grantedOrigins.splice(index, 1);
+      }
       onPermissionsRemoved.emit({ origins });
     },
   };
@@ -744,6 +828,277 @@ describe('service worker', () => {
     const records = testHook().records();
     expect(records.map((record) => record.seq)).toEqual([50, 51]);
     expect(testHook().droppedBefore()).toBe(4);
+  });
+});
+
+
+/**
+ * THE SECOND SESSION — an origin that was granted in an earlier run of this extension.
+ *
+ * The case nothing in this repository could reach, by construction, until now. Every test above
+ * and every harness e2e grants the origin INSIDE the test, so `chrome.permissions.onAdded` always
+ * fires and the one registration trigger the worker had always ran. That is not what a user's
+ * second day looks like: the grant is already there, Chrome has dropped the dynamic content-script
+ * registrations across the extension reload or update, and `onAdded` has nothing left to fire
+ * about because nothing was added.
+ *
+ * Measured in the user's own Chrome on 2026-08-15, on an origin granted that morning:
+ * `window.fetch` unpatched, `XMLHttpRequest.prototype.open` unpatched, `window.__AGUI_DEVTOOLS__`
+ * absent — before AND after a page reload, which is what rules out the already-known "the document
+ * was open before the grant" case. Capture was dead for that origin permanently, and revoking and
+ * re-granting was the only way back.
+ *
+ * Every test below therefore fires NO `onAdded` event at all. The trigger is the worker booting.
+ */
+describe('service worker — a second session against an existing grant', () => {
+  const GRANTED = 'https://app.example.com/*';
+
+  it('registers an origin that is already granted and has nothing registered for it', async () => {
+    const stub = installChrome(new Map(), { granted: [GRANTED] });
+    await loadWorker();
+    await settle();
+
+    // No grant happened during this test. The registration is the worker's boot path reconciling
+    // what Chrome says is granted against what Chrome says is registered, which is the whole fix.
+    expect(stub.registered.map((script) => script.id)).toEqual([
+      `agui-dt-0-${GRANTED}`,
+      `agui-dt-1-${GRANTED}`,
+    ]);
+    expect(stub.registered.map((script) => script.world)).toEqual(['MAIN', 'ISOLATED']);
+    for (const script of stub.registered) expect(script.matches).toEqual([GRANTED]);
+    expect(testHook().registration()).toEqual({ matches: [GRANTED], error: null });
+  });
+
+  it('does not register a second, dynamic copy of the manifest’s own localhost matches', async () => {
+    const stub = installChrome(new Map(), { granted: [GRANTED] });
+    await loadWorker();
+    await settle();
+
+    // `chrome.permissions.getAll()` reports content-script matches among its origins, so a
+    // reconciliation that took that list at face value would register a SECOND copy of both
+    // scripts for `http://localhost/*`. The manifest's copy cannot be unregistered, so the page
+    // would get the capture layer injected twice — and the panel would report a registration for
+    // an origin the worker does not actually own.
+    expect(stub.registered.flatMap((script) => script.matches ?? [])).toEqual([GRANTED, GRANTED]);
+    expect(testHook().registration()?.matches).not.toContain('http://localhost/*');
+  });
+
+  it('leaves live registrations alone rather than registering them twice', async () => {
+    const already = [
+      { id: `agui-dt-0-${GRANTED}`, matches: [GRANTED], js: ['inject.js'] },
+      { id: `agui-dt-1-${GRANTED}`, matches: [GRANTED], js: ['relay-loader.js'] },
+    ];
+    const stub = installChrome(new Map(), { granted: [GRANTED], registered: already });
+    await loadWorker();
+    await settle();
+
+    // The ordinary spawn: an idle worker respawning onto registrations that are still in place.
+    // Reconciliation runs on EVERY spawn, so it has to be idempotent or every respawn would
+    // rediscover the same duplicate-id rejection this worker used to swallow.
+    expect(stub.registered.length).toBe(2);
+    expect(testHook().registration()).toEqual({ matches: [GRANTED], error: null });
+  });
+
+  it('rebuilds what it believes is registered from Chrome, so a revoke after a respawn works', async () => {
+    const already = [
+      { id: `agui-dt-0-${GRANTED}`, matches: [GRANTED], js: ['inject.js'] },
+      { id: `agui-dt-1-${GRANTED}`, matches: [GRANTED], js: ['relay-loader.js'] },
+    ];
+    const stub = installChrome(new Map(), { granted: [GRANTED], registered: already });
+    await loadWorker();
+    await settle();
+
+    stub.removeOrigins([GRANTED]);
+    await settle();
+
+    /*
+     * The same class of error as the bug this file was corrected for, pointing the other way.
+     *
+     * `registeredMatches` used to be an in-memory Set that only ever grew from `onAdded`, so on a
+     * worker respawn it came back empty while the real registrations were still in place —
+     * `unregisterForMatches` then skipped every match it had never heard of, and an origin the
+     * user had explicitly REVOKED went on being captured. §11 is opt-in per origin, and this is
+     * the opt-out half of it.
+     */
+    expect(stub.registered).toEqual([]);
+    expect(testHook().registration()).toEqual({ matches: [], error: null });
+  });
+
+  it('completes a half-registration rather than calling it registered', async () => {
+    // The MAIN-world patcher without the ISOLATED-world relay is not a working capture layer: it
+    // patches the page and has no way to reach `chrome.runtime` to report anything.
+    const half = [{ id: `agui-dt-0-${GRANTED}`, matches: [GRANTED], js: ['inject.js'] }];
+    const stub = installChrome(new Map(), { granted: [GRANTED], registered: half });
+    await loadWorker();
+    await settle();
+
+    expect(stub.registered.map((script) => script.id)).toEqual([
+      `agui-dt-0-${GRANTED}`,
+      `agui-dt-1-${GRANTED}`,
+    ]);
+    expect(testHook().registration()?.matches).toEqual([GRANTED]);
+  });
+
+  it('reports a real registration failure instead of swallowing it', async () => {
+    const stub = installChrome(new Map(), {
+      granted: [GRANTED],
+      failRegistration: 'Invalid value for parameter matches',
+    });
+    await loadWorker();
+    await settle();
+
+    /*
+     * The `catch` used to discard everything, which is how a registration that never happened
+     * stayed invisible through a release. A failure has to be observable somewhere a panel or a
+     * test can see it — and it must NOT be an unhandled rejection, which in a worker is a broken
+     * worker.
+     */
+    expect(stub.registered).toEqual([]);
+    expect(testHook().registration()).toEqual({
+      matches: [],
+      error: 'Invalid value for parameter matches',
+    });
+  });
+
+  it('does not report a duplicate-id rejection, which is the end state it wanted', async () => {
+    const stub = installChrome(new Map(), {
+      granted: [GRANTED],
+      failRegistration: "Duplicate script ID 'agui-dt-0-https://app.example.com/*'",
+    });
+    await loadWorker();
+    await settle();
+
+    // Genuinely fine: something else registered it first. Reporting it would put a failure in
+    // front of the user for a capture layer that is working.
+    expect(testHook().registration()?.error).toBeNull();
+    expect(stub.registered).toEqual([]);
+  });
+
+  it('says "not known yet" rather than "nothing registered" before it has read Chrome', async () => {
+    // `deferScriptRead` pins the worker in the moment that actually happens on every spawn: the
+    // reconciliation is async, and a panel can subscribe before it lands.
+    const stub = installChrome(new Map(), { granted: [GRANTED], deferScriptRead: true });
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+
+    /*
+     * NULL, NOT AN EMPTY LIST.
+     *
+     * Answering with the empty set the worker happens to be holding would make the panel flash
+     * "the capture scripts are not registered" on every open — P12's false-warning failure,
+     * reintroduced by the very change that was meant to stop the panel being confidently wrong.
+     */
+    expect(snapshotOf(panel).registration).toBeNull();
+    expect(testHook().registration()).toBeNull();
+    expect(stub.registered).toEqual([]);
+
+    stub.releaseScriptRead();
+    await settle();
+    stub.releaseScriptRead();
+    await settle();
+
+    // And it stops being null the moment there is a real answer, rather than staying unknown.
+    expect(testHook().registration()).toEqual({ matches: [GRANTED], error: null });
+  });
+
+  it('puts the registration on the snapshot a panel is actually sent', async () => {
+    const stub = installChrome(new Map(), { granted: [GRANTED] });
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+
+    /*
+     * The drift the test hook cannot hold on its own.
+     *
+     * `registration()` is read through the same function `snapshotFor` embeds, but it does not go
+     * through `everySnapshot()` — registration is not per tab, and the harness has to read it
+     * before any page exists. This is the assertion that closes the gap: the fact the harness
+     * asserts on is the fact the panel receives. A hook that built its own view of worker state is
+     * exactly how an earlier e2e stayed green while the shipped message lost a field.
+     */
+    expect(snapshotOf(panel).registration).toEqual(testHook().registration());
+    expect(snapshotOf(panel).registration).toEqual({ matches: [GRANTED], error: null });
+  });
+
+  it('re-registers on the panel’s command and answers every panel with the result', async () => {
+    const stub = installChrome(new Map(), { granted: [GRANTED] });
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+
+    // Chrome has dropped the registrations underneath a running worker — an extension update while
+    // a panel is open. Nothing fires; the panel's own command is the only way back.
+    stub.registered.length = 0;
+    send(panel, { kind: 'reconcile-registrations' });
+    await settle();
+
+    expect(stub.registered.map((script) => script.id)).toEqual([
+      `agui-dt-0-${GRANTED}`,
+      `agui-dt-1-${GRANTED}`,
+    ]);
+    const pushed = messagesOfKind(panel, 'registration').at(-1);
+    expect(pushed).toEqual({
+      kind: 'registration',
+      registration: { matches: [GRANTED], error: null },
+    });
+  });
+
+  it('takes no origin from the panel: the command names nothing to register', async () => {
+    const stub = installChrome(new Map(), { granted: [] });
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    // Whatever else rides on the message, the origin list comes from `chrome.permissions.getAll()`
+    // and nowhere else — so this command cannot cause an origin the user never opted in to to have
+    // code injected into it.
+    panel.onMessage.emit(
+      { kind: 'reconcile-registrations', origins: ['https://evil.example/*'] },
+      panel,
+    );
+    await settle();
+
+    expect(stub.registered).toEqual([]);
+
+    // And the command IS being processed — otherwise the assertion above would hold for a message
+    // that was simply dropped, which is the vacuous version of this test. The same message, once
+    // the user has actually granted an origin, registers that one and still not the named one.
+    stub.grantedOrigins.push(GRANTED);
+    send(panel, { kind: 'reconcile-registrations' });
+    await settle();
+
+    expect(stub.registered.flatMap((script) => script.matches ?? [])).toEqual([GRANTED, GRANTED]);
+  });
+
+  it('rejects a command whose kind is inherited rather than its own', async () => {
+    const stub = installChrome(new Map(), { granted: [GRANTED] });
+    await loadWorker();
+    await settle();
+    stub.registered.length = 0;
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    // A guard that reads properties rather than own-properties validates this. The panel is our
+    // own document rather than a hostile peer, but a guard whose safety rests on who happens to be
+    // calling it stops being safe the first time someone adds a sender — and this is the one
+    // command that makes the extension inject code somewhere.
+    panel.onMessage.emit(Object.create({ kind: 'reconcile-registrations' }), panel);
+    await settle();
+
+    expect(stub.registered).toEqual([]);
   });
 });
 
@@ -1501,5 +1856,37 @@ describe('service worker — /info agent discovery', () => {
     // No claim, rather than a claim assembled from something this build cannot read. The next
     // discovery response fills it in.
     expect(snapshotOf(panel).info).toBeNull();
+  });
+});
+
+/**
+ * The registration failure reported is the one from THIS attempt.
+ *
+ * Its own block because it needs a stub whose `registerContentScripts` fails once and then works,
+ * which `failRegistration` cannot express — it is permanent by design, so that the error-reporting
+ * test above cannot pass by accident.
+ */
+describe('service worker — a registration failure does not outlive the attempt that caused it', () => {
+  it('clears a recorded failure once a later pass has nothing left to fail at', async () => {
+    const GRANTED = 'https://app.example.com/*';
+    const stub = installChrome(new Map(), {
+      granted: [GRANTED],
+      failRegistration: 'Invalid value for parameter matches',
+    });
+    await loadWorker();
+    await settle();
+    expect(testHook().registration()?.error).toBe('Invalid value for parameter matches');
+
+    // Whatever fixed it — a newer build, a retry, another path — the origin is now registered.
+    // A field only ever cleared by a successful WRITE would strand this failure for the life of
+    // the worker, and the panel would go on naming it for an origin that works.
+    stub.registered.push(
+      { id: `agui-dt-0-${GRANTED}`, matches: [GRANTED], js: ['inject.js'] },
+      { id: `agui-dt-1-${GRANTED}`, matches: [GRANTED], js: ['relay-loader.js'] },
+    );
+    await testHook().reconcileRegistrations();
+    await settle();
+
+    expect(testHook().registration()).toEqual({ matches: [GRANTED], error: null });
   });
 });

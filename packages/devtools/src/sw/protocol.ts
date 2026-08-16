@@ -83,6 +83,41 @@ export interface ClosedConn {
   tMs: number;
 }
 
+/**
+ * Which origins the capture content scripts are actually REGISTERED for, and whether the last
+ * attempt to register them failed.
+ *
+ * A DIFFERENT FACT FROM THE PERMISSION, and the difference is a shipped defect. A runtime grant
+ * survives an extension reload or update; the dynamic registration made from it does not, and
+ * `chrome.permissions.onAdded` never fires again because the origin is still granted. The panel
+ * used to have no way to tell "granted and registered, but this document loaded before the
+ * registration" from "granted and not registered at all" — and it offered the same remedy for
+ * both, a page reload, which cannot possibly help in the second case.
+ *
+ * `matches` lists the patterns registered DYNAMICALLY, through `chrome.scripting`. The manifest's
+ * static localhost family is deliberately absent: those are registered by Chrome from the manifest
+ * itself and cannot go missing, and the panel already knows them by pattern
+ * (`panel/capture/grant.ts`'s `isAutoEnabledOrigin`) because a match pattern ignores the port and
+ * a string comparison against `http://localhost:5173` would fail.
+ *
+ * `null` WHEREVER ONE OF THESE IS EXPECTED means the worker has not managed to read
+ * `chrome.scripting.getRegisteredContentScripts()` yet — "not known", never "nothing registered".
+ * The read is async and a panel can subscribe before it lands, so a worker that answered with an
+ * empty list in the meantime would make the panel flash "the capture scripts are not registered"
+ * on every open. That is P12's false-warning failure, and the tri-state here is the same
+ * discipline `loaded` already has.
+ *
+ * `error` is the other half of the same lesson. The registration `catch` used to discard
+ * everything, which is how a registration that never happened stayed invisible for a whole
+ * release. A duplicate-id rejection is genuinely fine and is not reported here; anything else is.
+ */
+export interface RegistrationState {
+  /** Match patterns this worker currently has capture content scripts registered for. */
+  matches: string[];
+  /** The last registration failure that was not a benign duplicate, or `null`. */
+  error: string | null;
+}
+
 /* -------------------------------------------------------------------------- */
 /* The panel leg                                                                */
 /* -------------------------------------------------------------------------- */
@@ -152,6 +187,21 @@ export type SwMessage =
        * deployment, no `/info` request was made at all. It is not an error state.
        */
       info: RuntimeInfo | null;
+      /**
+       * Which origins capture content scripts are registered for right now (see
+       * `RegistrationState`).
+       *
+       * NOT OPTIONAL, for the same reason `closed` and `info` above are not. This is what lets the
+       * panel tell "the scripts are registered and this document simply predates them" — where a
+       * page reload is the remedy — from "the scripts are not registered at all", where a reload
+       * does nothing at all and the user reloads, reads the identical message, and concludes the
+       * tool is broken. A producer that forgets it is the defect, and a compile error is how that
+       * gets caught.
+       *
+       * `null` is "the worker has not read Chrome yet" and nothing may warn on it — see
+       * `RegistrationState`.
+       */
+      registration: RegistrationState | null;
     }
   | {
       kind: 'append';
@@ -196,6 +246,17 @@ export type SwMessage =
    * the relay's.
    */
   | { kind: 'capture-loaded' }
+  /**
+   * The registration picture changed — the worker reconciled at startup, an origin was granted or
+   * revoked, or a panel asked for a re-registration.
+   *
+   * Carries the whole `RegistrationState`, nullable exactly as the `snapshot` field is, so the
+   * pushed fact and the one retained on `snapshot` cannot drift apart: they are the same fact,
+   * delivered to whoever is listening at the time and to whoever arrives later. Not scoped to a
+   * tab — registration is per ORIGIN and global to the extension — so every subscribed panel is
+   * told.
+   */
+  | { kind: 'registration'; registration: RegistrationState | null }
   | { kind: 'cleared' };
 
 /** Panel → worker. */
@@ -203,4 +264,14 @@ export type PanelCommand =
   /** Which tab this panel is inspecting. Sent once, on connect. */
   | { kind: 'subscribe'; tabId: number }
   | { kind: 'clear' }
-  | { kind: 'set-recording'; recording: boolean };
+  | { kind: 'set-recording'; recording: boolean }
+  /**
+   * Re-run the reconciliation: read the granted origins, read what is registered, register the
+   * difference. Answered with a `registration` message either way.
+   *
+   * Carries NO arguments on purpose. The origin to register is not the panel's to name — the
+   * worker takes it from `chrome.permissions.getAll()`, which is the only authority on what the
+   * user has actually granted — so this command cannot be used to register an origin the user
+   * never opted in to, whatever reaches this port.
+   */
+  | { kind: 'reconcile-registrations' };

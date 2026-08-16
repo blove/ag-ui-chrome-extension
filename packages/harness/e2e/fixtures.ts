@@ -28,9 +28,9 @@ import type { CaptureRecord, Issue, Run } from '@devtools/core/model/types';
 import { createRunBuilder } from '@devtools/core/normalizer/run-builder';
 import { createLiveSession } from '@devtools/panel/capture/live-session';
 import { initialPanelState } from '@devtools/panel/model/panel-types';
-import type { ClosedConn, RequestLine } from '@devtools/sw/protocol';
+import type { ClosedConn, RegistrationState, RequestLine } from '@devtools/sw/protocol';
 
-export type { ClosedConn, RequestLine };
+export type { ClosedConn, RegistrationState, RequestLine };
 
 export interface CaptureSnapshot {
   records: CaptureRecord[];
@@ -65,6 +65,17 @@ export interface CaptureSnapshot {
    * `null` is the ordinary answer for most pages and is not a failure — see `foldAsLatePanel`.
    */
   info: RuntimeInfo | null;
+  /**
+   * Which origins the capture content scripts are registered for, and the last real registration
+   * failure — read through the worker's hook from the same `registrationState()` `snapshotFor`
+   * embeds.
+   *
+   * The fact the "capture dies after an extension update" defect turns on. Chrome discards
+   * dynamically registered content scripts on an update and keeps the permission, so the origin
+   * being granted says nothing about whether anything is registered for it — and the panel, which
+   * could only see the grant, advised a page reload that in that state does nothing at all.
+   */
+  registration: RegistrationState | null;
 }
 
 /** The shape `src/sw/index.ts` attaches to the SW global, unconditionally. */
@@ -76,6 +87,8 @@ interface TestHook {
   loaded(): boolean;
   closes(): ClosedConn[];
   info(): RuntimeInfo | null;
+  registration(): RegistrationState | null;
+  reconcileRegistrations(): Promise<void>;
   clear(): void;
 }
 
@@ -183,6 +196,7 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
       loaded: hook.loaded(),
       closes: hook.closes(),
       info: hook.info(),
+      registration: hook.registration(),
     };
   });
 }
@@ -337,6 +351,11 @@ export function foldAsLatePanel(capture: CaptureSnapshot): LatePanelFold {
     // arm was broadcast long before this panel existed. Spec §13 done-when #2 is exactly this
     // ordering: the panel is opened after the client connected, and the list is still there.
     info: capture.info,
+    // Not read by the runs or the issues — it drives the capture BANNER, which is unreachable
+    // from Playwright. Stated so the message this builds is the message `snapshotFor` produces:
+    // a late-panel fold assembled from a different shape than the worker actually sends is the
+    // exact drift this helper exists to rule out.
+    registration: capture.registration,
   });
   return { runs: state.runs, issues: state.issues, runtime: state.runtime };
 }

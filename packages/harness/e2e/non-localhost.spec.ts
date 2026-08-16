@@ -65,45 +65,38 @@ let registeredMatches: string[] = [];
 const pageErrors: string[] = [];
 
 /**
- * What `src/sw/index.ts` `registerForMatches` does, run in the worker's own context.
+ * What the worker has ACTUALLY registered, read out of its own context.
  *
- * The scripts are read from `chrome.runtime.getManifest()` rather than named here, for the same
- * reason the worker reads them there: the emitted filenames are build outputs, and a hardcoded
- * path would rot into a test that registers nothing and asserts nothing.
+ * THIS USED TO REGISTER THE SCRIPTS ITSELF, restating `registerForMatches` inline because the
+ * `permissions.onAdded` -> `registerForMatches` wiring was not reachable from here: an unpacked
+ * extension receives its manifest host permissions at load time with no event. That is no longer
+ * necessary and would now collide — measured, on the first run after the fix:
+ * `Duplicate script ID 'agui-dt-0-http://app.test/*'`. The worker reconciles at module scope, so
+ * on an origin that is already granted it registers the scripts with no event at all, which is
+ * exactly the case this file's grant models and the whole of what the reconciliation fix is for.
+ *
+ * So this now WAITS on the product's own registration instead of performing one. That is strictly
+ * stronger: the assertion below is no longer about a registration this test made.
  */
-interface DeclaredContentScript {
-  js?: string[];
-  world?: string;
-  all_frames?: boolean;
-}
-
-/** The slice of the `chrome` namespace this needs. The harness has no `@types/chrome`. */
 interface ChromeForRegistration {
-  runtime: { getManifest(): { content_scripts?: DeclaredContentScript[] } };
   scripting: {
-    registerContentScripts(scripts: unknown[]): Promise<void>;
     getRegisteredContentScripts(): Promise<{ id: string; matches?: string[] }[]>;
   };
 }
 
-async function registerForOrigin(context: BrowserContext, match: string): Promise<string[]> {
+async function registeredForOrigin(context: BrowserContext, match: string): Promise<string[]> {
   const sw = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
-  return sw.evaluate(async (pattern: string): Promise<string[]> => {
-    const api = (globalThis as unknown as { chrome: ChromeForRegistration }).chrome;
-    const declared = api.runtime.getManifest().content_scripts ?? [];
-    await api.scripting.registerContentScripts(
-      declared.map((entry, index) => ({
-        id: `agui-dt-${String(index)}-${pattern}`,
-        matches: [pattern],
-        js: entry.js ?? [],
-        runAt: 'document_start',
-        world: entry.world === 'MAIN' ? 'MAIN' : 'ISOLATED',
-        allFrames: entry.all_frames ?? true,
-      })),
-    );
-    const registered = await api.scripting.getRegisteredContentScripts();
-    return registered.flatMap((script) => script.matches ?? []);
-  }, match);
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    const matches = await sw.evaluate(async (): Promise<string[]> => {
+      const api = (globalThis as unknown as { chrome: ChromeForRegistration }).chrome;
+      const registered = await api.scripting.getRegisteredContentScripts();
+      return registered.flatMap((script) => script.matches ?? []);
+    });
+    if (matches.filter((entry) => entry === match).length >= 2) return matches;
+    if (Date.now() >= deadline) return matches;
+    await new Promise((settle) => setTimeout(settle, 50));
+  }
 }
 
 function capturedEventTypes(records: CaptureRecord[]): string[] {
@@ -130,7 +123,7 @@ test.beforeAll(async () => {
       `--unsafely-treat-insecure-origin-as-secure=${appUrl.replace(/\/$/, '')}`,
     ],
   }));
-  registeredMatches = await registerForOrigin(ctx, APP_ORIGIN_PATTERN);
+  registeredMatches = await registeredForOrigin(ctx, APP_ORIGIN_PATTERN);
 
   page = await ctx.newPage();
   page.on('pageerror', (error) => pageErrors.push(error.message));
