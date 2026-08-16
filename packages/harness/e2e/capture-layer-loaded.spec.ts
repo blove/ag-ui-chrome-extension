@@ -43,41 +43,66 @@ const PROMPT = 'happy';
 const APP_HOST = 'app.test';
 const APP_ORIGIN_PATTERN = `http://${APP_HOST}/*`;
 
-interface DeclaredContentScript {
-  js?: string[];
-  world?: string;
-  all_frames?: boolean;
+interface ChromeForRegistration {
+  scripting: {
+    getRegisteredContentScripts(): Promise<{ id: string; matches?: string[] }[]>;
+    unregisterContentScripts(filter?: { ids?: string[] }): Promise<void>;
+  };
 }
 
-interface ChromeForRegistration {
-  runtime: { getManifest(): { content_scripts?: DeclaredContentScript[] } };
-  scripting: { registerContentScripts(scripts: unknown[]): Promise<void> };
+/** The worker's own hook — see `src/sw/index.ts`, installed unconditionally. */
+interface RegistrationHook {
+  reconcileRegistrations(): Promise<void>;
+}
+
+/** Match patterns the worker currently has capture scripts registered for. */
+async function registeredMatches(context: BrowserContext): Promise<string[]> {
+  const sw = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+  return sw.evaluate(async (): Promise<string[]> => {
+    const api = (globalThis as unknown as { chrome: ChromeForRegistration }).chrome;
+    const registered = await api.scripting.getRegisteredContentScripts();
+    return registered.flatMap((script) => script.matches ?? []);
+  });
 }
 
 /**
- * The grant taking effect: what `src/sw/index.ts` `registerForMatches` does, run in the worker.
+ * Put the extension back to "granted, nothing registered yet" — the state this fixture needs the
+ * page to be opened in.
+ *
+ * IT USED TO NEED NO SUCH THING, and that is the change worth understanding. The worker used to
+ * register only on `chrome.permissions.onAdded`, which an unpacked extension's manifest host
+ * permission never fires, so an origin granted this way stayed unregistered until this file
+ * registered it by hand — and the hand-written registration WAS the fake grant. The worker now
+ * reconciles at module scope on every spawn, so by the time a page could be opened the origin is
+ * already registered and the ordering this spec is about no longer occurs on its own. Undoing the
+ * registration reconstructs it faithfully: the permission is untouched, and the open document
+ * genuinely has no content scripts in it.
+ */
+async function unregisterEverything(context: BrowserContext): Promise<void> {
+  const sw = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+  await sw.evaluate(async (): Promise<void> => {
+    const api = (globalThis as unknown as { chrome: ChromeForRegistration }).chrome;
+    const registered = await api.scripting.getRegisteredContentScripts();
+    await api.scripting.unregisterContentScripts({ ids: registered.map((script) => script.id) });
+  });
+}
+
+/**
+ * The grant taking effect, through the PRODUCT'S OWN path.
  *
  * `chrome.permissions.request` needs a real user gesture and raises a native dialog no automation
- * can accept, so the PROMPT is what is faked here — never the registration. The scripts are read
- * from the manifest exactly as the worker reads them, and the files injected are the ones this
- * build emitted.
+ * can accept, so the PROMPT is what is faked here — never the registration. This is the same
+ * function the worker runs at boot and the same one the panel's "Register the capture scripts"
+ * button asks for, so the registration under test is the shipped one rather than a restatement of
+ * it in this file.
  */
-async function registerForOrigin(context: BrowserContext, match: string): Promise<void> {
+async function registerForOrigin(context: BrowserContext): Promise<void> {
   const sw = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
-  await sw.evaluate(async (pattern: string): Promise<void> => {
-    const api = (globalThis as unknown as { chrome: ChromeForRegistration }).chrome;
-    const declared = api.runtime.getManifest().content_scripts ?? [];
-    await api.scripting.registerContentScripts(
-      declared.map((entry, index) => ({
-        id: `agui-dt-${String(index)}-${pattern}`,
-        matches: [pattern],
-        js: entry.js ?? [],
-        runAt: 'document_start',
-        world: entry.world === 'MAIN' ? 'MAIN' : 'ISOLATED',
-        allFrames: entry.all_frames ?? true,
-      })),
-    );
-  }, match);
+  await sw.evaluate(async (): Promise<void> => {
+    const hook = (globalThis as { __AGUI_DT_TEST__?: RegistrationHook }).__AGUI_DT_TEST__;
+    if (!hook) throw new Error('__AGUI_DT_TEST__ is not installed on the service worker.');
+    await hook.reconcileRegistrations();
+  });
 }
 
 function capturedEventTypes(records: CaptureRecord[]): string[] {
@@ -129,6 +154,8 @@ let nativeBefore = false;
 let nativeAfter = true;
 let beforeReload: CaptureSnapshot;
 let afterReload: CaptureSnapshot;
+let registeredBeforePage: string[] = [];
+let registeredAfterGrant: string[] = [];
 
 test.beforeAll(async () => {
   harness = await startHarnessServer();
@@ -146,6 +173,14 @@ test.beforeAll(async () => {
     ],
   }));
 
+  // The worker reconciles at boot, so wait for that to have happened and then undo it — the page
+  // has to be opened while nothing is registered for its origin, which is what this fixture is.
+  await expect
+    .poll(async () => (await registeredMatches(ctx)).length, { timeout: 15_000 })
+    .toBe(2);
+  await unregisterEverything(ctx);
+  registeredBeforePage = await registeredMatches(ctx);
+
   // THE PAGE IS OPENED FIRST, before anything is registered for its origin. This is the whole
   // fixture: the user had the app open, and then enabled capture on it.
   page = await ctx.newPage();
@@ -153,7 +188,8 @@ test.beforeAll(async () => {
   nativeBefore = await fetchIsNative(page);
 
   // ...and now the grant lands. Nothing about the open document changes.
-  await registerForOrigin(ctx, APP_ORIGIN_PATTERN);
+  await registerForOrigin(ctx);
+  registeredAfterGrant = await registeredMatches(ctx);
 
   await runOnce(page, PROMPT);
   // Read plainly, and deliberately: this document has no hooks, so there is no connection to
@@ -187,6 +223,11 @@ test('the page under test is genuinely not localhost', () => {
   const host = new URL(appUrl).hostname;
   expect(host).toBe(APP_HOST);
   expect(['localhost', '127.0.0.1', '0.0.0.0']).not.toContain(host);
+  // And the ORDERING the fixture depends on really was constructed: nothing registered when the
+  // page was opened, both scripts registered afterwards. Without this the assertions below would
+  // pass for a page that had the capture layer all along and simply failed to report it.
+  expect(registeredBeforePage).toEqual([]);
+  expect(registeredAfterGrant).toEqual([APP_ORIGIN_PATTERN, APP_ORIGIN_PATTERN]);
 });
 
 test('a document open before the grant has no capture layer, and the state says so', () => {
