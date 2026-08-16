@@ -16,8 +16,11 @@
 import {
   classifyContentType,
   createConnClassifier,
+  routeHint,
   type Classification,
+  type RouteHint,
 } from '../core/detect/classifier';
+import { parseInfoBody, type RuntimeMode } from '../core/detect/info';
 import { createSseParser, type SseFrame } from '../core/sse/parser';
 import {
   AGUI_DT_SOURCE,
@@ -67,6 +70,17 @@ const MAX_TRACKED_CLASSIFICATIONS = 64;
  * so the check has to happen before the tee, not in a catch around it.
  */
 const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 103, 204, 205, 304]);
+
+/**
+ * Bound on the bytes read from an agent-discovery response.
+ *
+ * The measured Dojo response is ~200 bytes. This is four orders of magnitude of headroom, and it
+ * exists because the URL and body grammar that selects a response for reading is the page's to
+ * satisfy: a page that wanted to make this extension buffer a gigabyte only has to answer its own
+ * `/info` with one. Past the bound the read is ABANDONED and nothing is posted — no claim at all,
+ * rather than a claim built from a truncated body.
+ */
+const MAX_INFO_BYTES = 2_000_000;
 
 const defaultNow: () => number =
   typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -160,6 +174,29 @@ interface RequestMeta {
   /** Resolves to the captured body. Never rejects. */
   input: Promise<unknown>;
   signal: AbortSignal | undefined;
+  /**
+   * What the route grammar makes of this request, decided BEFORE the response arrives.
+   *
+   * It has to be synchronous: `observeResponse` must return a `Response` in the same turn, and
+   * deciding whether to tee a body cannot wait on a promise — by the time one resolved the page
+   * would already have the body and teeing it would be too late.
+   */
+  hint: RouteHint | undefined;
+}
+
+/**
+ * The request body, if it can be read without waiting.
+ *
+ * Only a plain string init body qualifies, which is exactly what the single-route client sends:
+ * `body: JSON.stringify({ method: 'info' })`. A `Request` object's body is a stream and a `Blob`'s
+ * read is async, so neither can be peeked at here — those requests simply get no `hint`, which
+ * costs a single-route info response smuggled inside a `Request` object and costs nothing else.
+ * The multi-route `GET .../info` has no body at all and is recognised from its URL.
+ */
+function syncBody(init: RequestInit | undefined): unknown {
+  if (!init || !('body' in init)) return undefined;
+  const raw = init.body;
+  return typeof raw === 'string' ? decodeBodyText(raw) : undefined;
 }
 
 function captureRequestMeta(
@@ -192,12 +229,22 @@ function captureRequestMeta(
   } else {
     body = Promise.resolve(null);
   }
+  const method = methodOf(input, init);
+  const url = urlOf(input);
+  let hint: RouteHint | undefined;
+  try {
+    hint = routeHint(url, method, syncBody(init));
+  } catch {
+    // A hostile `init` can throw from a `body` getter. No hint is the honest outcome.
+    hint = undefined;
+  }
   return {
-    method: methodOf(input, init),
-    url: urlOf(input),
+    method,
+    url,
     tMs,
     input: body.catch((): unknown => UNSUPPORTED_BODY),
     signal: signalOf(input, init),
+    hint,
   };
 }
 
@@ -481,11 +528,100 @@ export function installFetchPatch(host: FetchHost, options: FetchPatchOptions): 
     }
   }
 
+  /**
+   * Read an agent-discovery response and post what it said.
+   *
+   * Ordinary JSON, not a stream — so none of the SSE machinery above applies and none of it is
+   * reused. It is still read through a `tee()` for the same reason the SSE path is: the page's
+   * own branch must be untouched, and `response.json()` here would consume the body the page is
+   * about to read.
+   *
+   * Nothing is posted unless the body parses AND `parseInfoBody` recognises it. A 200 that
+   * answers `/info` with an unrelated document is not agent metadata, and the honest report of
+   * that is silence — the Session tab's empty state already says the right thing.
+   */
+  async function drainInfo(
+    stream: ReadableStream<Uint8Array>,
+    meta: RequestMeta,
+    connId: string,
+    mode: RuntimeMode,
+  ): Promise<void> {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    let bytes = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done === true) break;
+        bytes += value.byteLength;
+        // Abandoned, not truncated: half a JSON document parses to nothing, and a claim built
+        // from a prefix would be worse than no claim.
+        if (bytes > MAX_INFO_BYTES) return;
+        text += decoder.decode(value, { stream: true });
+      }
+      text += decoder.decode();
+    } catch {
+      // A torn stream loses the metadata. The page still has its own branch.
+      return;
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        /* already released */
+      }
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return;
+    }
+    const info = parseInfoBody(parsed, mode);
+    if (info === null) return;
+    safePost({
+      source: AGUI_DT_SOURCE,
+      v: PROTOCOL_VERSION,
+      kind: 'info',
+      connId,
+      tMs: now(),
+      url: meta.url,
+      info,
+    });
+  }
+
+  /**
+   * The one non-stream response this patch reads, and only when the page asked for it.
+   *
+   * Gated on the ROUTE HINT rather than on the content type: `application/json` is most of the
+   * web, and teeing all of it would be both a privacy claim this extension does not make and a
+   * cost the page would feel. `hint.kind === 'copilotkit-info'` is true for exactly two request
+   * shapes — `GET {base}/info` and `POST {base}` carrying `{"method":"info"}` — both of which the
+   * page issued itself (§11).
+   */
+  function observeInfo(response: Response, meta: RequestMeta): Response {
+    const hint = meta.hint;
+    if (hint === undefined || hint.kind !== 'copilotkit-info') return response;
+    // A failed request carries no agent metadata, and an error page can be arbitrarily large.
+    if (!response.ok) return response;
+    const body = response.body;
+    if (body === null || NULL_BODY_STATUSES.has(response.status)) return response;
+
+    const [toPage, toUs] = body.tee();
+    // Discarded deliberately, exactly as on the SSE path: awaiting would stall the page, and an
+    // unhandled rejection would surface inside the PAGE's own `onunhandledrejection`.
+    void drainInfo(toUs, meta, newConnId(), hint.mode).catch((): void => {});
+    return copyResponse(response, toPage);
+  }
+
   function observeResponse(response: Response, meta: RequestMeta): Response {
     // Requirements §11: `content-type` is the only header this extension ever reads.
     const contentType = response.headers.get('content-type');
     const transport = classifyContentType(contentType);
-    if (transport === 'other') return response;
+    // A discovery response is ordinary JSON, so it lands here — on the branch the SSE and binary
+    // paths both decline. The SSE path below is untouched by it.
+    if (transport === 'other') return observeInfo(response, meta);
 
     const connId = newConnId();
     const conn = createConn(connId, meta, contentType);

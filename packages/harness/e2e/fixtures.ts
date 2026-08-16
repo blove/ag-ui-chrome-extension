@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import { chromium, type BrowserContext, type Worker } from '@playwright/test';
 
+import type { RuntimeInfo } from '@devtools/core/detect/info';
 import type { CaptureRecord, Issue, Run } from '@devtools/core/model/types';
 import { createRunBuilder } from '@devtools/core/normalizer/run-builder';
 import { createLiveSession } from '@devtools/panel/capture/live-session';
@@ -53,6 +54,17 @@ export interface CaptureSnapshot {
    * at it — so the run-end issues this harness computes are anchored where the panel's are.
    */
   closes: ClosedConn[];
+  /**
+   * What a `/info` agent-discovery response told the worker, or `null` when none was seen.
+   *
+   * The same value the worker puts on a panel's `snapshot`, read from `snapshotFor` through the
+   * hook — NOT assembled from the worker's state beside it. That distinction is load-bearing and
+   * was learned the hard way here: a hook that built its own view of the same state kept this
+   * suite green while `closed` was deleted from the message the panel actually receives.
+   *
+   * `null` is the ordinary answer for most pages and is not a failure — see `foldAsLatePanel`.
+   */
+  info: RuntimeInfo | null;
 }
 
 /** The shape `src/sw/index.ts` attaches to the SW global, unconditionally. */
@@ -63,6 +75,7 @@ interface TestHook {
   bytes(): number;
   loaded(): boolean;
   closes(): ClosedConn[];
+  info(): RuntimeInfo | null;
   clear(): void;
 }
 
@@ -169,6 +182,7 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
       droppedBefore: hook.droppedBefore(),
       loaded: hook.loaded(),
       closes: hook.closes(),
+      info: hook.info(),
     };
   });
 }
@@ -256,6 +270,18 @@ export interface Reconstruction {
 }
 
 /**
+ * What a panel opened after the run holds, beyond its runs and issues.
+ *
+ * Separate from `Reconstruction` because `reconstruct` — the IMPORT-path model — cannot produce
+ * it: an import reads the metadata out of a file header, and there is no file here. This is the
+ * live half of that same fact.
+ */
+export interface LatePanelFold extends Reconstruction {
+  /** `PanelState.runtime` as the panel's own fold produces it. */
+  runtime: RuntimeInfo | null;
+}
+
+/**
  * Fold a captured snapshot with the real `core/` pipeline — the equivalence proof this whole
  * milestone exists for.
  *
@@ -298,7 +324,7 @@ export function reconstruct(capture: CaptureSnapshot): Reconstruction {
  * The closes come with their own `tMs` and are replayed as such — closing is the sole trigger for
  * `finalizeRules`, so a snapshot without them leaves every finished run in `outcome: 'running'`.
  */
-export function foldAsLatePanel(capture: CaptureSnapshot): Reconstruction {
+export function foldAsLatePanel(capture: CaptureSnapshot): LatePanelFold {
   const session = createLiveSession();
   const state = session.apply(initialPanelState(), {
     kind: 'snapshot',
@@ -307,8 +333,12 @@ export function foldAsLatePanel(capture: CaptureSnapshot): Reconstruction {
     closed: capture.closes,
     droppedBefore: capture.droppedBefore,
     loaded: capture.loaded,
+    // The agent metadata reaches a late panel on the snapshot and nowhere else — the `info` push
+    // arm was broadcast long before this panel existed. Spec §13 done-when #2 is exactly this
+    // ordering: the panel is opened after the client connected, and the list is still there.
+    info: capture.info,
   });
-  return { runs: state.runs, issues: state.issues };
+  return { runs: state.runs, issues: state.issues, runtime: state.runtime };
 }
 
 export async function clearCapture(ctx: BrowserContext): Promise<void> {

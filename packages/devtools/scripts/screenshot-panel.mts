@@ -303,6 +303,216 @@ async function checkFixtures(browser: Browser, origin: string): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Phase 2a — Session's /info rows (§13 done-when #2)                          */
+/* -------------------------------------------------------------------------- */
+
+/** Open the Session tab and wait for it. */
+async function openSession(page: Page): Promise<void> {
+  await page.click('button[role="tab"][id="agui-tab-session"]');
+  await page.waitForSelector('.agui-session');
+}
+
+/** The value beside a Session row's label, read from the rendered DOM. */
+function sessionRow(page: Page, label: string): Promise<string> {
+  return page.evaluate((wanted: string) => {
+    const dt = [...document.querySelectorAll('.agui-session__label')].find(
+      (el) => (el.textContent ?? '').trim() === wanted,
+    );
+    // 'MISSING' rather than '' so an absent row cannot be mistaken for an empty one — a check
+    // that passed on a selector matching nothing is one of the three gate holes this project
+    // has already found in itself.
+    return dt === undefined ? 'MISSING' : ((dt.nextElementSibling as HTMLElement | null)?.innerText ?? '').trim();
+  }, label);
+}
+
+interface AgentRow {
+  id: string;
+  text: string;
+  descriptionKnown: boolean;
+  descriptionColour: string;
+  descriptionStyle: string;
+}
+
+/** Every agent the Session tab drew, as it is actually laid out and painted. */
+function agentRows(page: Page): Promise<AgentRow[]> {
+  return page.$$eval('.agui-session__agent', (els) =>
+    els.map((el) => {
+      const description = el.querySelector('.agui-session__agent-description');
+      const style = description === null ? null : getComputedStyle(description);
+      return {
+        id: el.getAttribute('data-agent-id') ?? '?',
+        text: ((el as HTMLElement).innerText || '').trim(),
+        descriptionKnown: description?.getAttribute('data-known') === 'true',
+        descriptionColour: style?.color ?? 'MISSING',
+        descriptionStyle: style?.fontStyle ?? 'MISSING',
+      };
+    }),
+  );
+}
+
+/**
+ * The wording an absence must never use.
+ *
+ * `/info` is a CopilotKit runtime endpoint; an AG-UI app built without one never calls it, and
+ * the production Angular deployment this panel was measured against is exactly that case — three
+ * page loads, no `/info` request. Any of these words sends that user hunting a bug that is not
+ * there. This project has already been corrected twice for signals that were technically correct
+ * and practically misleading; this list is that lesson, enforced.
+ */
+const FAULT_WORDS =
+  /\b(not detected|detection|failed|failure|error|unable|could not|missing|broken|none found|no agents)\b/i;
+
+/**
+ * Session's `/info` rows, in the two states that matter — and the second one matters more.
+ *
+ * The unit tests already assert the strings. What only a browser can say is whether the agent
+ * list is VISIBLE and whether a description the runtime never wrote is drawn apart from one it
+ * did. Both states are photographed because both are shipped.
+ */
+async function checkSession(browser: Browser, origin: string): Promise<void> {
+  /* --- with agents: the criterion, on screen ----------------------------- */
+  {
+    const session = await openPanel(browser, origin, { scheme: 'light' });
+    await importFixture(session.page, join(fixtureDir, 'copilotkit-info.agui.jsonl'));
+    await openSession(session.page);
+    await session.page.screenshot({ path: join(outDir, 'session-agents.png'), fullPage: true });
+
+    const runtime = await sessionRow(session.page, 'Runtime');
+    if (runtime !== 'version 1.52.1-next.1 — multi-route mode') {
+      fail(
+        `the Session Runtime row reads ${JSON.stringify(runtime)}, expected the version and the ` +
+          'runtime mode requirements §4 asks for.',
+      );
+    }
+
+    const agents = await agentRows(session.page);
+    if (agents.length !== 2) {
+      fail(
+        `the Session tab drew ${String(agents.length)} agent rows for a capture whose header ` +
+          'lists two. Done-when #2 is the agent list being on screen; an empty list is the ' +
+          'criterion failing silently.',
+      );
+      await session.close();
+      return;
+    }
+    if (agents.map((agent) => agent.id).join(',') !== 'a2ui_chat,default') {
+      fail(
+        `the Session tab listed agents [${agents.map((agent) => agent.id).join(', ')}], expected ` +
+          'a2ui_chat and default — the ids a client addresses.',
+      );
+    }
+    // The ids are not merely in the DOM, they are text a reader can see.
+    const shown = await session.page.$eval('.agui-session', (el) => (el as HTMLElement).innerText);
+    for (const id of ['a2ui_chat', 'default']) {
+      if (!shown.includes(id)) {
+        fail(`the agent id "${id}" is in the markup but not visible in the Session tab.`);
+      }
+    }
+    if (!shown.includes('The runtime’s built-in agent.')) {
+      fail('an agent description the runtime authored is not visible in the Session tab.');
+    }
+
+    /*
+     * THE ASSERTION THIS ROW EXISTS FOR, beyond listing.
+     *
+     * The comparison is between two cells in the SAME position: `a2ui_chat` carries
+     * `description: ""` — the Dojo's own measured value — and `default` carries real prose. An
+     * absence drawn exactly like a value reads as something the runtime said. Same rule the Runs
+     * table applies to a duration it cannot measure.
+     */
+    const absent = agents.find((agent) => !agent.descriptionKnown);
+    const known = agents.find((agent) => agent.descriptionKnown);
+    if (absent === undefined || known === undefined) {
+      fail(
+        'the Session agent list has no pair of a written and an unwritten description to ' +
+          'compare. The fixture carries one of each.',
+      );
+    } else {
+      if (!absent.text.includes('no description')) {
+        fail(
+          `an agent whose description the runtime left blank reads ${JSON.stringify(absent.text)}. ` +
+            'An empty cell reads as a rendering bug rather than as an empty string.',
+        );
+      }
+      if (
+        absent.descriptionColour === known.descriptionColour &&
+        absent.descriptionStyle === known.descriptionStyle
+      ) {
+        fail(
+          `an unwritten description is drawn ${absent.descriptionColour} / ` +
+            `${absent.descriptionStyle}, exactly like the written one beside it. Its rule did ` +
+            'not reach the document.',
+        );
+      }
+      if (absent.descriptionColour === 'rgba(0, 0, 0, 0)') {
+        fail('the absent-description rule paints a transparent colour — it never reached it.');
+      }
+    }
+
+    if (session.errors.length > 0) {
+      fail(`the Session tab on a capture with /info metadata logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+
+  /* --- without: the honest empty state, which most users will see -------- */
+  {
+    const session = await openPanel(browser, origin, { scheme: 'dark' });
+    // No import at all: a freshly opened panel, which is where a user of a non-CopilotKit AG-UI
+    // app lands and stays.
+    await openSession(session.page);
+    await session.page.screenshot({ path: join(outDir, 'session-no-info.png'), fullPage: true });
+
+    for (const label of ['Runtime', 'Agents']) {
+      const value = await sessionRow(session.page, label);
+      if (value === 'MISSING') {
+        fail(
+          `the Session tab has no "${label}" row at all. An absent row reads as "there is ` +
+            'nothing to know", which is a different and false claim from "nothing was seen".',
+        );
+        continue;
+      }
+      if (!/no \/info response seen/i.test(value)) {
+        fail(
+          `the Session "${label}" row reads ${JSON.stringify(value)} with no /info response. It ` +
+            'must say what was seen — nothing — rather than leave the reader to infer it.',
+        );
+      }
+      if (!/CopilotKit runtime endpoint/i.test(value) || !/never calls it/i.test(value)) {
+        fail(
+          `the Session "${label}" row does not explain why an absent /info response is ordinary. ` +
+            'Most AG-UI apps have no CopilotKit runtime and never emit one; a reader not told ' +
+            'that reads the row as a finding about their app.',
+        );
+      }
+      const fault = FAULT_WORDS.exec(value);
+      if (fault !== null) {
+        fail(
+          `the Session "${label}" row words an ordinary absence as a fault: it contains ` +
+            `${JSON.stringify(fault[0])} in ${JSON.stringify(value)}. Nothing detected the ` +
+            'absence and nothing failed — the page simply never made the request.',
+        );
+      }
+    }
+
+    // No list, rather than an empty one: an empty `<ul>` reads as a runtime that answered with
+    // nothing, which is a claim this panel has no evidence for.
+    const stray = await agentRows(session.page);
+    if (stray.length > 0) {
+      fail(
+        `the Session tab drew ${String(stray.length)} agent rows with no /info response at all ` +
+          `([${stray.map((agent) => agent.id).join(', ')}]).`,
+      );
+    }
+
+    if (session.errors.length > 0) {
+      fail(`the empty Session /info state logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Phase 2b — Messages (§9.4, design decisions M1–M5)                          */
 /* -------------------------------------------------------------------------- */
 
@@ -1619,6 +1829,7 @@ async function main(): Promise<void> {
     // not already said, and buries the diagnosis under consequential failures.
     if (failures.length === 0) await checkUnreachableControls(browser, server.origin);
     if (failures.length === 0) await checkFixtures(browser, server.origin);
+    if (failures.length === 0) await checkSession(browser, server.origin);
     if (failures.length === 0) await checkMessages(browser, server.origin);
     if (failures.length === 0) await checkState(browser, server.origin);
     if (failures.length === 0) await checkRuns(browser, server.origin);
@@ -1648,6 +1859,15 @@ async function main(): Promise<void> {
   );
   console.log(
     `  partial decode: warned on import and after a tab switch — ${outDir}/partial-import.png`,
+  );
+  console.log('Session reports /info agent discovery in both of its states (done-when #2):');
+  console.log(
+    `  with agents: version and multi-route mode named, a2ui_chat and default listed, an ` +
+      `unwritten description drawn apart from a written one — ${outDir}/session-agents.png`,
+  );
+  console.log(
+    `  without: says no /info response was seen and why that is ordinary, with no fault wording ` +
+      `and no empty list — ${outDir}/session-no-info.png`,
   );
   console.log('Messages renders in every state design §8 names:');
   console.log(`  empty: says so rather than showing a blank pane — ${outDir}/messages-empty.png`);

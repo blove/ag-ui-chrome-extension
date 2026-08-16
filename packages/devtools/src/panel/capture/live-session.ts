@@ -9,6 +9,7 @@
  * No Chrome API is touched here. The port lives in `./port`, so every branch below is
  * reachable from a test with a plain object.
  */
+import type { RuntimeInfo } from '../../core/detect/info';
 import type { CaptureRecord } from '../../core/model/types';
 import { createRunBuilder, type RunBuilder } from '../../core/normalizer/run-builder';
 import type { ClosedConn, RequestLine, SwMessage } from '../../sw/protocol';
@@ -84,6 +85,14 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
   let panelDropped = 0;
   /** §5.4: the labelled binary transport, if this capture saw one. */
   let binary: BinaryTransport | null = null;
+  /**
+   * What a `/info` response said, if this capture saw one. `null` is the common case.
+   *
+   * Held here rather than only written into state so `refold` can put it back: expanding chunks
+   * rebuilds the fold from scratch, and metadata that vanished when the user pressed a display
+   * toggle would look exactly like metadata that was never captured.
+   */
+  let runtime: RuntimeInfo | null = null;
 
   function restart(next: LiveSessionOptions = {}): void {
     expandChunks = next.expandChunks ?? expandChunks;
@@ -95,6 +104,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     workerDropped = 0;
     panelDropped = 0;
     binary = null;
+    runtime = null;
   }
 
   /** Oldest-first eviction, counted. Never silent — that is the whole of P9. */
@@ -118,6 +128,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
       issues: builder.allIssues(),
       droppedBefore: workerDropped + panelDropped,
       binaryTransport: binary,
+      runtime,
     };
   }
 
@@ -148,6 +159,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     const heldWorkerDropped = workerDropped;
     const heldPanelDropped = panelDropped;
     const heldBinary = binary;
+    const heldRuntime = runtime;
     restart(next);
     for (const request of heldRequests) addRequest(request);
     for (const record of heldRecords) builder.addRecord(record);
@@ -157,6 +169,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     workerDropped = heldWorkerDropped;
     panelDropped = heldPanelDropped;
     binary = heldBinary;
+    runtime = heldRuntime;
     return project(s);
   }
 
@@ -170,6 +183,16 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
         const heldBinary = binary;
         restart();
         binary = heldBinary;
+        /*
+         * The runtime metadata comes OUT OF THE SNAPSHOT, not out of what this session was
+         * holding — unlike the binary label above, which the worker's buffer never held.
+         *
+         * The worker retains this fact and puts it on every snapshot, so the snapshot is the
+         * authority: taking the held value instead would keep a previous page's agent list alive
+         * across a reconnect that reported no runtime at all. `null` in the message means the
+         * worker has not seen a discovery response, and that is what the panel must say.
+         */
+        runtime = message.info;
         // Requests first, all of them. Verified fact 4: without the `RunAgentInput` behind it
         // every run additionally reports `run-started-without-input`, so a request that
         // arrived after its run's first record would put a spurious issue on screen. Order
@@ -237,6 +260,22 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
                 contentType: message.contentType,
                 bytes: message.bytes,
               };
+        return project(s);
+      }
+      case 'info': {
+        /*
+         * Spec §13 done-when #2: the agent list, before any run.
+         *
+         * Touches the builder, the records and the seq counter not at all — for the same reason
+         * `capture-loaded` does not. A discovery response is not a protocol event, so a Timeline
+         * row for it would be the panel asserting something the user's stream never contained,
+         * and it would consume a `seq` that every validator issue is anchored to.
+         *
+         * Last answer wins, matching the worker: a page that re-runs discovery has told us
+         * something more current, and merging two answers would produce an agent list no runtime
+         * ever reported.
+         */
+        runtime = message.info;
         return project(s);
       }
       case 'capture-loaded': {

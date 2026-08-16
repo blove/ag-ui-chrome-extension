@@ -5,6 +5,7 @@ import {
   createConnClassifier,
   isAguiPayload,
   routeHint,
+  type RouteHint,
 } from './classifier';
 
 const RUN_STARTED = '{"type":"RUN_STARTED","threadId":"t1","runId":"r1"}';
@@ -128,6 +129,7 @@ describe('routeHint', () => {
     expect(routeHint('https://app.example.com/api/copilotkit/info', 'GET')).toEqual({
       kind: 'copilotkit-info',
       basePath: '/api/copilotkit',
+      mode: 'multi-route',
     });
   });
 
@@ -167,18 +169,21 @@ describe('routeHint', () => {
     expect(routeHint('/v3/ck/info', 'GET')).toEqual({
       kind: 'copilotkit-info',
       basePath: '/v3/ck',
+      mode: 'multi-route',
     });
-    expect(routeHint('/info', 'GET')).toEqual({ kind: 'copilotkit-info', basePath: '' });
+    expect(routeHint('/info', 'GET')).toEqual({ kind: 'copilotkit-info', basePath: '', mode: 'multi-route' });
   });
 
   it('works on path-only strings and ignores query and hash', () => {
     expect(routeHint('/api/copilotkit/info?v=2', 'GET')).toEqual({
       kind: 'copilotkit-info',
       basePath: '/api/copilotkit',
+      mode: 'multi-route',
     });
     expect(routeHint('https://app.example.com/api/copilotkit/info?v=2#x', 'GET')).toEqual({
       kind: 'copilotkit-info',
       basePath: '/api/copilotkit',
+      mode: 'multi-route',
     });
   });
 
@@ -205,5 +210,110 @@ describe('routeHint', () => {
     expect(routeHint('/api/copilotkit/agent//run', 'POST')).toBeUndefined();
     expect(routeHint('/api/copilotkit/agent/a1/stop', 'POST')).toBeUndefined();
     expect(routeHint('', 'GET')).toBeUndefined();
+  });
+});
+
+/**
+ * The transport the URL grammar alone could not see.
+ *
+ * Measured in `@copilotkitnext/core`'s dist: a client whose `_runtimeTransport` is `"single"`
+ * POSTs to the runtime URL ITSELF with `body: JSON.stringify({ method: 'info' })`, and only a
+ * `"multi"` client fetches `GET {runtimeUrl}/info`. The URL of a single-route call is the same
+ * URL every other single-route call uses, so before this the discovery request was invisible to
+ * everything in this codebase.
+ */
+describe('routeHint: the single-route info envelope', () => {
+  it('recognizes POST {base} carrying {"method":"info"}', () => {
+    expect(routeHint('https://app.example.com/api/copilotkit', 'POST', { method: 'info' })).toEqual(
+      { kind: 'copilotkit-info', basePath: '/api/copilotkit', mode: 'single-route' },
+    );
+  });
+
+  it('reports the whole path as the base, because the runtime URL is the endpoint', () => {
+    expect(routeHint('/v3/ck', 'POST', { method: 'info' })).toEqual({
+      kind: 'copilotkit-info',
+      basePath: '/v3/ck',
+      mode: 'single-route',
+    });
+    expect(routeHint('/', 'POST', { method: 'info' })).toEqual({
+      kind: 'copilotkit-info',
+      basePath: '/',
+      mode: 'single-route',
+    });
+  });
+
+  it('tolerates the rest of the envelope spec §4.2 describes', () => {
+    // `{method, params, body}` is the documented single-route envelope. Extra keys must not
+    // disqualify a request the client genuinely made.
+    expect(
+      routeHint('/api/copilotkit', 'POST', { method: 'info', params: {}, body: null }),
+    ).toEqual({ kind: 'copilotkit-info', basePath: '/api/copilotkit', mode: 'single-route' });
+  });
+
+  it('distinguishes the two modes from each other', () => {
+    // `mode` lives on the info arm alone, so the hint has to be narrowed to read it — which is
+    // the type saying the same thing this test does.
+    const modeOf = (hint: RouteHint | undefined): string | undefined =>
+      hint?.kind === 'copilotkit-info' ? hint.mode : undefined;
+    expect(modeOf(routeHint('/api/copilotkit/info', 'GET'))).toBe('multi-route');
+    expect(modeOf(routeHint('/api/copilotkit', 'POST', { method: 'info' }))).toBe('single-route');
+  });
+
+  /* --- the near misses, each of which must NOT be read as discovery ------- */
+
+  it('does not match another single-route method', () => {
+    expect(routeHint('/api/copilotkit', 'POST', { method: 'run' })).toBeUndefined();
+    expect(routeHint('/api/copilotkit', 'POST', { method: 'connect' })).toBeUndefined();
+  });
+
+  it('is case-sensitive on the discriminant, which the client sends lowercase', () => {
+    expect(routeHint('/api/copilotkit', 'POST', { method: 'Info' })).toBeUndefined();
+    expect(routeHint('/api/copilotkit', 'POST', { method: 'INFO' })).toBeUndefined();
+  });
+
+  it('does not match a nested or misplaced discriminant', () => {
+    expect(routeHint('/api/copilotkit', 'POST', { params: { method: 'info' } })).toBeUndefined();
+    expect(routeHint('/api/copilotkit', 'POST', { body: { method: 'info' } })).toBeUndefined();
+  });
+
+  it('does not match a discriminant carried on a prototype', () => {
+    // A body reaching here was decoded from the page's own request. Own-property strict, like
+    // every other boundary in this codebase.
+    expect(routeHint('/api/copilotkit', 'POST', Object.create({ method: 'info' }))).toBeUndefined();
+  });
+
+  it('does not match a body that is not an object', () => {
+    for (const body of ['{"method":"info"}', 'info', 42, null, undefined, [{ method: 'info' }]]) {
+      expect(routeHint('/api/copilotkit', 'POST', body)).toBeUndefined();
+    }
+  });
+
+  it('does not match on any verb but POST', () => {
+    // A GET cannot carry a body at all, and `GET /api/copilotkit` is not `.../info`.
+    expect(routeHint('/api/copilotkit', 'GET', { method: 'info' })).toBeUndefined();
+    expect(routeHint('/api/copilotkit', 'DELETE', { method: 'info' })).toBeUndefined();
+  });
+
+  it('leaves a run a run, whatever its body happens to contain', () => {
+    // The multi-route grammar is checked first on purpose: a run body is free to contain a
+    // `method` field, and letting one field reclassify an SSE stream as a metadata request would
+    // turn a captured run into nothing at all.
+    expect(routeHint('/api/copilotkit/agent/a1/run', 'POST', { method: 'info' })).toEqual({
+      kind: 'copilotkit-run',
+      basePath: '/api/copilotkit',
+      agentId: 'a1',
+    });
+    expect(routeHint('/api/copilotkit/agent/a1/connect', 'POST', { method: 'info' })?.kind).toBe(
+      'copilotkit-connect',
+    );
+    expect(routeHint('/api/copilotkit/agent/a1/stop/t1', 'POST', { method: 'info' })?.kind).toBe(
+      'copilotkit-stop',
+    );
+  });
+
+  it('leaves every existing two-argument call meaning exactly what it did', () => {
+    // The body parameter is optional, and a POST with no body known to us is still not info.
+    expect(routeHint('/api/copilotkit', 'POST')).toBeUndefined();
+    expect(routeHint('/api/copilotkit/info', 'POST')).toBeUndefined();
   });
 });

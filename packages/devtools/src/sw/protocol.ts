@@ -7,6 +7,7 @@
  * The panel leg is the worker ⇄ DevTools panel direction (`PANEL_PORT_NAME`, `SwMessage`,
  * `PanelCommand`), and `RequestLine` crosses both.
  */
+import type { RuntimeInfo } from '../core/detect/info';
 import type { CaptureRecord } from '../core/model/types';
 import type { InjectMessage } from '../inject/protocol';
 
@@ -137,6 +138,20 @@ export type SwMessage =
        * See `relay/relay.ts` for the residual and why it is accepted.
        */
       loaded: boolean;
+      /**
+       * The runtime metadata this tab has seen, or `null` when no `/info` response has arrived.
+       *
+       * NOT OPTIONAL, for the same reason `closed` above is not. The whole point of done-when #2
+       * is that the agent list is on screen BEFORE any run, and the panel is normally opened after
+       * the page has already connected — so the snapshot is the ordinary delivery route for this
+       * fact and the push arm below is the exception. A producer that forgets it leaves the Session
+       * tab reporting an honest-looking "no /info response seen" for a page that answered one, and
+       * a compile error is how that gets caught.
+       *
+       * `null` is a real and COMMON value: measured across three page loads of a production AG-UI
+       * deployment, no `/info` request was made at all. It is not an error state.
+       */
+      info: RuntimeInfo | null;
     }
   | {
       kind: 'append';
@@ -162,6 +177,14 @@ export type SwMessage =
    * failure mode to avoid.
    */
   | { kind: 'binary'; connId: string; tMs: number; contentType: string; bytes: number }
+  /**
+   * A runtime answered an agent-discovery request the page made (spec §13 done-when #2).
+   *
+   * Its own arm rather than a record: nothing was decoded from a stream, it has no `seq`, and
+   * putting it in the Timeline would be the panel asserting a protocol event that never happened.
+   * It is session metadata, and it lands in the Session tab and nowhere else.
+   */
+  | { kind: 'info'; connId: string; tMs: number; url: string; info: RuntimeInfo }
   /**
    * A document in this tab has just reported that the capture layer is loaded in it.
    *

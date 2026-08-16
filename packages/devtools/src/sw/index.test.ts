@@ -1282,3 +1282,224 @@ describe('service worker restore after termination', () => {
     expect(snapshot.droppedBefore).toBe(200);
   });
 });
+
+/**
+ * `/info` agent discovery in the worker (spec §13 done-when #2).
+ *
+ * The worker's job here is RETENTION. The discovery request happens once, at the client's connect,
+ * and a panel is normally opened long afterwards — so a fact that was only broadcast would reach a
+ * panel that happened to be watching and never the ordinary case.
+ */
+describe('service worker — /info agent discovery', () => {
+  let stub: ChromeStub;
+
+  const RUNTIME = {
+    version: '1.52.1-next.1',
+    mode: 'multi-route' as const,
+    agents: [
+      { id: 'a2ui_chat', name: 'a2ui_chat', description: '' },
+      { id: 'default', name: 'default', description: '' },
+    ],
+  };
+
+  function infoMessage(overrides: Partial<Record<string, unknown>> = {}): RelayMessage {
+    return {
+      v: 1,
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: 'http://localhost:3000/api/copilotkit/info',
+      info: RUNTIME,
+      ...overrides,
+    } as RelayMessage;
+  }
+
+  beforeEach(async () => {
+    stub = installChrome();
+    await loadWorker();
+    await settle();
+  });
+
+  it('reports nothing until a discovery response arrives — the common case', () => {
+    // Most AG-UI apps never call `/info` at all. Measured across three page loads of a production
+    // deployment: no such request, ever. `null` is not a failure and nothing here treats it as one.
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    expect(snapshotOf(panel).info).toBeNull();
+    expect(testHook().info()).toBeNull();
+  });
+
+  it('pushes it to a panel that is already watching', () => {
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, infoMessage());
+
+    expect(messagesOfKind(panel, 'info')).toEqual([
+      {
+        kind: 'info',
+        connId: 'c-info',
+        tMs: 3,
+        url: 'http://localhost:3000/api/copilotkit/info',
+        info: RUNTIME,
+      },
+    ]);
+  });
+
+  it('gives it to a panel that subscribes AFTERWARDS, which is the ordinary case', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, infoMessage());
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    expect(snapshotOf(panel).info).toEqual(RUNTIME);
+  });
+
+  it('creates no record and consumes no seq', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, infoMessage());
+    send(relay, {
+      v: 1,
+      kind: 'frames',
+      connId: 'c1',
+      frames: [eventFrame(12, { type: 'RUN_STARTED' })],
+    });
+    // A Timeline row for a discovery response would be the panel asserting a protocol event the
+    // user's stream never contained, and it would take a seq every validator issue is anchored to.
+    expect(testHook().records().map((record) => record.seq)).toEqual([1]);
+    expect(testHook().requests()).toEqual([]);
+  });
+
+  it('keeps only the most recent answer, rather than merging two runtimes', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, infoMessage());
+    send(relay, {
+      ...infoMessage(),
+      info: { version: '2.0.0', mode: 'single-route', agents: [{ id: 'solo', name: null, description: null }] },
+    } as RelayMessage);
+
+    expect(testHook().info()).toEqual({
+      version: '2.0.0',
+      mode: 'single-route',
+      agents: [{ id: 'solo', name: null, description: null }],
+    });
+  });
+
+  it('rebuilds the payload rather than forwarding the object it was handed', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, {
+      ...infoMessage(),
+      info: {
+        version: '1',
+        mode: 'multi-route',
+        agents: [{ id: 'a', name: null, description: null, smuggled: 'x' }],
+        alsoSmuggled: true,
+      },
+    } as unknown as RelayMessage);
+    expect(JSON.stringify(testHook().info())).not.toContain('muggled');
+  });
+
+  it('drops a malformed payload instead of storing it', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, { ...infoMessage(), info: { version: '1', agents: null } } as RelayMessage);
+    send(relay, { ...infoMessage(), info: null } as unknown as RelayMessage);
+    send(relay, { ...infoMessage(), info: 'agents' } as unknown as RelayMessage);
+    expect(testHook().info()).toBeNull();
+  });
+
+  it('does not record it while recording is paused', () => {
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    send(panel, { kind: 'set-recording', recording: false });
+
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, infoMessage());
+    // §11's opt-in posture: a stopped capture keeps nothing, and metadata is data.
+    expect(testHook().info()).toBeNull();
+  });
+
+  it('forgets it on a clear, so a navigation cannot leave a previous page described', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, infoMessage());
+    expect(testHook().info()).toEqual(RUNTIME);
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    send(panel, { kind: 'clear' });
+
+    // Clear is also what a navigation performs with preserve-log off. Metadata that survived one
+    // would describe the previous app beside this one's stream.
+    expect(testHook().info()).toBeNull();
+    expect(messagesOfKind(panel, 'cleared')).toHaveLength(1);
+    // And a panel opening afterwards is told the same thing, rather than inheriting the snapshot
+    // the first one was sent before the clear.
+    const later = panelPort();
+    stub.connect(later);
+    send(later, { kind: 'subscribe', tabId: 7 });
+    expect(snapshotOf(later).info).toBeNull();
+  });
+
+  it('survives a worker termination, because discovery does not happen twice', async () => {
+    const session = new Map<string, unknown>();
+
+    let restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const relay = relayPort(7);
+    restarted.connect(relay);
+    send(relay, infoMessage());
+    // Written through rather than on the debounce: the response arrives once and never again.
+    await settle();
+    expect(session.has('agui-dt:tab:7')).toBe(true);
+
+    restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    restarted.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    expect(snapshotOf(panel).info).toEqual(RUNTIME);
+  });
+
+  it('declines a mirror whose runtime field is not readable, rather than trusting it', async () => {
+    const session = new Map<string, unknown>();
+    session.set('agui-dt:tab:7', {
+      v: 1,
+      records: [],
+      requests: [],
+      droppedBefore: 0,
+      nextSeq: 1,
+      recording: true,
+      loadedFrames: [],
+      closedConns: [],
+      info: { version: '1', agents: 'nonsense' },
+    });
+
+    const restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    restarted.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    // No claim, rather than a claim assembled from something this build cannot read. The next
+    // discovery response fills it in.
+    expect(snapshotOf(panel).info).toBeNull();
+  });
+});

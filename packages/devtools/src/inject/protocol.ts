@@ -5,6 +5,8 @@
  * validates them. It is pure — no DOM, no `chrome` — so it is unit-testable anywhere.
  */
 
+import { isRuntimeInfo, type RuntimeInfo } from '../core/detect/info';
+
 export const AGUI_DT_SOURCE = 'agui-dt';
 export const PROTOCOL_VERSION = 1;
 
@@ -84,6 +86,29 @@ export type InjectMessage =
       tMs: number;
       contentType: string;
       bytes: number;
+    }
+  /**
+   * The runtime's answer to an agent-discovery request the page made (spec §13 done-when #2).
+   *
+   * It belongs to a connection like every other arm — the `connId` is the `fetch` the page itself
+   * issued — so the privacy property stated above still holds unchanged: nothing crosses this
+   * boundary that the page did not provoke, and the extension initiates nothing.
+   *
+   * `info` is the PARSED and VALIDATED structure, not the response text. The raw body never
+   * crosses the boundary: `parseInfoBody` runs in the MAIN world and only its result is posted, so
+   * a runtime that returns megabytes of unrelated JSON contributes nothing but the fields this
+   * protocol names. The relay re-validates anyway — the MAIN world is the page's world, so this
+   * message is exactly as forgeable as any other, and `check` below treats it that way.
+   */
+  | {
+      source: 'agui-dt';
+      v: 1;
+      kind: 'info';
+      connId: string;
+      tMs: number;
+      /** The URL the runtime answered on. Recorded so a reader knows WHICH runtime replied. */
+      url: string;
+      info: RuntimeInfo;
     };
 
 const CLOSE_REASONS: ReadonlySet<string> = new Set(['complete', 'error', 'aborted']);
@@ -164,6 +189,19 @@ function check(value: unknown): boolean {
         hasOwn(value, 'bytes') &&
         isTime(value.bytes) &&
         value.bytes >= 0
+      );
+    case 'info':
+      return (
+        hasOwn(value, 'tMs') &&
+        isTime(value.tMs) &&
+        hasOwn(value, 'url') &&
+        typeof value.url === 'string' &&
+        hasOwn(value, 'info') &&
+        // Structural, own-property strict, and non-throwing — see `isRuntimeInfo`. A page can
+        // post anything at all in this field, and the panel eventually renders it and writes it
+        // into a file someone shares, so "it looked about right" is not a standard this boundary
+        // can work to.
+        isRuntimeInfo(value.info)
       );
     default:
       return false;

@@ -17,11 +17,15 @@ page's own world, tees the SSE bodies, and relays them across the world boundary
 ring buffer that the panel reads live. All five panel tabs are real — **Timeline**, **Runs**,
 **State**, **Messages**, **Session** — with protocol issues annotated inline and a toolbar issue
 count that doubles as a filter. Captures export and re-import as `.agui.jsonl`, redacted or not.
+On a page backed by a CopilotKit runtime, Session also names the runtime's version, its mode and the
+agents it reports, read passively from the `/info` response the page's own client fetches when it
+connects — so the agent list is there before any run. Most AG-UI apps have no CopilotKit runtime and
+never make that request, and Session says so without implying anything is wrong.
 
 Underneath, `core/` is Chrome-free and runs under Node: the generated event table and shape
 checking, the incremental SSE frame parser, connection detection, chunk expansion, the run model,
 the validator rules, run metrics, the RFC 6902 JSON Patch state timeline, and the `.agui.jsonl`
-codec with redaction. 1,392 tests, plus a Playwright harness that drives the extension in a real
+codec with redaction. 1,501 tests, plus a Playwright harness that drives the extension in a real
 browser against real sockets.
 
 What is not done: the Chrome Web Store submission itself. The listing pipeline is built and all five
@@ -50,7 +54,9 @@ The tool sits on the wire where prompts and completions flow, so its posture is 
   actually needs, and the export header records exactly what was redacted. Until you select a
   group the control reads **Export (unredacted)** and the file carries the real content of the
   streams you captured — so treat a capture you are about to share the way you would treat the
-  conversation it came from.
+  conversation it came from. Selecting every group still leaves what the *developer* wrote rather
+  than what the *user* typed: ids, paths, tool names and schemas, and any `/info` agent metadata.
+  [PRIVACY.md](PRIVACY.md) says exactly what survives.
 - **Bounded memory.** The capture buffer caps at a configurable default of 5k events / 8 MB, oldest
   dropped.
 

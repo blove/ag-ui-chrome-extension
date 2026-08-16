@@ -662,3 +662,245 @@ describe('installFetchPatch — a real run, byte-split at hostile boundaries', (
     expect(h.frames().map((f) => f.raw)).toEqual([payload]);
   });
 });
+
+/**
+ * `/info` agent discovery (spec §13 done-when #2).
+ *
+ * The measured Dojo response, and the two transports that carry it. This is the one non-stream
+ * response this patch reads, and everything below is about keeping "only this one" true.
+ */
+describe('installFetchPatch — /info agent discovery', () => {
+  const INFO_BODY = JSON.stringify({
+    version: '1.52.1-next.1',
+    agents: {
+      a2ui_chat: { name: 'a2ui_chat', description: '', className: 'BuiltInAgent' },
+      default: { name: 'default', description: '', className: 'BuiltInAgent' },
+    },
+    audioFileTranscriptionEnabled: false,
+  });
+
+  function jsonResponse(body: string, status = 200): Response {
+    return new Response(body, {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  /** Every info message posted, narrowed so the assertions read the fields directly. */
+  function infos(h: Harness): Extract<InjectMessage, { kind: 'info' }>[] {
+    return h.posted.filter((m): m is Extract<InjectMessage, { kind: 'info' }> => m.kind === 'info');
+  }
+
+  it('captures the multi-route GET {base}/info response', async () => {
+    const h = harness(() => Promise.resolve(jsonResponse(INFO_BODY)));
+    await h.host.fetch('http://localhost:3000/api/copilotkit/info');
+    await settle();
+
+    expect(infos(h)).toHaveLength(1);
+    const message = infos(h)[0];
+    if (message === undefined) throw new Error('no info message was posted');
+    expect(message.url).toBe('http://localhost:3000/api/copilotkit/info');
+    expect(message.info).toEqual({
+      version: '1.52.1-next.1',
+      mode: 'multi-route',
+      agents: [
+        { id: 'a2ui_chat', name: 'a2ui_chat', description: '' },
+        { id: 'default', name: 'default', description: '' },
+      ],
+    });
+  });
+
+  it('captures the single-route POST {base} response, which the URL alone cannot identify', async () => {
+    // The URL is the runtime's own base path — indistinguishable from every other single-route
+    // call. The body is the whole signal, and it is read synchronously off `init.body` because
+    // deciding whether to tee cannot wait on a promise.
+    const h = harness(() => Promise.resolve(jsonResponse(INFO_BODY)));
+    await h.host.fetch('http://localhost:3000/api/copilotkit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'info' }),
+    });
+    await settle();
+
+    expect(infos(h)).toHaveLength(1);
+    expect(infos(h)[0]?.info.mode).toBe('single-route');
+    expect(infos(h)[0]?.info.agents?.map((agent) => agent.id)).toEqual(['a2ui_chat', 'default']);
+  });
+
+  it('posts a message the relay boundary accepts', async () => {
+    const h = harness(() => Promise.resolve(jsonResponse(INFO_BODY)));
+    await h.host.fetch('http://localhost:3000/api/copilotkit/info');
+    await settle();
+    const message = infos(h)[0];
+    if (message === undefined) throw new Error('no info message was posted');
+    // Building a message the guard then drops would be capture that silently never arrives.
+    expect(isInjectMessage(message)).toBe(true);
+  });
+
+  it('leaves the page its own body, byte for byte', async () => {
+    const h = harness(() => Promise.resolve(jsonResponse(INFO_BODY)));
+    const got = await h.host.fetch('http://localhost:3000/api/copilotkit/info');
+    expect(got.bodyUsed).toBe(false);
+    expect(await got.text()).toBe(INFO_BODY);
+    await settle();
+    expect(infos(h)).toHaveLength(1);
+  });
+
+  it('preserves url, redirected and type on the substituted response', async () => {
+    const h = harness(() => Promise.resolve(jsonResponse(INFO_BODY)));
+    const got = await h.host.fetch('http://localhost:3000/api/copilotkit/info');
+    // `new Response(body, init)` drops all three, and the page can read every one of them.
+    expect(got.status).toBe(200);
+    expect(got.headers.get('content-type')).toBe('application/json');
+    expect(got.type).toBe('default');
+    expect(got.redirected).toBe(false);
+  });
+
+  it('reads nothing at all from an ordinary JSON response', async () => {
+    // `application/json` is most of the web. Gating on the route hint rather than the content
+    // type is what stops this patch from teeing all of it.
+    const response = jsonResponse('{"user":"private"}');
+    const h = harness(() => Promise.resolve(response));
+    const got = await h.host.fetch('http://localhost:3000/api/profile');
+    await settle();
+    expect(got).toBe(response);
+    expect(got.bodyUsed).toBe(false);
+    expect(h.posted).toEqual([]);
+  });
+
+  it('reads nothing from a POST whose envelope names another method', async () => {
+    const response = jsonResponse('{"result":1}');
+    const h = harness(() => Promise.resolve(response));
+    const got = await h.host.fetch('http://localhost:3000/api/copilotkit', {
+      method: 'POST',
+      body: JSON.stringify({ method: 'run' }),
+    });
+    await settle();
+    expect(got).toBe(response);
+    expect(h.posted).toEqual([]);
+  });
+
+  it('claims nothing when the runtime answers with an error', async () => {
+    const h = harness(() => Promise.resolve(jsonResponse('{"error":"nope"}', 500)));
+    await h.host.fetch('http://localhost:3000/api/copilotkit/info');
+    await settle();
+    expect(infos(h)).toEqual([]);
+  });
+
+  it('claims nothing when the body is not JSON', async () => {
+    const h = harness(() =>
+      Promise.resolve(
+        new Response('<!doctype html><title>404</title>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        }),
+      ),
+    );
+    await h.host.fetch('http://localhost:3000/api/copilotkit/info');
+    await settle();
+    expect(infos(h)).toEqual([]);
+  });
+
+  it('claims nothing when the JSON is not an info response', async () => {
+    // Silence, not an empty Runtime row. The Session tab's own empty state already says the
+    // right thing about a page that never answered discovery.
+    const h = harness(() => Promise.resolve(jsonResponse('{"ok":true}')));
+    await h.host.fetch('http://localhost:3000/api/copilotkit/info');
+    await settle();
+    expect(infos(h)).toEqual([]);
+  });
+
+  it('survives a torn body without disturbing the page', async () => {
+    const stream = controllable();
+    const h = harness(() =>
+      Promise.resolve(
+        new Response(stream.stream, { status: 200, headers: { 'content-type': 'application/json' } }),
+      ),
+    );
+    const got = await h.host.fetch('http://localhost:3000/api/copilotkit/info');
+    stream.push('{"version":"1"');
+    stream.error(new Error('connection reset'));
+    await settle();
+    expect(infos(h)).toEqual([]);
+    // The page's branch errors too — which is what actually happened on the wire.
+    await expect(got.text()).rejects.toBeTruthy();
+  });
+});
+
+/**
+ * The SSE path is not disturbed by any of the above.
+ *
+ * The two branches share `observeResponse` and a `tee()`, and the info branch was added to the
+ * arm the SSE path declines. This is the assertion that says so with both in flight.
+ */
+describe('installFetchPatch — /info alongside a run', () => {
+  it('captures a discovery response and a stream from the same page, independently', async () => {
+    let nextConn = 0;
+    const h = harness(
+      (input) => {
+        const url = String(input);
+        if (url.endsWith('/info')) {
+          return Promise.resolve(
+            new Response('{"version":"1.52.1-next.1","agents":{"default":{"name":"default"}}}', {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+          );
+        }
+        return Promise.resolve(
+          sseResponse(streamOf([`data: ${RUN_STARTED}\n\n`, `data: ${TEXT_START}\n\n`, `data: ${TEXT_END}\n\n`])),
+        );
+      },
+      {
+        newConnId: (): string => {
+          nextConn += 1;
+          return `c${String(nextConn)}`;
+        },
+      },
+    );
+
+    await h.host.fetch('http://localhost:3000/api/copilotkit/info');
+    await settle();
+    await h.host.fetch('http://localhost:3000/api/copilotkit/agent/default/run', {
+      method: 'POST',
+      body: '{"threadId":"t_1"}',
+    });
+    await settle();
+
+    // The run is captured exactly as it always was: an open, its frames, and a close. Frames
+    // batch per microtask, so the COUNT of `frames` messages is a scheduling detail — what must
+    // hold is the shape either side of them.
+    const kinds = h.kinds();
+    expect(kinds[0]).toBe('info');
+    expect(kinds[1]).toBe('conn-open');
+    expect(kinds.at(-1)).toBe('conn-close');
+    expect(kinds.slice(2, -1).every((kind) => kind === 'frames')).toBe(true);
+    expect(kinds.filter((kind) => kind === 'info')).toHaveLength(1);
+    expect(h.frames().map((frame) => frame.raw)).toEqual([RUN_STARTED, TEXT_START, TEXT_END]);
+    expect(h.patch.classificationOf('c2')).toBe('agui');
+    // And the info message names a connection of its own, so nothing about the run's identity
+    // is borrowed or reused.
+    const info = h.posted.find((message) => message.kind === 'info');
+    expect(info?.connId).toBe('c1');
+    const open = h.posted.find((message) => message.kind === 'conn-open');
+    expect(open?.connId).toBe('c2');
+  });
+
+  it('does not turn a run into a discovery request when its body names a method', async () => {
+    // The run route wins. A `method` key in a `RunAgentInput` must not cost the user the stream.
+    const h = harness(() =>
+      Promise.resolve(sseResponse(streamOf([`data: ${RUN_STARTED}\n\n`, `data: ${TEXT_END}\n\n`]))),
+    );
+    await h.host.fetch('http://localhost:3000/api/copilotkit/agent/default/run', {
+      method: 'POST',
+      body: JSON.stringify({ method: 'info', threadId: 't_1' }),
+    });
+    await settle();
+
+    const kinds = h.kinds();
+    expect(kinds).not.toContain('info');
+    expect(kinds[0]).toBe('conn-open');
+    expect(kinds.at(-1)).toBe('conn-close');
+    expect(h.frames().map((frame) => frame.raw)).toEqual([RUN_STARTED, TEXT_END]);
+  });
+});

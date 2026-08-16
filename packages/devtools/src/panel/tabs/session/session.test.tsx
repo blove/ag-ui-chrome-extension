@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { Session } from './session';
 import { createPanelStore } from '../../model/store';
-import { initialPanelState } from '../../model/panel-types';
+import { initialPanelState, type PanelState } from '../../model/panel-types';
 import { makeIssue } from '../../../core/model/types';
 
 const HAPPY =
@@ -221,5 +221,142 @@ describe('Session — binary transport', () => {
     expect(screen.getByText('Transport').nextElementSibling?.textContent ?? '').toContain(
       'text/event-stream',
     );
+  });
+});
+
+/**
+ * `/info` agent discovery in Session — spec §13 done-when #2, and its empty state.
+ *
+ * Both halves are tested with equal weight on purpose. The populated case is what the criterion
+ * asks for; the EMPTY case is what most users will actually see, because `/info` is a CopilotKit
+ * runtime endpoint and most AG-UI apps do not have one.
+ */
+describe('Session — /info agent discovery', () => {
+  const RUNTIME = {
+    version: '1.52.1-next.1',
+    mode: 'multi-route' as const,
+    agents: [
+      { id: 'a2ui_chat', name: 'a2ui_chat', description: '' },
+      { id: 'default', name: 'default', description: 'The built-in agent.' },
+    ],
+  };
+
+  function withRuntime(runtime: PanelState['runtime']): void {
+    render(<Session store={createPanelStore({ ...initialPanelState(), runtime })} />);
+  }
+
+  function valueOf(label: string): string {
+    return screen.getByText(label).nextElementSibling?.textContent ?? '';
+  }
+
+  it('names the runtime version and its mode', () => {
+    withRuntime(RUNTIME);
+    expect(valueOf('Runtime')).toBe('version 1.52.1-next.1 — multi-route mode');
+  });
+
+  it('reports single-route mode when that transport carried the response', () => {
+    // Requirements §4 asks for the runtime mode, and the body is identical either way — the
+    // mode comes from WHICH request was answered, which is why it rides on the metadata.
+    withRuntime({ ...RUNTIME, mode: 'single-route' });
+    expect(valueOf('Runtime')).toContain('single-route mode');
+  });
+
+  it('says the version was not reported rather than inventing or blanking one', () => {
+    withRuntime({ ...RUNTIME, version: null });
+    expect(valueOf('Runtime')).toBe('version not reported — multi-route mode');
+  });
+
+  it('lists every agent by the id the client addresses', () => {
+    withRuntime(RUNTIME);
+    const ids = [...document.querySelectorAll('[data-agent-id]')].map((el) =>
+      el.getAttribute('data-agent-id'),
+    );
+    expect(ids).toEqual(['a2ui_chat', 'default']);
+    expect(screen.getByText('The built-in agent.')).toBeTruthy();
+  });
+
+  it('does not repeat a name that is just the id again', () => {
+    // Measured against the Dojo: every agent's `name` is its own id. Printing both would double
+    // every row for no information.
+    withRuntime(RUNTIME);
+    expect(document.querySelectorAll('.agui-session__agent-name')).toHaveLength(0);
+  });
+
+  it('shows a name that says something the id does not', () => {
+    withRuntime({
+      ...RUNTIME,
+      agents: [{ id: 'a1', name: 'Weather agent', description: null }],
+    });
+    expect(screen.getByText('Weather agent')).toBeTruthy();
+  });
+
+  it('marks a missing description as an absence rather than drawing an empty cell', () => {
+    withRuntime(RUNTIME);
+    const blank = document.querySelector('[data-agent-id="a2ui_chat"] .agui-session__agent-description');
+    expect(blank?.textContent).toBe('no description');
+    expect(blank?.getAttribute('data-known')).toBe('false');
+    const known = document.querySelector('[data-agent-id="default"] .agui-session__agent-description');
+    expect(known?.getAttribute('data-known')).toBe('true');
+  });
+
+  it('separates "the runtime has none" from "the response had no readable list"', () => {
+    withRuntime({ ...RUNTIME, agents: [] });
+    expect(valueOf('Agents')).toBe('none — the runtime reported no registered agents');
+  });
+
+  it('says so when the response carried no readable agent list', () => {
+    withRuntime({ ...RUNTIME, agents: null });
+    expect(valueOf('Agents')).toBe('the /info response carried no readable agent list');
+  });
+
+  /* --- THE EMPTY STATE, which most users will see ------------------------- */
+
+  it('reports the absence of an /info response without implying anything is wrong', () => {
+    withRuntime(null);
+    for (const label of ['Runtime', 'Agents']) {
+      const value = valueOf(label);
+      // What it must SAY: nothing was seen, why that is ordinary, and that the panel is passive.
+      expect(value).toMatch(/no \/info response seen/i);
+      expect(value).toMatch(/CopilotKit runtime endpoint/i);
+      expect(value).toMatch(/never calls it/i);
+      expect(value).toMatch(/only ever reads a request the page already made/i);
+    }
+  });
+
+  it('never words that absence as a fault, a failure, or a failed detection', () => {
+    withRuntime(null);
+    /*
+     * The wording this project has already been corrected for twice — once for a signal that was
+     * "technically correct and practically misleading", once for generalising a DOM heuristic
+     * from a single deployment. `/info` is a CopilotKit endpoint; an AG-UI app without a
+     * CopilotKit runtime never emits it, and the user's own production Angular deployment is
+     * exactly that case. Any of these words would send that user hunting a bug that is not there.
+     */
+    for (const label of ['Runtime', 'Agents']) {
+      const value = valueOf(label);
+      expect(value).not.toMatch(/not detected/i);
+      expect(value).not.toMatch(/detection/i);
+      expect(value).not.toMatch(/fail/i);
+      expect(value).not.toMatch(/error/i);
+      expect(value).not.toMatch(/unable/i);
+      expect(value).not.toMatch(/could not/i);
+      expect(value).not.toMatch(/missing/i);
+      expect(value).not.toMatch(/none found/i);
+      expect(value).not.toMatch(/no agents/i);
+      expect(value).not.toMatch(/broken/i);
+      expect(value).not.toMatch(/ships with the capture layer/i);
+    }
+  });
+
+  it('renders no agent list at all when there is no response to list from', () => {
+    withRuntime(null);
+    // An empty `<ul>` would read as a runtime that answered with nothing.
+    expect(document.querySelectorAll('[data-agent-id]')).toHaveLength(0);
+    expect(document.querySelectorAll('.agui-session__agents')).toHaveLength(0);
+  });
+
+  it('no longer offers the placeholder it replaced', () => {
+    withRuntime(null);
+    expect(screen.queryByText(/\/info discovery ships with the capture layer/)).toBeNull();
   });
 });

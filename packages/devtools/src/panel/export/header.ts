@@ -4,6 +4,7 @@
  * Requirements §10 puts a header on line 1 of every capture, and §11 makes its `redacted` field
  * the record of what was replaced. Everything here is pure; `build.ts` is its only caller.
  */
+import { cloneRuntimeInfo, type RuntimeInfo } from '../../core/detect/info';
 import type { JsonlHeader } from '../../core/jsonl/codec';
 import { ALL_REDACTION_GROUPS, type RedactionGroup } from '../../core/jsonl/redact';
 
@@ -23,6 +24,8 @@ export interface HeaderInput {
   url: string | null;
   framework: string | null;
   transport: 'sse' | 'binary';
+  /** What a `/info` response said during this capture, or `null` when none was seen. */
+  runtime: RuntimeInfo | null;
 }
 
 /**
@@ -75,5 +78,16 @@ export function buildHeader(input: HeaderInput): JsonlHeader {
   // Absent rather than `null`: `framework` is optional in the codec, and a `null` would decode as
   // a claim that the framework was identified as nothing.
   if (framework !== null && framework !== undefined) header.framework = framework;
+  /*
+   * Preserved from the file being re-exported, like `capturedAt`, `url` and `framework` above and
+   * for the same reason: it describes the CAPTURE, and re-stamping it with this panel's own
+   * runtime would say the shared file's stream came from a runtime it never touched.
+   *
+   * Copied rather than aliased. The previous header came out of an imported file, which is
+   * untrusted input; `loadJsonl` has already validated it, and this keeps the exported object
+   * free of anything that validation permitted but did not name.
+   */
+  const runtime = previous?.runtime ?? input.runtime;
+  if (runtime !== null && runtime !== undefined) header.runtime = cloneRuntimeInfo(runtime);
   return header;
 }

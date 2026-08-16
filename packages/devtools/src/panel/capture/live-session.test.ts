@@ -44,6 +44,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(next.records).toHaveLength(5);
@@ -65,6 +66,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
     state = session.apply(state, { kind: 'append', records: tail });
 
@@ -128,6 +130,7 @@ describe('createLiveSession', () => {
       closed: [{ connId: 'c1', tMs: 99 }],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(state.issues.map((issue) => issue.code)).toContain('run-never-terminated');
@@ -151,6 +154,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(state.issues.map((issue) => issue.code)).not.toContain('run-never-terminated');
@@ -170,6 +174,7 @@ describe('createLiveSession', () => {
       closed: [{ connId: 'c1', tMs: 50 }],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
     expect(state.runs[0]?.outcome).toBe('aborted');
 
@@ -182,6 +187,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(state.runs.map((run) => run.runId)).toEqual(['r2']);
@@ -199,6 +205,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(state.records.map((r) => r.seq)).toEqual([2, 3, 4]);
@@ -214,6 +221,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 7,
       loaded: true,
+      info: null,
     });
 
     expect(state.droppedBefore).toBe(9);
@@ -233,6 +241,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
     expect(state.droppedBefore).toBe(0);
 
@@ -255,6 +264,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 6,
       loaded: true,
+      info: null,
     });
     nextSeq = 5;
     state = session.apply(state, {
@@ -274,6 +284,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
     // Two evicted by the panel already.
     expect(state.droppedBefore).toBe(2);
@@ -298,6 +309,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 4,
       loaded: true,
+      info: null,
     });
     state = { ...state, selectedSeq: 2, scope: 'r1' };
 
@@ -327,6 +339,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
     state = session.apply(state, { kind: 'closed', connId: 'c1', tMs: 40 });
     const before = state.issues.map((issue) => issue.code);
@@ -372,6 +385,7 @@ describe('createLiveSession', () => {
         closed: [],
         droppedBefore: 0,
         loaded: false,
+        info: null,
       });
       const before = state.records.map((r) => r.seq);
 
@@ -393,6 +407,7 @@ describe('createLiveSession', () => {
           closed: [],
           droppedBefore: 0,
           loaded: true,
+          info: null,
         },
       );
 
@@ -408,13 +423,13 @@ describe('createLiveSession', () => {
       // prevent — the finding is made by the timeout in `use-live-capture`, never here.
       const fresh = session.apply(
         { ...initialPanelState(), loaded: null },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null },
       );
       expect(fresh.loaded).toBeNull();
 
       const known = session.apply(
         { ...initialPanelState(), loaded: true },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null },
       );
       expect(known.loaded).toBe(true);
     });
@@ -442,6 +457,7 @@ describe('createLiveSession', () => {
         closed: [],
         droppedBefore: 0,
         loaded: true,
+        info: null,
       },
     );
 
@@ -552,6 +568,7 @@ describe('createLiveSession', () => {
         closed: [],
         droppedBefore: 0,
         loaded: true,
+        info: null,
       });
 
       expect(state.binaryTransport?.contentType).toBe('application/vnd.ag-ui.event+proto');
@@ -585,6 +602,7 @@ describe('the request lines an export has to put back', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(state.requests.map((request) => request.connId)).toEqual(['c1']);
@@ -607,5 +625,136 @@ describe('the request lines an export has to put back', () => {
     state = session.refold(state, { expandChunks: false });
 
     expect(state.requests).toEqual([requestLine()]);
+  });
+});
+
+/**
+ * `/info` agent discovery through the fold (spec §13 done-when #2).
+ *
+ * Two delivery routes, and the second is the one that matters: a panel is normally opened after
+ * the client has already connected, so the SNAPSHOT is how this fact usually arrives.
+ */
+describe('createLiveSession — /info agent discovery', () => {
+  const RUNTIME = {
+    version: '1.52.1-next.1',
+    mode: 'multi-route' as const,
+    agents: [
+      { id: 'a2ui_chat', name: 'a2ui_chat', description: '' },
+      { id: 'default', name: 'default', description: '' },
+    ],
+  };
+
+  it('starts with nothing, which is the common case rather than a failure', () => {
+    expect(initialPanelState().runtime).toBeNull();
+  });
+
+  it('folds a pushed info message into state', () => {
+    const session = createLiveSession();
+    const next = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: 'http://localhost:3000/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    expect(next.runtime).toEqual(RUNTIME);
+  });
+
+  it('adds no record and moves no seq', () => {
+    const session = createLiveSession();
+    const next = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: 'http://localhost:3000/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    expect(next.records).toEqual([]);
+    expect(next.runs).toEqual([]);
+    expect(next.issues).toEqual([]);
+  });
+
+  it('takes it off a snapshot, which is how a late panel gets it', () => {
+    const session = createLiveSession();
+    const next = session.apply(initialPanelState(), {
+      kind: 'snapshot',
+      records: [],
+      requests: [],
+      closed: [],
+      droppedBefore: 0,
+      loaded: true,
+      info: RUNTIME,
+    });
+    expect(next.runtime).toEqual(RUNTIME);
+  });
+
+  it('lets a snapshot with no runtime clear one this session was holding', () => {
+    // The worker retains this fact and states it on every snapshot, so the snapshot is the
+    // authority. Keeping the held value would carry a previous page's agent list across a
+    // reconnect that reported none.
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: 'http://localhost:3000/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    state = session.apply(state, {
+      kind: 'snapshot',
+      records: [],
+      requests: [],
+      closed: [],
+      droppedBefore: 0,
+      loaded: true,
+      info: null,
+    });
+    expect(state.runtime).toBeNull();
+  });
+
+  it('keeps the most recent answer rather than merging two', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c1',
+      tMs: 1,
+      url: '/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    state = session.apply(state, {
+      kind: 'info',
+      connId: 'c2',
+      tMs: 2,
+      url: '/api/copilotkit',
+      info: { version: '2.0.0', mode: 'single-route', agents: [] },
+    });
+    expect(state.runtime).toEqual({ version: '2.0.0', mode: 'single-route', agents: [] });
+  });
+
+  it('survives a refold, so Expand chunks does not erase it', () => {
+    const session = createLiveSession();
+    const state = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: '/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    // Metadata vanishing when the user pressed a display toggle would look exactly like metadata
+    // that was never captured.
+    expect(session.refold(state, { expandChunks: true }).runtime).toEqual(RUNTIME);
+  });
+
+  it('drops it on a clear, matching the worker', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), {
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: '/api/copilotkit/info',
+      info: RUNTIME,
+    });
+    state = session.apply(state, { kind: 'cleared' });
+    expect(state.runtime).toBeNull();
   });
 });
