@@ -399,7 +399,7 @@ describe('createLiveSession', () => {
       expect(state.loaded).toBe(true);
     });
 
-    it('never reads a snapshot as proof that the page is NOT instrumented', () => {
+    it('never reads a snapshot as proof that the capture layer is NOT loaded', () => {
       const session = createLiveSession();
 
       // A snapshot arrives the instant the panel subscribes, which on a page that is still

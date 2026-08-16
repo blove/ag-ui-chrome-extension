@@ -19,8 +19,8 @@
  * capturing.
  *
  * `app.test` is a real non-localhost hostname mapped to the harness server. The localhost family
- * is statically registered in the manifest, so on `localhost` a document is instrumented from its
- * very first load and the divergence being tested cannot exist there.
+ * is statically registered in the manifest, so on `localhost` the capture layer is loaded from a
+ * document's very first load and the divergence being tested cannot exist there.
  */
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 
@@ -182,7 +182,7 @@ test.afterAll(async () => {
 
 test('the page under test is genuinely not localhost', () => {
   // Guards the fixture, not the product. On the localhost family the manifest registers the
-  // content scripts statically, so a document is instrumented from its first load and the
+  // content scripts statically, so the capture layer is loaded from a document's first load and the
   // divergence this spec is about cannot occur.
   const host = new URL(appUrl).hostname;
   expect(host).toBe(APP_HOST);
