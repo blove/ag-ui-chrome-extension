@@ -8,7 +8,7 @@
 import type { RuntimeInfo } from '../../core/detect/info';
 import type { Run, Issue, CaptureRecord } from '../../core/model/types';
 import type { JsonlHeader } from '../../core/jsonl/codec';
-import type { RequestLine } from '../../sw/protocol';
+import type { RegistrationState, RequestLine } from '../../sw/protocol';
 
 /** Where the panel's data came from. Drives empty states and which controls are live. */
 export type PanelSource =
@@ -112,6 +112,26 @@ export interface PanelState {
    */
   loaded: boolean | null;
   /**
+   * What the service worker says is REGISTERED, or `null` while no worker has answered.
+   *
+   * A THIRD FACT, distinct from both `capture` (the origin is granted) and `loaded` (this document
+   * has our content scripts in it), and the panel was confidently wrong for want of it. Chrome
+   * drops dynamically registered content scripts on an extension reload or update while the
+   * permission survives, so an origin can be granted with nothing registered for it at all — in
+   * which case `loaded` is false, and the reload the panel used to advise cannot possibly help.
+   * The user reloads, reads the identical message, and concludes the tool is broken.
+   *
+   * `null` is "no worker has answered yet", not "nothing is registered". Nothing may warn on it:
+   * a panel opened outside DevTools never gets an answer at all, and the snapshot that carries it
+   * arrives well inside the `loaded` grace period on the ordinary path.
+   *
+   * The manifest's static localhost family is deliberately NOT listed here — see
+   * `RegistrationState`. `capture/grant.ts`'s `isRegisteredForOrigin` is the one place that knows
+   * how to read this field against an origin, and it answers `true` for that family without
+   * consulting it.
+   */
+  registration: RegistrationState | null;
+  /**
    * What a `/info` agent-discovery response said, or `null` when none has been seen.
    *
    * Session metadata, exactly like `framework`, and it gates nothing: an app with no CopilotKit
@@ -204,6 +224,7 @@ export function initialPanelState(): PanelState {
     capture: { kind: 'unsupported' },
     framework: null,
     loaded: null,
+    registration: null,
     runtime: null,
     tab: 'timeline',
     scope: null,

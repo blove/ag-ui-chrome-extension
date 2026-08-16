@@ -42,6 +42,10 @@ const SW_MESSAGE_KINDS: ReadonlySet<SwMessage['kind']> = new Set([
   // from a document with the capture layer loaded in it — the panel would warn about a page that
   // had just reported itself, and the reload it advises would appear to do nothing.
   'capture-loaded',
+  // Leaving this out would silently drop the message that says whether the capture scripts are
+  // registered at all — the panel would then fall back to its "reload the page" advice for a
+  // failure a reload cannot touch, which is the exact defect this arm was added for.
+  'registration',
   'cleared',
 ] satisfies SwMessage['kind'][]);
 

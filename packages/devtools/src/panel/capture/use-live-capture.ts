@@ -12,7 +12,13 @@ import { captureOn, setLoaded, setRecording as setRecordingAction } from '../mod
 import { usePanelState } from '../model/use-panel-state';
 import { createLiveSession, type LiveSession } from './live-session';
 import { connectToServiceWorker, type PanelPort } from './port';
-import { hasOriginGrant, isAutoEnabledOrigin, requestOriginGrant, type GrantOutcome } from './grant';
+import {
+  hasOriginGrant,
+  isAutoEnabledOrigin,
+  isRegisteredForOrigin,
+  requestOriginGrant,
+  type GrantOutcome,
+} from './grant';
 
 /**
  * What the last Enable attempt did. `null` until the user presses it.
@@ -48,6 +54,15 @@ export interface LiveCapture {
   clearBuffer: () => void;
   /** Reload the inspected page, which is what makes the capture hooks install. */
   reloadInspectedPage: () => void;
+  /**
+   * Ask the worker to reconcile its content-script registrations.
+   *
+   * The remedy for a granted origin with nothing registered for it — the state an extension
+   * reload or update leaves behind, and the one state where reloading the page achieves nothing.
+   * It carries no origin: the worker takes the list from `chrome.permissions.getAll()`, so the
+   * panel cannot cause an origin the user never granted to be registered.
+   */
+  reRegister: () => void;
   status: EnableStatus;
   /**
    * True while capture cannot work until the inspected page is reloaded.
@@ -237,6 +252,18 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
   }, []);
 
   /*
+   * Ask the worker to re-register, and let its answer be the report.
+   *
+   * Nothing optimistic is written here. The worker replies with a `registration` message either
+   * way — carrying the new match list, or the failure that stopped it — and the banner is driven
+   * by that. A panel that congratulated itself before Chrome had agreed would be the same class of
+   * claim as the one this whole change is correcting.
+   */
+  const reRegister = useCallback(() => {
+    portRef.current?.send({ kind: 'reconcile-registrations' });
+  }, []);
+
+  /*
    * The reload is needed either because the grant has not taken effect yet, or because the page
    * reported no capture layer. `executeScript` into the open document is deliberately NOT offered
    * as a shortcut: it would leave a PARTIALLY patched document — a bundler routinely hoists
@@ -244,8 +271,29 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
    * unreachable — that then reports itself fully patched. That is the failure class being fixed,
    * reintroduced. A reload is honest.
    */
+  /*
+   * ...UNLESS THERE IS NOTHING REGISTERED TO LOAD, which is the case a reload cannot touch.
+   *
+   * Without this clause the not-registered banner would appear with the reload note directly
+   * beneath it, offering the one remedy that provably does nothing — the panel contradicting
+   * itself on screen, and the second confidently-wrong capture claim in a day rather than the
+   * correction of the first. Once the scripts are registered `registered` is true, `loaded` is
+   * still false for the document that predates them, and the reload is offered then, which is the
+   * point at which it is the right answer.
+   */
+  const registered =
+    capture.kind === 'on' ? isRegisteredForOrigin(capture.origin, state.registration) : null;
   const awaitingReload =
-    grantedAwaitingReload || (capture.kind === 'on' && state.loaded === false);
+    grantedAwaitingReload ||
+    (capture.kind === 'on' && state.loaded === false && registered !== false);
 
-  return { enable, setRecording, clearBuffer, reloadInspectedPage, status, awaitingReload };
+  return {
+    enable,
+    setRecording,
+    clearBuffer,
+    reloadInspectedPage,
+    reRegister,
+    status,
+    awaitingReload,
+  };
 }

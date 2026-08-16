@@ -203,6 +203,7 @@ describe('panel live wiring', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        registration: { matches: [], error: null },
       });
     });
 
@@ -235,6 +236,7 @@ describe('panel live wiring', () => {
         droppedBefore: 12,
         loaded: true,
         info: null,
+        registration: { matches: [], error: null },
       });
     });
 
@@ -261,6 +263,7 @@ describe('panel live wiring', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        registration: { matches: [], error: null },
       });
     });
     expect(screen.queryByText(/dropped/)).toBeNull();
@@ -460,6 +463,7 @@ describe('panel live wiring', () => {
           droppedBefore: 0,
           loaded: false,
           info: null,
+          registration: { matches: [], error: null },
         });
       });
 
@@ -486,6 +490,7 @@ describe('panel live wiring', () => {
           droppedBefore: 0,
           loaded: false,
           info: null,
+          registration: { matches: [], error: null },
         });
       });
 
@@ -666,6 +671,7 @@ describe('panel live wiring', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        registration: { matches: [], error: null },
       });
       port.emit({ kind: 'closed', connId: 'c1', tMs: 40 });
     });
@@ -699,7 +705,16 @@ describe('panel live wiring', () => {
       eventRecord(i, { type: 'CUSTOM', name: 'n', value: i }),
     );
     act(() => {
-      port.emit({ kind: 'snapshot', records, requests: [REQUEST], closed: [], droppedBefore: 0, loaded: true, info: null });
+      port.emit({
+        kind: 'snapshot',
+        records,
+        requests: [REQUEST],
+        closed: [],
+        droppedBefore: 0,
+        loaded: true,
+        info: null,
+        registration: { matches: [], error: null },
+      });
     });
 
     // Following means the window has moved to the tail: the last row is rendered, the first is

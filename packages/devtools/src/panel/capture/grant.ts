@@ -64,6 +64,34 @@ export async function requestOriginGrant(origin: string): Promise<GrantOutcome> 
   }
 }
 
+/**
+ * Are the capture content scripts REGISTERED for this origin? `null` means not known yet.
+ *
+ * A different question from `hasOriginGrant`, and the two disagree in the case this function
+ * exists for: Chrome drops dynamically registered content scripts when the extension is reloaded
+ * or updated, while the permission survives. The origin is then granted with nothing registered
+ * for it, `chrome.permissions.onAdded` never fires again because nothing was added, and the panel
+ * — which could only see the grant — advised a page reload that could not possibly help.
+ *
+ * TRUE FOR THE AUTO-ENABLED FAMILY WITHOUT CONSULTING THE LIST, and that is not a shortcut. Those
+ * origins are covered by the manifest's own `content_scripts`, which Chrome registers and which
+ * cannot be dropped or unregistered, so they are never in the worker's dynamic list. They also
+ * could not be matched against it: a match pattern ignores the port, so `http://localhost/*` and
+ * the inspected origin `http://localhost:5173` are not the same string.
+ *
+ * `null` rather than `false` while `registration` is unknown, for the reason the `loaded`
+ * tri-state exists: the panel opens before any worker has answered, and a banner that warned on
+ * "not known yet" would flash a false alarm on every open.
+ */
+export function isRegisteredForOrigin(
+  origin: string,
+  registration: { matches: string[] } | null,
+): boolean | null {
+  if (isAutoEnabledOrigin(origin)) return true;
+  if (registration === null) return null;
+  return registration.matches.includes(originPattern(origin));
+}
+
 /** Has this origin already been granted? Used on open, so a re-opened panel is not asked twice. */
 export async function hasOriginGrant(origin: string): Promise<boolean> {
   const contains = chrome.permissions?.contains;

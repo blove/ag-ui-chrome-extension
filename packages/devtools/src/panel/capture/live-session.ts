@@ -12,7 +12,7 @@
 import type { RuntimeInfo } from '../../core/detect/info';
 import type { CaptureRecord } from '../../core/model/types';
 import { createRunBuilder, type RunBuilder } from '../../core/normalizer/run-builder';
-import type { ClosedConn, RequestLine, SwMessage } from '../../sw/protocol';
+import type { ClosedConn, RegistrationState, RequestLine, SwMessage } from '../../sw/protocol';
 import type { BinaryTransport, PanelState } from '../model/panel-types';
 
 export interface LiveSessionOptions {
@@ -93,6 +93,16 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
    * toggle would look exactly like metadata that was never captured.
    */
   let runtime: RuntimeInfo | null = null;
+  /**
+   * What the worker says is REGISTERED, or `null` until it has said anything.
+   *
+   * Held here for the same reason `runtime` is — `refold` has to put it back — and it survives a
+   * `restart()` for a different one: registration is a fact about the EXTENSION, not about this
+   * capture. Clearing it when the user presses Clear, or when a navigation empties the buffer,
+   * would drop the panel back to "not known yet" and un-explain a page it had just explained,
+   * with no message due to restate it. Only a `snapshot` or a `registration` push replaces it.
+   */
+  let registration: RegistrationState | null = null;
 
   function restart(next: LiveSessionOptions = {}): void {
     expandChunks = next.expandChunks ?? expandChunks;
@@ -129,6 +139,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
       droppedBefore: workerDropped + panelDropped,
       binaryTransport: binary,
       runtime,
+      registration,
     };
   }
 
@@ -160,6 +171,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     const heldPanelDropped = panelDropped;
     const heldBinary = binary;
     const heldRuntime = runtime;
+    const heldRegistration = registration;
     restart(next);
     for (const request of heldRequests) addRequest(request);
     for (const record of heldRecords) builder.addRecord(record);
@@ -170,6 +182,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     panelDropped = heldPanelDropped;
     binary = heldBinary;
     runtime = heldRuntime;
+    registration = heldRegistration;
     return project(s);
   }
 
@@ -193,6 +206,14 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
          * worker has not seen a discovery response, and that is what the panel must say.
          */
         runtime = message.info;
+        /*
+         * Also OUT OF THE SNAPSHOT rather than held, and for the stronger version of the same
+         * reason: the worker rebuilds this from `chrome.scripting.getRegisteredContentScripts()`
+         * on every read, so the snapshot is the current answer and anything this session was
+         * holding is older. A reconnect happens precisely when the worker respawned, which is
+         * precisely when registrations may have been dropped.
+         */
+        registration = message.registration;
         // Requests first, all of them. Verified fact 4: without the `RunAgentInput` behind it
         // every run additionally reports `run-started-without-input`, so a request that
         // arrived after its run's first record would put a spurious issue on screen. Order
@@ -276,6 +297,20 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
          * ever reported.
          */
         runtime = message.info;
+        return project(s);
+      }
+      case 'registration': {
+        /*
+         * The worker reconciled, or an origin was granted or revoked, or a panel asked it to
+         * re-register. Touches the builder, the records and the seq counter not at all, for
+         * exactly the reason `capture-loaded` below does not: nothing about the user's stream
+         * changed, and a Timeline row here would be the panel asserting a protocol event that
+         * never happened.
+         *
+         * Not folded into `s.registration` conditionally — the worker states the whole picture
+         * every time, and a merge would keep an origin listed after it had been unregistered.
+         */
+        registration = { matches: message.matches, error: message.error };
         return project(s);
       }
       case 'capture-loaded': {

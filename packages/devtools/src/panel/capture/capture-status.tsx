@@ -1,6 +1,7 @@
 import type { JSX } from 'preact';
 import type { PanelStore } from '../model/store';
 import { usePanelState } from '../model/use-panel-state';
+import { isRegisteredForOrigin } from './grant';
 
 export interface CaptureBannerProps {
   store: PanelStore;
@@ -12,6 +13,13 @@ export interface CaptureBannerProps {
    * and is the exact failure this banner exists to prevent.
    */
   onEnable: () => void;
+  /**
+   * Ask the service worker to reconcile its content-script registrations.
+   *
+   * The remedy for the one capture-off-while-granted state a page reload cannot fix. Same contract
+   * as `onEnable`: it may never silently do nothing.
+   */
+  onReRegister: () => void;
 }
 
 /**
@@ -48,7 +56,11 @@ function ReloadNote(): JSX.Element {
  * not need to be told about a capture layer they are not using — and nothing once live records
  * are flowing, since "idle" is then false.
  */
-export function CaptureBanner({ store, onEnable }: CaptureBannerProps): JSX.Element | null {
+export function CaptureBanner({
+  store,
+  onEnable,
+  onReRegister,
+}: CaptureBannerProps): JSX.Element | null {
   const state = usePanelState(store);
 
   if (state.source.kind === 'imported') {
@@ -95,6 +107,53 @@ export function CaptureBanner({ store, onEnable }: CaptureBannerProps): JSX.Elem
             defers that to phase 3), so no events can be shown for it. An SSE run on the same origin
             still captures normally.
           </p>
+        </div>
+      );
+    }
+
+    /*
+     * GRANTED IS NOT REGISTERED, and this branch is the second correction in one day to a panel
+     * that was confidently wrong about capture.
+     *
+     * Chrome drops dynamically registered content scripts when the extension is reloaded or
+     * updated. The permission survives, so `chrome.permissions.onAdded` never fires again and the
+     * user cannot even repair it by re-granting; before the worker started reconciling at startup,
+     * capture died silently and permanently for every origin they had ever granted.
+     *
+     * The panel shipped a banner for the resulting state — "the capture layer is not loaded in this
+     * page" — and offered a page reload. In THIS failure mode a reload does exactly nothing: there
+     * are no scripts registered to load. The user reloads, reads the identical message, and
+     * concludes the tool is broken. So this branch is checked FIRST, says what is actually wrong,
+     * and offers the only thing that can fix it. It deliberately does not mention reloading at all;
+     * once the scripts are registered the branch below takes over and asks for the reload then,
+     * which is the point at which a reload is true.
+     *
+     * `null` — no worker has answered — falls through rather than warning, exactly like the
+     * `loaded` tri-state below.
+     */
+    const registered = isRegisteredForOrigin(capture.origin, state.registration);
+    if (registered === false) {
+      const failure = state.registration?.error ?? null;
+      return (
+        <div class="agui-banner agui-banner--offer" role="status">
+          <p class="agui-banner__head">
+            Capture is on for {capture.origin}, but the capture scripts are not registered for it.
+          </p>
+          <p class="agui-banner__body">
+            {capture.origin} is still granted — Chrome drops the script registration whenever the
+            extension is updated or reloaded, and keeps the permission. Nothing is being captured
+            from this origin at all until the scripts are registered again, and nothing the page
+            itself does can put them back.
+            {failure !== null && (
+              <>
+                {' '}
+                The last attempt failed: <code>{failure}</code>
+              </>
+            )}
+          </p>
+          <button type="button" class="agui-banner__action" onClick={onReRegister}>
+            Register the capture scripts for {capture.origin}
+          </button>
         </div>
       );
     }

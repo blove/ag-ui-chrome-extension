@@ -24,6 +24,7 @@ describe('CaptureBanner', () => {
           signal: { level: 'stream' },
         })}
         onEnable={onEnable}
+        onReRegister={vi.fn()}
       />,
     );
 
@@ -48,6 +49,7 @@ describe('CaptureBanner', () => {
       <CaptureBanner
         store={storeWith({ kind: 'off', origin: 'https://app.example', signal: { level: 'none' } })}
         onEnable={onEnable}
+        onReRegister={vi.fn()}
       />,
     );
 
@@ -68,6 +70,7 @@ describe('CaptureBanner', () => {
       <CaptureBanner
         store={storeWith({ kind: 'on', origin: 'http://localhost:3000' })}
         onEnable={vi.fn()}
+        onReRegister={vi.fn()}
       />,
     );
     expect(screen.getByText(/capture is on for http:\/\/localhost:3000/i)).toBeTruthy();
@@ -80,12 +83,12 @@ describe('CaptureBanner', () => {
       ...s,
       records: [{ kind: 'keepalive', seq: 1, tMs: 0, connId: 'c1', raw: '', comment: '', issues: [] }],
     }));
-    const { container } = render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    const { container } = render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
     expect(container.textContent).toBe('');
   });
 
   it('explains that this build has no capture layer rather than showing nothing', () => {
-    render(<CaptureBanner store={storeWith({ kind: 'unsupported' })} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={storeWith({ kind: 'unsupported' })} onEnable={vi.fn()} onReRegister={vi.fn()} />);
     expect(screen.getByText(/only runs inside the DevTools panel/i)).toBeTruthy();
     expect(screen.getByText(/\.agui\.jsonl/)).toBeTruthy();
   });
@@ -98,6 +101,7 @@ describe('CaptureBanner', () => {
           { kind: 'imported', filename: 'bug.agui.jsonl', importedAtMs: 0 },
         )}
         onEnable={vi.fn()}
+        onReRegister={vi.fn()}
       />,
     );
     expect(container.textContent).toBe('');
@@ -109,7 +113,7 @@ describe('CaptureBanner', () => {
       origin: 'https://app.example',
       signal: { level: 'none' },
     });
-    render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
     expect(screen.getByRole('button', { name: /enable capture for/i })).toBeTruthy();
 
     act(() => {
@@ -137,7 +141,7 @@ describe('CaptureBanner', () => {
       signal: { level: 'none' },
     });
     store.update((s) => ({ ...s, framework: 'Angular 21.1.6' }));
-    render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     expect(screen.getByRole('status').textContent).not.toMatch(/angular/i);
   });
@@ -167,7 +171,7 @@ describe('CaptureBanner — capture layer loaded, not loaded, or unreported', ()
   }
 
   it('warns that the capture layer is not loaded, and states the reload requirement once', () => {
-    render(<CaptureBanner store={onOrigin(false)} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={onOrigin(false)} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     const banner = screen.getByRole('status');
     expect(banner.textContent).toMatch(/capture layer is not loaded/i);
@@ -185,7 +189,7 @@ describe('CaptureBanner — capture layer loaded, not loaded, or unreported', ()
    * teaches the user to ignore the one that matters.
    */
   it('says it is still checking rather than warning, while nothing has been reported yet', () => {
-    render(<CaptureBanner store={onOrigin(null)} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={onOrigin(null)} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     const banner = screen.getByRole('status');
     expect(banner.textContent).toMatch(/checking/i);
@@ -203,7 +207,7 @@ describe('CaptureBanner — capture layer loaded, not loaded, or unreported', ()
    * records are the only stronger claim the panel ever makes (it goes quiet on them).
    */
   it('claims the capture layer is loaded, and claims nothing stronger', () => {
-    render(<CaptureBanner store={onOrigin(true)} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={onOrigin(true)} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     const text = screen.getByRole('status').textContent ?? '';
     expect(text).toMatch(/capture layer is loaded in this page/i);
@@ -221,7 +225,7 @@ describe('CaptureBanner — capture layer loaded, not loaded, or unreported', ()
         { kind: 'keepalive', seq: 1, tMs: 0, connId: 'c1', raw: '', comment: '', issues: [] },
       ],
     }));
-    render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     // Records from a previous document do not load a capture layer into the current one, and a
     // panel that went quiet here would be back to implying capture it does not have.
@@ -236,7 +240,7 @@ describe('CaptureBanner — capture layer loaded, not loaded, or unreported', ()
         { kind: 'keepalive', seq: 1, tMs: 0, connId: 'c1', raw: '', comment: '', issues: [] },
       ],
     }));
-    const { container } = render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    const { container } = render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     // A "checking…" note thrown over a full timeline on every navigation is noise. Absence of a
     // report is only worth saying once it has become a finding.
@@ -264,7 +268,7 @@ describe('CaptureBanner — binary transport', () => {
         bytes: 512,
       },
     });
-    render(<CaptureBanner store={store} onEnable={vi.fn()} />);
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
 
     const banner = screen.getByRole('status');
     expect(banner.textContent).toMatch(/binary transport/i);

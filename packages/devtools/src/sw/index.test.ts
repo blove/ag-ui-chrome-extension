@@ -83,18 +83,35 @@ interface ChromeStub {
   grantOrigins(origins: string[]): void;
   removeOrigins(origins: string[]): void;
   registered: RegisteredScript[];
+  /**
+   * Origins `chrome.permissions.getAll()` reports as granted, ALONE — nothing here registers a
+   * content script.
+   *
+   * That separation is the whole point: it is what lets a test express "the origin is granted and
+   * nothing is registered for it", which is the state Chrome leaves behind after an extension
+   * reload or update and the state no test in this suite could previously describe.
+   */
+  grantedOrigins: string[];
 }
 
-function installChrome(
-  session: Map<string, unknown> = new Map(),
-  options: { deferGet?: boolean } = {},
-): ChromeStub {
+interface StubOptions {
+  deferGet?: boolean;
+  /** Registrations Chrome already holds — a worker respawning onto live registrations. */
+  registered?: RegisteredScript[];
+  /** Origins granted before this worker ever ran. Registers nothing. */
+  granted?: string[];
+  /** Make `registerContentScripts` reject with this message, for the error-reporting path. */
+  failRegistration?: string;
+}
+
+function installChrome(session: Map<string, unknown> = new Map(), options: StubOptions = {}): ChromeStub {
   const onConnect = new FakeEvent<[FakePort]>();
   const onRemoved = new FakeEvent<[number]>();
   const onAdded = new FakeEvent<[{ origins?: string[] }]>();
   const onPermissionsRemoved = new FakeEvent<[{ origins?: string[] }]>();
   const held: (() => void)[] = [];
-  const registered: RegisteredScript[] = [];
+  const registered: RegisteredScript[] = [...(options.registered ?? [])];
+  const grantedOrigins: string[] = [...(options.granted ?? [])];
 
   const storageSession = {
     get(keys: string | string[] | null): Promise<Record<string, unknown>> {
@@ -129,12 +146,18 @@ function installChrome(
 
   const scripting = {
     registerContentScripts(scripts: RegisteredScript[]): Promise<void> {
+      if (options.failRegistration !== undefined) {
+        return Promise.reject(new Error(options.failRegistration));
+      }
       for (const script of scripts) {
         if (registered.some((existing) => existing.id === script.id)) {
+          // Chrome rejects the WHOLE batch on a duplicate id, and rejects it before registering
+          // anything — modelled exactly, because the worker's "is this rejection benign" check
+          // reads the message.
           return Promise.reject(new Error(`Duplicate script ID '${script.id}'`));
         }
-        registered.push(script);
       }
+      registered.push(...scripts);
       return Promise.resolve();
     },
     unregisterContentScripts(filter: { ids?: string[] }): Promise<void> {
@@ -143,6 +166,13 @@ function installChrome(
         if (index >= 0) registered.splice(index, 1);
       }
       return Promise.resolve();
+    },
+    /**
+     * What Chrome holds, which is the only authority the worker now trusts. A COPY, so a caller
+     * cannot mutate the stub's list through the value it was handed.
+     */
+    getRegisteredContentScripts(): Promise<RegisteredScript[]> {
+      return Promise.resolve(registered.map((script) => ({ ...script })));
     },
   };
 
@@ -153,13 +183,36 @@ function installChrome(
     },
     storage: { session: storageSession },
     tabs: { onRemoved },
-    permissions: { onAdded, onRemoved: onPermissionsRemoved },
+    permissions: {
+      onAdded,
+      onRemoved: onPermissionsRemoved,
+      /**
+       * The origins the user has actually granted, INDEPENDENT of what is registered.
+       *
+       * The whole defect lives in the gap between these two lists: a grant survives an extension
+       * reload or update and the registration made from it does not, so a stub that derived one
+       * from the other could not express the broken state at all — which is precisely why no test
+       * caught this.
+       *
+       * Seeded with the manifest's own content-script matches, because real Chrome reports those
+       * among `getAll().origins`. A reconciliation that did not exclude them would register a
+       * second, dynamic copy of both scripts for the localhost family.
+       */
+      getAll: (): Promise<{ origins: string[] }> =>
+        Promise.resolve({
+          origins: [
+            ...MANIFEST_CONTENT_SCRIPTS.flatMap((entry) => entry.matches),
+            ...grantedOrigins,
+          ],
+        }),
+    },
     scripting,
   } as unknown as typeof chrome;
 
   return {
     session,
     registered,
+    grantedOrigins,
     connect: (port) => {
       onConnect.emit(port);
     },
@@ -173,9 +226,17 @@ function installChrome(
       }
     },
     grantOrigins: (origins) => {
+      // A real grant does BOTH: the permission becomes granted, and `onAdded` fires once.
+      for (const origin of origins) {
+        if (!grantedOrigins.includes(origin)) grantedOrigins.push(origin);
+      }
       onAdded.emit({ origins });
     },
     removeOrigins: (origins) => {
+      for (const origin of origins) {
+        const index = grantedOrigins.indexOf(origin);
+        if (index >= 0) grantedOrigins.splice(index, 1);
+      }
       onPermissionsRemoved.emit({ origins });
     },
   };
