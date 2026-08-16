@@ -29,7 +29,7 @@ is stated.
 | P7 | The list's left gutter shows `CaptureRecord.seq`, not a row index | Filtering reorders visible rows. `seq` is stable, and it is literally what `Issue.seq` refers to, so an issue and its event stay cross-referenceable under any filter. |
 | P8 | **Build the panel against imported fixtures before the capture layer exists** | See §7. This is the highest-leverage sequencing decision in the document. |
 | P9 | **Eviction is surfaced, never silent.** When the ring buffer drops events, the list shows a truncation marker at the boundary and the toolbar carries a persistent dropped-event count | Sessions are expected to be long and ongoing with multiple runs, so the 5k-event / 8MB default *will* evict in normal use. Requirements §15 asks for a visible "buffer full" state but §9 gives it no home. A panel that silently renders a truncated stream is the same class of trust failure as a hidden validator issue — the user would compute TTFT from a run whose start had been evicted and never know. |
-| P12 | **Capture status reports what the DOCUMENT says, never what the origin allows.** The page announces its capture hooks; absence of that announcement — after a short grace period — is what produces "not instrumented" | Found in a real browser, 2026-08-15. The panel flipped capture to `on` from `chrome.permissions.contains` alone, but `chrome.scripting.registerContentScripts` affects only FUTURE navigations, so a document already open when the grant landed had no hooks in it: `Function.prototype.toString.call(window.fetch)` still read `[native code]`, and the panel said it was capturing. Three divergence paths — a grant from a previous session, an extension reload with the page open, and a grant the user never acts on — and only the third was handled, by `awaitingReload`. The grace period is not optional: rendering the warning before the report is due would flash a false alarm on every panel open, and a warning that is usually wrong teaches the user to ignore the one that matters. `executeScript` into the open document was rejected as the remedy — it produces a PARTIALLY instrumented document (bundlers hoist `const f = window.fetch`; an already-constructed `EventSource` is unreachable) that reports itself fully instrumented, which is the same failure class again. A reload is honest. |
+| P12 | **Capture status reports what the DOCUMENT says, never what the origin allows.** The extension's own ISOLATED-world relay reports that the capture layer is **loaded**; absence of that report — after a short grace period — is what produces the warning. **Revised 2026-08-15, see §5b: the report moved out of the page's view, and the claim weakened to match.** | Found in a real browser, 2026-08-15. The panel flipped capture to `on` from `chrome.permissions.contains` alone, but `chrome.scripting.registerContentScripts` affects only FUTURE navigations, so a document already open when the grant landed had no content scripts in it: `Function.prototype.toString.call(window.fetch)` still read `[native code]`, and the panel said it was capturing. Three divergence paths — a grant from a previous session, an extension reload with the page open, and a grant the user never acts on — and only the third was handled, by `awaitingReload`. The grace period is not optional: rendering the warning before the report is due would flash a false alarm on every panel open, and a warning that is usually wrong teaches the user to ignore the one that matters. `executeScript` into the open document was rejected as the remedy — it produces a PARTIALLY patched document (bundlers hoist `const f = window.fetch`; an already-constructed `EventSource` is unreachable) that reports itself fully patched, which is the same failure class again. A reload is honest. |
 | P10 | The scope bar's run selector is a **searchable, virtualized list**, not a plain dropdown | Follows from the same answer: with many runs per session, a 4-item dropdown assumption breaks. Runs are labelled by thread, outcome, and issue count so the interesting one is findable without opening Runs. |
 
 ---
@@ -145,18 +145,102 @@ origin being granted and the document being patched are different facts:
   sends a message, so the panel cannot tell yet. It may NOT say "nothing detected": that reads as a
   verdict on the page when it is only an absence of evidence. Per §4a there is no third, stronger
   pre-traffic state to reach for
-- **Capture on, checking** (P12) — the origin is enabled and the page has not reported its capture
-  hooks yet. It may NOT say "capture is on": that is the claim that was wrong. It may not warn
-  either, until the grace period is out
-- **Capture on, this document has no hooks** (P12) — granted, and nothing is being captured here.
-  Carries the same reload affordance a fresh grant does, for the same reason
-- **Capture on, idle** — instrumented, waiting for a run
+- **Capture on, checking** (P12) — the origin is enabled and nothing has reported the capture layer
+  in this document yet. It may NOT say "capture is on": that is the claim that was wrong. It may not
+  warn either, until the grace period is out
+- **Capture on, the capture layer is not loaded in this document** (P12) — granted, and nothing is
+  being captured here. Carries the same reload affordance a fresh grant does, for the same reason
+- **Capture on, capture layer loaded, idle** — waiting for a run. It says *loaded*, not
+  *instrumented* and not *capturing*: see §5b for what the evidence supports
 
 All of them explain the reload requirement, and the two capture-off ones carry the same Enable
 button.
 
 The framework label of §4a appears on the **Session** tab (`Framework: Angular 21.1.6`) and never in
 this banner — it is a fact about how the app was built, not about what it speaks.
+
+---
+
+## 5b. P12 revised — the signal moved worlds, and the claim shrank to fit
+
+**2026-08-15.** P12 as first shipped was right about the *fact* and wrong about the *channel*.
+
+### What the page could observe before
+
+The MAIN-world script announced itself at `document_start` by posting
+
+```js
+{ source: 'agui-dt', v: 1, kind: 'capture-installed', tMs: <number> }
+```
+
+through `window.postMessage` **to the page's own window** — twice, to survive the MAIN/ISOLATED
+injection race. The relay picked it up. So did every `message` listener on the page, and many apps
+have one, for iframe communication.
+
+That is a bigger change than it looks. Before P12, a page could learn this extension existed only by
+actively **probing** — `Function.prototype.toString.call(window.fetch)` no longer reads
+`[native code]` — or once AG-UI traffic had started, by which point `agui-dt` messages were on the
+bus anyway. P12 turned that into a **push**, and widened it from *AG-UI pages* to *every page on a
+granted origin*, including the overwhelming majority that never make an AG-UI request.
+
+The concern is not fingerprinting. It is an application that **behaves differently when it can tell
+it is being inspected** — which is the one thing a devtools product must never cause. §11 asks for
+the extension to be unobtrusive, and this was the loudest thing it did.
+
+### What the page can observe now
+
+Nothing, until it opens a stream itself. The relay is a content script in the **ISOLATED** world
+and already holds a `chrome.runtime` port; it now reports `{ v: 1, kind: 'capture-loaded' }` there,
+once, at module evaluation. `chrome.runtime` is a channel the page cannot see, read, or forge. The
+MAIN world's announcement and its `postMessage` are gone, so every message the page can observe from
+this extension is downstream of a `fetch`, `XMLHttpRequest` or `EventSource` **the page opened**.
+
+`window.__AGUI_DEVTOOLS__` remains, and remains a *pull* signal: a page has to go looking for it.
+That is the pre-P12 posture, deliberately restored rather than exceeded.
+
+### An explicit message, not the bare port connection
+
+The port would be cheaper — the worker reads `tabId` and `frameId` off `port.sender` either way, so
+frame identity comes from Chrome in both designs. It cannot carry the fact the worker needs.
+`markLoaded` **replaces** a top-level frame's record and clears the subframes beneath it, because a
+new top-level document destroys them. That is correct only for a genuinely new document, and a port
+connection cannot be told apart from a **reconnect**: MV3 terminates an idle worker (§15), the next
+message reopens the port, and a re-mark from the main frame would wipe still-live subframes. The
+message is sent exactly once per document, so its arrival means "a document just loaded here" —
+precisely what the replace-on-navigation behaviour is keyed on.
+
+`ConnectionMessage` — `Exclude<InjectMessage, { kind: 'capture-installed' }>`, which existed so a
+transport could not structurally claim installation — is deleted rather than left as a vacuous
+exclusion. The intent it encoded is now enforced by the world boundary: the claim is not an
+`InjectMessage` arm at all, so no page-side code has a shape in which to make it.
+
+### The accepted residual
+
+The relay running proves **the content scripts were registered for this document** — exactly the
+broken case P12 exists to catch, since an already-open document has none of them. It does **not**
+prove the MAIN-world patches installed: `installInject` swallows its own throw, and the relay would
+report regardless. So the panel's claim weakened from "the capture hooks are installed" to **"the
+capture layer is loaded in this page"**, which is exactly true.
+
+That residual is our own tested code rather than a state a user can configure their way into, and it
+**self-corrects**: the first AG-UI request produces a `conn-open`, which is proof the patches work,
+and the banner then goes quiet on records. Records are the only stronger claim the panel ever makes.
+
+Strengthening it later at zero page-visible cost is possible — the two worlds share the DOM, so the
+MAIN world could record its install result on a detached node's attribute for the relay to forward.
+Not built: it trades a page-visible signal for a DOM-visible one, and the extra fact is worth less
+than the simplicity.
+
+### The gate
+
+`packages/harness/e2e/quiet-page.spec.ts`. A `message` collector installed via `addInitScript`
+before the document exists, a page that makes no AG-UI request, and an assertion of **zero**
+`agui-dt` messages — while the worker still reports the document loaded. It cannot pass vacuously:
+it asserts the collector caught a control message the harness posted itself, that the page's own
+inline script ran, and that `window.__AGUI_DEVTOOLS__` is present, so a dead listener or an
+extension that never loaded fails loudly. Both directions were mutation-tested — removing the
+relay's report fails the not-loaded path, and re-adding a page-visible post fails the zero-messages
+assertion while leaving the worker-state assertions green.
 
 Import is first-class here rather than a fallback. Dropping a `.agui.jsonl` on a panel with no
 capture loads it read-only with every tab working, which is the shareable-bug-report workflow from

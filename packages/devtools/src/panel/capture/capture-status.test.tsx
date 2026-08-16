@@ -7,10 +7,10 @@ import { initialPanelState } from '../model/panel-types';
 import type { CaptureStatus, PanelSource } from '../model/panel-types';
 
 function storeWith(capture: CaptureStatus, source: PanelSource = { kind: 'empty' }): PanelStore {
-  // `instrumented: true` unless a test says otherwise: these are the states of a page that has
+  // `loaded: true` unless a test says otherwise: these are the states of a page that has
   // reported its capture hooks, which is the ordinary case. The tri-state is exercised on its own
   // below.
-  return createPanelStore({ ...initialPanelState(), capture, source, instrumented: true });
+  return createPanelStore({ ...initialPanelState(), capture, source, loaded: true });
 }
 
 describe('CaptureBanner', () => {
@@ -144,29 +144,33 @@ describe('CaptureBanner', () => {
 });
 
 /**
- * Granted is not instrumented, and the banner is where the difference becomes visible.
+ * Granted is not loaded, and the banner is where the difference becomes visible.
  *
  * `chrome.scripting.registerContentScripts` affects only FUTURE navigations, so an origin granted
- * in a previous session — or an extension reloaded with the page open — leaves a document with no
- * capture hooks in it while the permission says capture is available. The panel used to read the
- * permission and announce "Capture is on", which is the project's recurring failure class:
- * something that looks like success.
+ * in a previous session — or an extension reloaded with the page open — leaves a document with
+ * none of our content scripts in it while the permission says capture is available. The panel
+ * used to read the permission and announce "Capture is on", which is the project's recurring
+ * failure class: something that looks like success.
+ *
+ * The positive claim is deliberately weak. Its evidence is that our ISOLATED-world relay is
+ * running in the document, which proves the content scripts were registered — not that the
+ * MAIN-world patches installed. The banner must not out-run that.
  */
-describe('CaptureBanner — granted, instrumented, or neither', () => {
-  function onOrigin(instrumented: boolean | null): PanelStore {
+describe('CaptureBanner — capture layer loaded, not loaded, or unreported', () => {
+  function onOrigin(loaded: boolean | null): PanelStore {
     return createPanelStore({
       ...initialPanelState(),
       capture: { kind: 'on', origin: 'http://localhost:3000' },
       source: { kind: 'live', origin: 'http://localhost:3000' },
-      instrumented,
+      loaded,
     });
   }
 
-  it('warns that the page has no capture hooks, and states the reload requirement once', () => {
+  it('warns that the capture layer is not loaded, and states the reload requirement once', () => {
     render(<CaptureBanner store={onOrigin(false)} onEnable={vi.fn()} />);
 
     const banner = screen.getByRole('status');
-    expect(banner.textContent).toMatch(/no capture hooks/i);
+    expect(banner.textContent).toMatch(/capture layer is not loaded/i);
     // The wording lives in `ReloadNote`, shared with the two capture-off states, so the reload
     // requirement is explained one way everywhere.
     expect(banner.textContent).toMatch(/requires a reload of the inspected page/i);
@@ -185,8 +189,28 @@ describe('CaptureBanner — granted, instrumented, or neither', () => {
 
     const banner = screen.getByRole('status');
     expect(banner.textContent).toMatch(/checking/i);
-    expect(banner.textContent).not.toMatch(/no capture hooks/i);
+    expect(banner.textContent).not.toMatch(/capture layer is not loaded/i);
     expect(banner.textContent).not.toMatch(/waiting for a run/i);
+  });
+
+  /*
+   * THE CLAIM MAY NOT OUT-RUN ITS EVIDENCE — the failure mode this whole feature exists to stop.
+   *
+   * The relay reporting proves the content scripts were registered for this document. It does not
+   * prove `installInject` patched `fetch` without throwing. So the banner may say the capture
+   * layer is loaded, and may not say the hooks are installed, that the page is instrumented, or
+   * that anything is being captured. The residual self-corrects the moment a record arrives, and
+   * records are the only stronger claim the panel ever makes (it goes quiet on them).
+   */
+  it('claims the capture layer is loaded, and claims nothing stronger', () => {
+    render(<CaptureBanner store={onOrigin(true)} onEnable={vi.fn()} />);
+
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toMatch(/capture layer is loaded in this page/i);
+    expect(text).toMatch(/waiting for a run/i);
+    for (const overclaim of [/hooks are installed/i, /instrumented/i, /is being captured/i]) {
+      expect(text).not.toMatch(overclaim);
+    }
   });
 
   it('warns even with records on screen, because the warning is about THIS document', () => {
@@ -199,9 +223,9 @@ describe('CaptureBanner — granted, instrumented, or neither', () => {
     }));
     render(<CaptureBanner store={store} onEnable={vi.fn()} />);
 
-    // Records from a previous document do not make the current one instrumented, and a panel
-    // that went quiet here would be back to implying capture it does not have.
-    expect(screen.getByRole('status').textContent).toMatch(/no capture hooks/i);
+    // Records from a previous document do not load a capture layer into the current one, and a
+    // panel that went quiet here would be back to implying capture it does not have.
+    expect(screen.getByRole('status').textContent).toMatch(/capture layer is not loaded/i);
   });
 
   it('stays quiet over records while the check is still outstanding', () => {

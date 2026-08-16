@@ -100,29 +100,29 @@ export function CaptureBanner({ store, onEnable }: CaptureBannerProps): JSX.Elem
     }
 
     /*
-     * Granted is not instrumented, and this is where the difference stops being invisible.
+     * Granted is not loaded, and this is where the difference stops being invisible.
      *
      * The origin being granted says capture is AVAILABLE here.
      * `chrome.scripting.registerContentScripts` only affects FUTURE navigations, so a document
      * that was already open when the grant landed — or when the extension was last reloaded — has
-     * no capture hooks in it and nothing is being captured from it. The panel used to read the
-     * permission and announce "Capture is on", which is this project's recurring failure class:
-     * something that looks like success.
+     * none of our content scripts in it and nothing is being captured from it. The panel used to
+     * read the permission and announce "Capture is on", which is this project's recurring failure
+     * class: something that looks like success.
      *
      * Checked BEFORE the records test, because the warning is about THIS document. Records left
-     * over from the previous one do not make the current page instrumented, and going quiet over
-     * them would put the panel straight back to implying capture it does not have.
+     * over from the previous one do not load a capture layer into the current page, and going
+     * quiet over them would put the panel straight back to implying capture it does not have.
      */
-    if (state.instrumented === false) {
+    if (state.loaded === false) {
       return (
         <div class="agui-banner agui-banner--offer" role="status">
           <p class="agui-banner__head">
-            Capture is on for {capture.origin}, but this page has no capture hooks in it.
+            Capture is on for {capture.origin}, but the capture layer is not loaded in this page.
           </p>
           <p class="agui-banner__body">
             Granting an origin registers the capture scripts for its <em>next</em> page load, so a
-            document that was already open when capture was enabled reports nothing and nothing is
-            being captured from it. Capture here <ReloadNote />
+            document that was already open when capture was enabled has none of them and reports
+            nothing — nothing is being captured from it. Capture here <ReloadNote />
           </p>
         </div>
       );
@@ -135,27 +135,43 @@ export function CaptureBanner({ store, onEnable }: CaptureBannerProps): JSX.Elem
     /*
      * The grace period, on screen.
      *
-     * The page reports its hooks at `document_start`, and that report crosses two hops before it
-     * reaches here. Saying "not instrumented" in the moment before it is due would flash a false
-     * warning on every panel open — and a warning that is usually wrong teaches the user to
-     * ignore the one that matters. Saying "capture is on" would be the original defect. So the
-     * panel says what is true: it has asked and is waiting.
+     * The capture layer reports itself at `document_start`, and that report crosses a hop before
+     * it reaches here. Saying the layer is missing in the moment before the report is due would
+     * flash a false warning on every panel open — and a warning that is usually wrong teaches the
+     * user to ignore the one that matters. Saying "capture is on" would be the original defect.
+     * So the panel says what is true: it is waiting.
      */
-    if (state.instrumented === null) {
+    if (state.loaded === null) {
       return (
         <div class="agui-banner agui-banner--info" role="status">
-          <p class="agui-banner__head">Checking whether this page is instrumented…</p>
+          <p class="agui-banner__head">Checking whether the capture layer is loaded here…</p>
           <p class="agui-banner__body">
-            Capture is on for {capture.origin}. The page reports its capture hooks as it loads, and
-            that report has not arrived yet.
+            Capture is on for {capture.origin}. The capture layer reports itself as the page loads,
+            and that report has not arrived yet.
           </p>
         </div>
       );
     }
 
+    /*
+     * WHAT THIS MAY AND MAY NOT SAY — the reason this whole feature exists, in one sentence.
+     *
+     * The evidence behind this branch is that our ISOLATED-world relay is running in the
+     * inspected document. That proves the content scripts were REGISTERED for it, which is
+     * exactly the broken case being ruled out. It does NOT prove the MAIN-world patches installed
+     * without throwing, so the wording says "loaded" and stops there. The signal moved out of the
+     * page's view on purpose (see `relay/relay.ts`), and buying a stronger claim back with a
+     * page-visible handshake is the trade this change was made to refuse.
+     *
+     * The residual self-corrects: the moment any AG-UI request happens a `conn-open` arrives,
+     * records start flowing, and the branch above returns null — records are proof the patches
+     * work, and they are the only proof the panel ever asserts on.
+     */
     return (
       <div class="agui-banner agui-banner--info" role="status">
-        <p class="agui-banner__head">Capture is on for {capture.origin}.</p>
+        <p class="agui-banner__head">
+          Capture is on for {capture.origin}, and the capture layer is loaded in this page.
+        </p>
         <p class="agui-banner__body">Waiting for a run — trigger one in the page.</p>
       </div>
     );

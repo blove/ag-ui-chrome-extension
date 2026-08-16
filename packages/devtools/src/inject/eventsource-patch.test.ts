@@ -5,7 +5,7 @@ import {
   type EventSourceConstructorLike,
   type EventSourceScope,
 } from './eventsource-patch';
-import { isInjectMessage, type ConnectionMessage } from './protocol';
+import { isInjectMessage, type InjectMessage } from './protocol';
 
 /**
  * A fake `EventSource`. jsdom ships one, but it opens a real connection and gives a test no way
@@ -50,13 +50,13 @@ class FakeEventSource extends EventTarget {
 }
 
 interface Harness {
-  readonly posted: ConnectionMessage[];
+  readonly posted: InjectMessage[];
   readonly scope: EventSourceScope;
   uninstall: () => void;
 }
 
 function setup(): Harness {
-  const posted: ConnectionMessage[] = [];
+  const posted: InjectMessage[] = [];
   let tick = 0;
   let conn = 0;
   const scope: EventSourceScope = { EventSource: FakeEventSource };
@@ -74,7 +74,7 @@ function setup(): Harness {
   return { posted, scope, uninstall };
 }
 
-function kinds(posted: ConnectionMessage[]): string[] {
+function kinds(posted: InjectMessage[]): string[] {
   return posted.map((message) => message.kind);
 }
 
@@ -126,7 +126,7 @@ describe('installEventSourcePatch — behaviour preservation', () => {
   });
 
   it('survives a post that throws', () => {
-    const posted: ConnectionMessage[] = [];
+    const posted: InjectMessage[] = [];
     const scope: EventSourceScope = { EventSource: FakeEventSource };
     const uninstall = installEventSourcePatch({
       scope,

@@ -37,6 +37,9 @@ export async function buildPage(): Promise<void> {
     join(pageRoot, 'document-start-sync.html'),
     join(outDir, 'document-start-sync.html'),
   );
+  // The opposite page: no bundle, no request, nothing to capture. What the extension must be
+  // silent on — see `e2e/quiet-page.spec.ts`.
+  copyFileSync(join(pageRoot, 'quiet.html'), join(outDir, 'quiet.html'));
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

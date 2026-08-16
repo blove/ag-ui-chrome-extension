@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { PanelStore } from '../model/store';
-import { captureOn, setInstrumented, setRecording as setRecordingAction } from '../model/store';
+import { captureOn, setLoaded, setRecording as setRecordingAction } from '../model/store';
 import { usePanelState } from '../model/use-panel-state';
 import { createLiveSession, type LiveSession } from './live-session';
 import { connectToServiceWorker, type PanelPort } from './port';
@@ -24,19 +24,21 @@ import { hasOriginGrant, isAutoEnabledOrigin, requestOriginGrant, type GrantOutc
 export type EnableStatus = GrantOutcome | null;
 
 /**
- * How long the panel waits for the inspected document to report its capture hooks before saying
- * it has none.
+ * How long the panel waits for the inspected document to report its capture layer before saying
+ * there is none.
  *
- * The announcement is posted at `document_start` and crosses two hops — `window.postMessage` to
- * the ISOLATED relay, then a `chrome.runtime` port to the service worker, which may itself have
- * to be woken. A panel that rendered the warning before that had a chance to land would flash a
- * false alarm on EVERY open, and a warning that is usually wrong is worse than no warning at all:
- * it teaches the user to ignore the one that matters.
+ * The report is sent by the ISOLATED-world relay at `document_start`, over a `chrome.runtime`
+ * port to the service worker, which may itself have to be woken. A panel that rendered the
+ * warning before that had a chance to land would flash a false alarm on EVERY open, and a warning
+ * that is usually wrong is worse than no warning at all: it teaches the user to ignore the one
+ * that matters.
  *
  * Long enough to cover a woken worker, short enough that a user who is about to be told to reload
- * is not left reading a stale "Capture is on".
+ * is not left reading a stale "Capture is on". One hop shorter than it used to be — the report no
+ * longer starts life as a `window.postMessage` in the page — so the budget is, if anything, more
+ * generous than before.
  */
-export const INSTRUMENTATION_GRACE_MS = 1500;
+export const LOAD_REPORT_GRACE_MS = 1500;
 
 export interface LiveCapture {
   /** Request the origin grant and turn capture on. Call from a click — Chrome requires it. */
@@ -51,9 +53,10 @@ export interface LiveCapture {
    * True while capture cannot work until the inspected page is reloaded.
    *
    * Two ways in, and they are the same fact from different directions: the user has just granted
-   * the origin (so the hooks will install on the next load), or the document has been asked and
-   * has not reported any (so it has no hooks now). The second used to be missing entirely, which
-   * is how the panel came to say it was capturing from documents it had never touched.
+   * the origin (so the capture layer will load on the next navigation), or the document has been
+   * waited on and reported nothing (so it has no capture layer now). The second used to be
+   * missing entirely, which is how the panel came to say it was capturing from documents it had
+   * never touched.
    */
   awaitingReload: boolean;
 }
@@ -103,22 +106,23 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
   }, [store, capture]);
 
   /*
-   * Ask the document whether it is instrumented, and give it a moment to answer.
+   * Wait for the document to report its capture layer, and give it a moment to do so.
    *
    * Declared BEFORE the port effect so the reset cannot land on top of a snapshot that has
    * already answered. `documentEpoch` is bumped on every navigation: a new document inherits
    * nothing, so the question reopens each time and the timeout starts again.
    *
-   * Nothing here asks Chrome anything. The answer arrives — or does not — from the page itself,
-   * which is the only party that knows, and the timeout is what turns silence into a finding.
+   * Nothing here asks Chrome anything, and nothing asks the PAGE anything — the report comes from
+   * our own content script in the ISOLATED world, which is the party that knows and the one the
+   * page cannot see. The timeout is what turns silence into a finding.
    */
   useEffect(() => {
     if (captureOnFor === null) return;
-    store.update((s) => setInstrumented(s, null));
+    store.update((s) => setLoaded(s, null));
     const timer = setTimeout(() => {
-      // Only silence becomes a finding: an announcement that arrived in the meantime stands.
-      store.update((s) => (s.instrumented === null ? setInstrumented(s, false) : s));
-    }, INSTRUMENTATION_GRACE_MS);
+      // Only silence becomes a finding: a report that arrived in the meantime stands.
+      store.update((s) => (s.loaded === null ? setLoaded(s, false) : s));
+    }, LOAD_REPORT_GRACE_MS);
     return () => {
       clearTimeout(timer);
     };
@@ -234,14 +238,14 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
 
   /*
    * The reload is needed either because the grant has not taken effect yet, or because the page
-   * has been asked and reported no hooks. `executeScript` into the open document is deliberately
-   * NOT offered as a shortcut: it would leave a PARTIALLY instrumented document — a bundler
-   * routinely hoists `const f = window.fetch` at module load, and an already-constructed
-   * `EventSource` is unreachable — that then reports itself fully instrumented. That is the
-   * failure class being fixed, reintroduced. A reload is honest.
+   * reported no capture layer. `executeScript` into the open document is deliberately NOT offered
+   * as a shortcut: it would leave a PARTIALLY patched document — a bundler routinely hoists
+   * `const f = window.fetch` at module load, and an already-constructed `EventSource` is
+   * unreachable — that then reports itself fully patched. That is the failure class being fixed,
+   * reintroduced. A reload is honest.
    */
   const awaitingReload =
-    grantedAwaitingReload || (capture.kind === 'on' && state.instrumented === false);
+    grantedAwaitingReload || (capture.kind === 'on' && state.loaded === false);
 
   return { enable, setRecording, clearBuffer, reloadInspectedPage, status, awaitingReload };
 }

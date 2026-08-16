@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { isInjectMessage, type ConnectionMessage } from './protocol';
+import { isInjectMessage, type InjectMessage } from './protocol';
 import { installXhrPatch } from './xhr-patch';
 
 /**
@@ -56,7 +56,7 @@ class FakeXhr extends EventTarget {
 }
 
 interface Harness {
-  readonly posted: ConnectionMessage[];
+  readonly posted: InjectMessage[];
   uninstall: () => void;
   create: () => FakeXhr;
 }
@@ -64,7 +64,7 @@ interface Harness {
 let active: Harness | null = null;
 
 function setup(): Harness {
-  const posted: ConnectionMessage[] = [];
+  const posted: InjectMessage[] = [];
   let tick = 0;
   let conn = 0;
   const uninstall = installXhrPatch({
@@ -83,11 +83,11 @@ function setup(): Harness {
   return harness;
 }
 
-function kinds(posted: ConnectionMessage[]): string[] {
+function kinds(posted: InjectMessage[]): string[] {
   return posted.map((message) => message.kind);
 }
 
-function framesOf(posted: ConnectionMessage[]): string[] {
+function framesOf(posted: InjectMessage[]): string[] {
   const out: string[] = [];
   for (const message of posted) {
     if (message.kind === 'frames') for (const frame of message.frames) out.push(frame.raw);
@@ -124,7 +124,7 @@ describe('installXhrPatch — behaviour preservation', () => {
   });
 
   it('survives a post that throws', () => {
-    const posted: ConnectionMessage[] = [];
+    const posted: InjectMessage[] = [];
     const uninstall = installXhrPatch({
       target: FakeXhr,
       post: (message) => {

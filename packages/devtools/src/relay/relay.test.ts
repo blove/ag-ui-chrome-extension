@@ -108,6 +108,15 @@ function validOpen(extra: Record<string, unknown> = {}): Record<string, unknown>
   };
 }
 
+/**
+ * The message a page would have to forge to make the panel claim capture where there is none.
+ *
+ * It used to be a real `InjectMessage` arm posted by the MAIN world at `document_start`. It is
+ * not one any more — the presence signal moved to `chrome.runtime`, where the page cannot reach
+ * it — so every case built from this is now expected to be dropped as an unknown kind. The cases
+ * are kept rather than deleted: this is the shape an attacker who has read the old source would
+ * try, and "the arm was removed" and "the arm is rejected" must not be allowed to drift apart.
+ */
 function validInstalled(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     source: AGUI_DT_SOURCE,
@@ -118,8 +127,25 @@ function validInstalled(extra: Record<string, unknown> = {}): Record<string, unk
   };
 }
 
+/** What the relay says of its own accord, once, when it loads. */
+const LOAD_REPORT = { v: PROTOCOL_VERSION, kind: 'capture-loaded' };
+
 function delivered(harness: ChromeHarness): unknown[] {
   return harness.ports.flatMap((port) => port.posted);
+}
+
+/**
+ * Everything the relay sent EXCEPT its own load report, which comes first on every load.
+ *
+ * The report is ASSERTED here rather than filtered out. A filter would keep passing if the relay
+ * stopped sending it, or sent it twice, or sent something else first — and the whole point of the
+ * report is that its absence is a finding. Asserting it means a relay that goes quiet fails every
+ * test in this file instead of shifting them all by one and staying green.
+ */
+function forwarded(harness: ChromeHarness): unknown[] {
+  const all = delivered(harness);
+  expect(all[0]).toEqual(LOAD_REPORT);
+  return all.slice(1);
 }
 
 let chromeHarness: ChromeHarness;
@@ -145,18 +171,61 @@ function expectSilent(): void {
   for (const spy of consoleSpies) expect(spy).not.toHaveBeenCalled();
 }
 
-describe('relay — forwarding', () => {
-  it('connects with the contract port name on the first valid message', () => {
-    post(validOpen());
+/**
+ * The relay's own report — the presence signal, in the world the page cannot see.
+ *
+ * This replaced a `window.postMessage` the MAIN world used to make at `document_start`, which
+ * every `message` listener on the page received. These tests are about the two halves of that
+ * move: the signal still reaches the worker, and the page hears nothing.
+ */
+describe('relay — reporting itself to the service worker', () => {
+  it('reports the capture layer loaded as soon as it is loaded, over the runtime port', () => {
     expect(chromeHarness.connectNames).toEqual([RELAY_PORT_NAME]);
+    expect(delivered(chromeHarness)).toEqual([LOAD_REPORT]);
   });
 
-  it('opens no port at all for a page that never posts a valid message', () => {
+  it('says nothing to the page when it loads', async () => {
+    // The headline property, at unit scale: a page on a granted origin that never makes a
+    // request must not learn the extension exists. `e2e/quiet-page.spec.ts` asserts the same
+    // thing in a real browser, where the page's own listener is what does the observing.
+    if (messageListener !== null) window.removeEventListener('message', messageListener);
+    const reply = vi.spyOn(window, 'postMessage');
+    const dispatched = vi.spyOn(window, 'dispatchEvent');
+    // A second, clean load with the page's ears on from before the first line of it runs.
+    await loadRelay();
+    expect(reply).not.toHaveBeenCalled();
+    expect(dispatched).not.toHaveBeenCalled();
+    reply.mockRestore();
+    dispatched.mockRestore();
+  });
+
+  it('reports once per document, not once per message', () => {
+    post(validOpen());
+    post(validOpen({ connId: 'c2' }));
+    const reports = delivered(chromeHarness).filter(
+      (message) => (message as { kind?: unknown }).kind === 'capture-loaded',
+    );
+    // Once per document is what the worker's replace-on-navigation behaviour is keyed on: a
+    // second report from the top-level frame would clear the still-live subframes beneath it.
+    expect(reports).toEqual([LOAD_REPORT]);
+  });
+});
+
+describe('relay — forwarding', () => {
+  it('connects with the contract port name, once, and reuses that port', () => {
+    post(validOpen());
+    expect(chromeHarness.connectNames).toEqual([RELAY_PORT_NAME]);
+    expect(chromeHarness.ports).toHaveLength(1);
+  });
+
+  it('adds nothing to the port for a page that never posts a valid message', () => {
     post('hello');
     post({ source: 'other-extension', v: 1, kind: 'conn-close' });
     post(validOpen(), { origin: 'https://evil.example' });
-    expect(chromeHarness.connectNames).toEqual([]);
-    expect(chromeHarness.ports).toEqual([]);
+    // One port, holding the load report and nothing else. The port itself is not evidence about
+    // the page: it is opened for our own report, before the page has run a line of script.
+    expect(chromeHarness.connectNames).toEqual([RELAY_PORT_NAME]);
+    expect(forwarded(chromeHarness)).toEqual([]);
   });
 
   it('reuses one port across many messages', () => {
@@ -164,12 +233,12 @@ describe('relay — forwarding', () => {
     post(validOpen({ connId: 'c2' }));
     expect(chromeHarness.connectNames).toEqual([RELAY_PORT_NAME]);
     expect(chromeHarness.ports).toHaveLength(1);
-    expect(chromeHarness.ports[0]?.posted).toHaveLength(2);
+    expect(forwarded(chromeHarness)).toHaveLength(2);
   });
 
   it('forwards conn-open without the source tag', () => {
     post(validOpen());
-    expect(delivered(chromeHarness)).toEqual([
+    expect(forwarded(chromeHarness)).toEqual([
       {
         v: 1,
         kind: 'conn-open',
@@ -194,7 +263,7 @@ describe('relay — forwarding', () => {
         { kind: 'keepalive', tMs: 2, raw: ':ping\n\n', comment: 'ping' },
       ],
     });
-    expect(delivered(chromeHarness)).toEqual([
+    expect(forwarded(chromeHarness)).toEqual([
       {
         v: 1,
         kind: 'frames',
@@ -225,7 +294,7 @@ describe('relay — forwarding', () => {
       contentType: 'application/vnd.ag-ui.event+proto',
       bytes: 64,
     });
-    expect(delivered(chromeHarness)).toEqual([
+    expect(forwarded(chromeHarness)).toEqual([
       { v: 1, kind: 'conn-close', connId: 'c1', tMs: 3, reason: 'aborted' },
       {
         v: 1,
@@ -239,22 +308,30 @@ describe('relay — forwarding', () => {
   });
 
   /*
-   * The announcement crosses the boundary on exactly the same terms as everything else.
+   * The presence claim is no longer something the page side can express.
    *
-   * It is the message the panel reads as "this document has capture hooks in it", so a forged
-   * one makes the panel claim capture is live where it is not — the very failure the message
-   * exists to abolish. It therefore gets no shortcut: same origin check, same source check, same
-   * plain-prototype screen, same version check, same field-by-field rebuild.
+   * The MAIN world used to post `capture-installed` and this relay used to forward it, which
+   * meant a page that forged one could make the panel claim capture was live on a document with
+   * no hooks in it. The claim now originates HERE, in the ISOLATED world, and has no
+   * `InjectMessage` arm at all — so a forgery is not "rejected by a stricter check", it is an
+   * unknown kind, which is the strongest form of no.
    */
-  it('forwards capture-installed without the source tag', () => {
+  it('drops a page-posted capture-installed, which is no longer a message at all', () => {
     post(validInstalled());
-    expect(delivered(chromeHarness)).toEqual([{ v: 1, kind: 'capture-installed', tMs: 1.25 }]);
+    expect(forwarded(chromeHarness)).toEqual([]);
   });
 
-  it('rebuilds capture-installed from known fields only', () => {
-    post(validInstalled({ connId: 'c1', cookie: 'session=abc', instrumented: 'yes' }));
-    const [forwarded] = delivered(chromeHarness) as Record<string, unknown>[];
-    expect(Object.keys(forwarded ?? {}).sort()).toEqual(['kind', 'tMs', 'v']);
+  it('cannot be made to report a load by anything the page posts', () => {
+    post(validInstalled());
+    post({ source: AGUI_DT_SOURCE, v: PROTOCOL_VERSION, kind: 'capture-loaded' });
+    post(validInstalled({ kind: 'capture-loaded' }));
+    post(validOpen({ kind: 'capture-loaded' }));
+    // Exactly one report, and it is the one this relay made about itself before the page ran.
+    expect(
+      delivered(chromeHarness).filter(
+        (message) => (message as { kind?: unknown }).kind === 'capture-loaded',
+      ),
+    ).toEqual([LOAD_REPORT]);
   });
 
   it('drops properties the contract does not name, at the top level and inside frames', () => {
@@ -267,7 +344,7 @@ describe('relay — forwarding', () => {
       frames: [{ kind: 'event', tMs: 1, raw: '{}', stolen: 'secret' }],
     });
 
-    const [open, frames] = delivered(chromeHarness) as Record<string, unknown>[];
+    const [open, frames] = forwarded(chromeHarness) as Record<string, unknown>[];
     expect(Object.keys(open ?? {}).sort()).toEqual(
       ['connId', 'contentType', 'input', 'kind', 'method', 'tMs', 'url', 'v'].sort(),
     );
@@ -278,7 +355,7 @@ describe('relay — forwarding', () => {
   it('passes the request body through verbatim', () => {
     const input = { threadId: 't1', messages: [{ role: 'user', content: 'hi' }], tools: [] };
     post(validOpen({ input }));
-    const [open] = delivered(chromeHarness) as Record<string, unknown>[];
+    const [open] = forwarded(chromeHarness) as Record<string, unknown>[];
     expect(open?.input).toEqual(input);
   });
 });
@@ -417,8 +494,11 @@ describe('relay — hostile input is dropped silently', () => {
   for (const [name, send] of cases) {
     it(`drops ${name}`, () => {
       expect(send).not.toThrow();
-      expect(delivered(chromeHarness)).toEqual([]);
-      expect(chromeHarness.connectNames).toEqual([]);
+      // NOTHING the page posts reaches the port. The port itself already exists — the relay
+      // opened it for its own load report, before the page ran — so the assertion is on what
+      // crossed it, not on whether it was opened.
+      expect(forwarded(chromeHarness)).toEqual([]);
+      expect(chromeHarness.connectNames).toEqual([RELAY_PORT_NAME]);
       expectSilent();
     });
   }
@@ -434,7 +514,7 @@ describe('relay — hostile input is dropped silently', () => {
     expect(() => {
       post(hostile);
     }).not.toThrow();
-    expect(delivered(chromeHarness)).toEqual([]);
+    expect(forwarded(chromeHarness)).toEqual([]);
     expectSilent();
   });
 
@@ -447,20 +527,20 @@ describe('relay — hostile input is dropped silently', () => {
 
     const probe = {} as Record<string, unknown>;
     expect(probe.polluted).toBeUndefined();
-    const [forwarded] = delivered(chromeHarness) as Record<string, unknown>[];
-    expect(Object.getPrototypeOf(forwarded)).toBe(Object.prototype);
-    expect(Object.prototype.hasOwnProperty.call(forwarded, '__proto__')).toBe(false);
-    expect(Object.keys(forwarded ?? {})).not.toContain('polluted');
+    const [open] = forwarded(chromeHarness) as Record<string, unknown>[];
+    expect(Object.getPrototypeOf(open)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(open, '__proto__')).toBe(false);
+    expect(Object.keys(open ?? {})).not.toContain('polluted');
     expectSilent();
   });
 
   it('strips a constructor key riding along on a valid message', () => {
     const hostile = validOpen({ constructor: { name: 'evil' }, toString: 'nope' });
     post(hostile);
-    const [forwarded] = delivered(chromeHarness) as Record<string, unknown>[];
-    expect(Object.keys(forwarded ?? {})).not.toContain('constructor');
-    expect(Object.keys(forwarded ?? {})).not.toContain('toString');
-    expect(forwarded?.kind).toBe('conn-open');
+    const [open] = forwarded(chromeHarness) as Record<string, unknown>[];
+    expect(Object.keys(open ?? {})).not.toContain('constructor');
+    expect(Object.keys(open ?? {})).not.toContain('toString');
+    expect(open?.kind).toBe('conn-open');
   });
 
   it('never answers the page', () => {
@@ -477,13 +557,44 @@ describe('relay — surviving a sleeping service worker (§15)', () => {
   it('reconnects when the port died since the last message', () => {
     post(validOpen());
     const first = chromeHarness.ports[0];
-    expect(first?.posted).toHaveLength(1);
+    // The load report, then the open.
+    expect(first?.posted).toHaveLength(2);
 
     first?.killFromServiceWorker();
     post(validOpen({ connId: 'c2' }));
 
     expect(chromeHarness.connectNames).toEqual([RELAY_PORT_NAME, RELAY_PORT_NAME]);
     expect(chromeHarness.ports[1]?.posted).toHaveLength(1);
+    expectSilent();
+  });
+
+  /*
+   * A reconnect is NOT a new document, and the relay must not say it is.
+   *
+   * MV3 terminates an idle worker (§15), which disconnects the port; the next message reopens
+   * one. If the relay re-reported on that new port, the worker would treat it as a fresh
+   * top-level document and clear every subframe it had recorded — subframes that are still open,
+   * still loaded, and have no reason to report again. This is the whole reason the signal is a
+   * message sent once at load rather than the bare fact of a port connection.
+   */
+  it('does not re-report on the port it opens after a reconnect', () => {
+    const first = chromeHarness.ports[0];
+    first?.killFromServiceWorker();
+    post(validOpen({ connId: 'c2' }));
+
+    expect(chromeHarness.ports).toHaveLength(2);
+    expect(chromeHarness.ports[1]?.posted).toEqual([
+      {
+        v: 1,
+        kind: 'conn-open',
+        connId: 'c2',
+        tMs: 12.5,
+        method: 'POST',
+        url: 'https://example.test/agent/run',
+        contentType: 'text/event-stream',
+        input: { threadId: 't1' },
+      },
+    ]);
     expectSilent();
   });
 
@@ -496,7 +607,7 @@ describe('relay — surviving a sleeping service worker (§15)', () => {
     post(validOpen({ connId: 'c2' }));
 
     expect(chromeHarness.ports).toHaveLength(2);
-    expect(first.posted).toHaveLength(1);
+    expect(first.posted).toHaveLength(2);
     const second = chromeHarness.ports[1];
     expect(second?.posted).toEqual([
       {
@@ -539,14 +650,35 @@ describe('relay — surviving a sleeping service worker (§15)', () => {
   });
 
   it('drops the message when the extension context is gone, then recovers', () => {
+    // Kill the port the load report opened, so the next message has to reconnect — and make
+    // that reconnect fail, as an invalidated extension context does.
+    chromeHarness.ports[0]?.killFromServiceWorker();
     chromeHarness.connectThrows = 1;
     expect(() => {
       post(validOpen());
     }).not.toThrow();
-    expect(delivered(chromeHarness)).toEqual([]);
+    expect(forwarded(chromeHarness)).toEqual([]);
 
     post(validOpen({ connId: 'c2' }));
-    expect(delivered(chromeHarness)).toHaveLength(1);
+    expect(forwarded(chromeHarness)).toHaveLength(1);
+    expectSilent();
+  });
+
+  /*
+   * The load report is the first thing this file does, and it can fail like anything else.
+   *
+   * A relay loaded into a document whose extension context is already gone — an extension
+   * reload, an uninstall — must not throw at `document_start`. A throw there is a broken page,
+   * and it would be a broken page caused by us, in the page's own load. There is no retry: the
+   * report is about a moment that has passed.
+   */
+  it('survives an extension context that is already gone when it loads', async () => {
+    if (messageListener !== null) window.removeEventListener('message', messageListener);
+    // Everything the relay loaded by `beforeEach` already said. The second load must add none.
+    const before = delivered(chromeHarness).length;
+    chromeHarness.connectThrows = 2;
+    await expect(loadRelay()).resolves.toBeUndefined();
+    expect(delivered(chromeHarness)).toHaveLength(before);
     expectSilent();
   });
 });

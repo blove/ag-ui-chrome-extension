@@ -23,13 +23,30 @@ export const RELAY_PORT_NAME = 'agui-devtools-relay';
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
 /**
- * What the relay forwards over the port: an `InjectMessage` minus the `agui-dt` tag.
+ * What the relay sends over the port.
  *
- * The tag exists to pick our messages out of everything else on `window`; past the relay's
- * origin, source and shape checks it carries no information, so it is dropped rather than
- * forwarded. `v` stays — the service worker still has to reject a version it cannot read.
+ * Two origins, and the split is the whole privacy design. The forwarded arms are an
+ * `InjectMessage` minus the `agui-dt` tag — the tag exists to pick our messages out of everything
+ * else on `window`, and past the relay's origin, source and shape checks it carries no
+ * information, so it is dropped rather than forwarded. `v` stays: the worker still has to reject
+ * a version it cannot read.
+ *
+ * `capture-loaded` has no `InjectMessage` counterpart, deliberately. It is the RELAY's own
+ * statement, made in the ISOLATED world where the page cannot see it, and there is no shape in
+ * which page-side code could make it — which is the structural version of the guarantee the old
+ * `ConnectionMessage` exclusion type used to assert weakly in `inject/protocol.ts`.
  */
-export type RelayMessage = DistributiveOmit<InjectMessage, 'source'>;
+export type RelayMessage =
+  | DistributiveOmit<InjectMessage, 'source'>
+  /**
+   * The capture layer is loaded in the frame this port belongs to. Sent once per document, at
+   * `document_start`, and never re-sent on a reconnect — see the long note in `relay/relay.ts`
+   * for why "once per document" rather than "once per port" is the fact the worker needs.
+   *
+   * Carries no frame identity of its own: the worker reads `port.sender`, so which document this
+   * is comes from Chrome rather than from the payload.
+   */
+  | { v: 1; kind: 'capture-loaded' };
 
 /**
  * One captured connection's request line: what was asked for, and the `RunAgentInput` that went
@@ -107,15 +124,19 @@ export type SwMessage =
       closed: ClosedConn[];
       droppedBefore: number;
       /**
-       * Whether any document in this tab has reported that its capture hooks are installed.
+       * Whether any document in this tab has reported that the capture layer is LOADED in it.
        *
        * NOT the same fact as "the origin is granted", which is what the panel used to infer
        * capture from: `chrome.scripting.registerContentScripts` affects only FUTURE navigations,
-       * so a document already open when the grant landed has no hooks in it. This is how a panel
-       * opened AFTER the announcement still learns about it — the announcement itself is a
-       * one-shot message the panel may well have missed.
+       * so a document already open when the grant landed has no content scripts in it at all and
+       * reports nothing. This is how a panel opened AFTER the report still learns about it — the
+       * report itself is a one-shot message the panel may well have missed.
+       *
+       * Named for what it proves. The relay reporting means the content scripts were registered
+       * for this document; it does not prove the MAIN-world patches installed without throwing.
+       * See `relay/relay.ts` for the residual and why it is accepted.
        */
-      instrumented: boolean;
+      loaded: boolean;
     }
   | {
       kind: 'append';
@@ -142,16 +163,16 @@ export type SwMessage =
    */
   | { kind: 'binary'; connId: string; tMs: number; contentType: string; bytes: number }
   /**
-   * A document in this tab has just reported that its capture hooks are installed.
+   * A document in this tab has just reported that the capture layer is loaded in it.
    *
-   * Re-stated on EVERY announcement rather than only on a change, because the interesting
-   * announcement is usually the one that changes nothing here: the user reloads on the panel's
-   * advice, the new document announces exactly as the old one did, and a panel that had reset
-   * itself to "checking" for the new document has to hear it or it warns about a page that is
-   * working. There is deliberately no negative counterpart — absence is the signal, at this
-   * boundary exactly as at the page's.
+   * Re-stated on EVERY report rather than only on a change, because the interesting report is
+   * usually the one that changes nothing here: the user reloads on the panel's advice, the new
+   * document reports exactly as the old one did, and a panel that had reset itself to "checking"
+   * for the new document has to hear it or it warns about a page that is working. There is
+   * deliberately no negative counterpart — absence is the signal, at this boundary exactly as at
+   * the relay's.
    */
-  | { kind: 'capture-installed' }
+  | { kind: 'capture-loaded' }
   | { kind: 'cleared' };
 
 /** Panel → worker. */

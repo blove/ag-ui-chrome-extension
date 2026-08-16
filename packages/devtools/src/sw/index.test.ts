@@ -206,7 +206,7 @@ function relayPort(tabId: number, frameId = 0): FakePort {
   return new FakePort(RELAY_PORT_NAME, { tab: { id: tabId }, frameId });
 }
 
-const installed: RelayMessage = { v: 1, kind: 'capture-installed', tMs: 0.5 };
+const loadedReport: RelayMessage = { v: 1, kind: 'capture-loaded' };
 
 function panelPort(): FakePort {
   return new FakePort(PANEL_PORT_NAME);
@@ -858,32 +858,32 @@ describe('service worker — instrumentation reported by the document', () => {
     await settle();
   });
 
-  it('reports a tab whose document announced its hooks, and one that never did', () => {
+  it('reports a tab whose relay reported the capture layer, and one that never did', () => {
     const quiet = panelPort();
     stub.connect(quiet);
     send(quiet, { kind: 'subscribe', tabId: 9 });
-    expect(snapshotOf(quiet).instrumented).toBe(false);
+    expect(snapshotOf(quiet).loaded).toBe(false);
 
     const relay = relayPort(7);
     stub.connect(relay);
-    send(relay, installed);
+    send(relay, loadedReport);
 
     const panel = panelPort();
     stub.connect(panel);
     send(panel, { kind: 'subscribe', tabId: 7 });
-    expect(snapshotOf(panel).instrumented).toBe(true);
+    expect(snapshotOf(panel).loaded).toBe(true);
   });
 
   /*
-   * The announcement is extension-internal state about our own capture layer. The Timeline
-   * claims to show AG-UI protocol events reconstructed from the wire, so a record here would
-   * make the panel assert something false about the user's application — and it would consume a
-   * `seq`, shifting every anchor the validator's issues are reported against.
+   * The report is extension-internal state about our own capture layer. The Timeline claims to
+   * show AG-UI protocol events reconstructed from the wire, so a record here would make the panel
+   * assert something false about the user's application — and it would consume a `seq`, shifting
+   * every anchor the validator's issues are reported against.
    */
-  it('never turns an announcement into a record, and never spends a seq on one', () => {
+  it('never turns a load report into a record, and never spends a seq on one', () => {
     const relay = relayPort(7);
     stub.connect(relay);
-    send(relay, installed);
+    send(relay, loadedReport);
     send(relay, connOpen('c1'));
     send(relay, {
       v: 1,
@@ -891,63 +891,63 @@ describe('service worker — instrumentation reported by the document', () => {
       connId: 'c1',
       frames: [eventFrame(12, { type: 'RUN_STARTED' })],
     });
-    send(relay, installed);
+    send(relay, loadedReport);
 
     expect(testHook().records().map((record) => record.seq)).toEqual([1]);
     expect(testHook().requests().map((request) => request.connId)).toEqual(['c1']);
   });
 
   // §12 declares `all_frames: true` because agent chat is frequently in an iframe — the real
-  // deployment this was found on is an `/embed` route. An iframe-only instrumented document is
-  // instrumented.
-  it('counts an announcement from any frame, not only the top one', () => {
+  // deployment this was found on is an `/embed` route. A tab whose only loaded document is an
+  // iframe is a loaded tab.
+  it('counts a load report from any frame, not only the top one', () => {
     const iframe = relayPort(7, 5);
     stub.connect(iframe);
-    send(iframe, installed);
+    send(iframe, loadedReport);
 
     const panel = panelPort();
     stub.connect(panel);
     send(panel, { kind: 'subscribe', tabId: 7 });
-    expect(snapshotOf(panel).instrumented).toBe(true);
+    expect(snapshotOf(panel).loaded).toBe(true);
   });
 
   it('tells a panel that is already subscribed, rather than only a late one', () => {
     const panel = panelPort();
     stub.connect(panel);
     send(panel, { kind: 'subscribe', tabId: 7 });
-    expect(messagesOfKind(panel, 'capture-installed')).toEqual([]);
+    expect(messagesOfKind(panel, 'capture-loaded')).toEqual([]);
 
     const relay = relayPort(7);
     stub.connect(relay);
-    send(relay, installed);
+    send(relay, loadedReport);
 
     // Without this the reload affordance would be a dead end: the user reloads, the new document
-    // announces, and a panel that only ever learns from its own subscribe keeps warning.
-    expect(messagesOfKind(panel, 'capture-installed')).toEqual([{ kind: 'capture-installed' }]);
+    // reports, and a panel that only ever learns from its own subscribe keeps warning.
+    expect(messagesOfKind(panel, 'capture-loaded')).toEqual([{ kind: 'capture-loaded' }]);
     expect(messagesOfKind(panel, 'append')).toEqual([]);
   });
 
-  it('re-states to the panel on every announcement, not only on a change', () => {
+  it('re-states to the panel on every report, not only on a change', () => {
     const panel = panelPort();
     stub.connect(panel);
     send(panel, { kind: 'subscribe', tabId: 7 });
 
     const first = relayPort(7);
     stub.connect(first);
-    send(first, installed);
+    send(first, loadedReport);
     // A reload: same tab, same frame, a new document and therefore a new port. Nothing about the
     // worker's own view changed, and the panel — which resets to "checking" on navigation — still
-    // has to hear it, or it warns about a page that just announced itself.
+    // has to hear it, or it warns about a page that just reported itself.
     const second = relayPort(7);
     stub.connect(second);
-    send(second, installed);
+    send(second, loadedReport);
 
-    expect(messagesOfKind(panel, 'capture-installed')).toHaveLength(2);
+    expect(messagesOfKind(panel, 'capture-loaded')).toHaveLength(2);
   });
 
-  // Pausing is about DATA. A paused panel is still attached to an instrumented document, and
-  // reporting otherwise would make Pause look like it uninstalled the hooks.
-  it('records instrumentation even while recording is paused', () => {
+  // Pausing is about DATA. A paused panel is still attached to a document with the capture layer
+  // loaded in it, and reporting otherwise would make Pause look like it had unloaded it.
+  it('records the load report even while recording is paused', () => {
     const panel = panelPort();
     stub.connect(panel);
     send(panel, { kind: 'subscribe', tabId: 7 });
@@ -955,7 +955,7 @@ describe('service worker — instrumentation reported by the document', () => {
 
     const relay = relayPort(7);
     stub.connect(relay);
-    send(relay, installed);
+    send(relay, loadedReport);
     send(relay, {
       v: 1,
       kind: 'frames',
@@ -964,7 +964,7 @@ describe('service worker — instrumentation reported by the document', () => {
     });
 
     expect(testHook().records()).toEqual([]);
-    expect(testHook().instrumented()).toBe(true);
+    expect(testHook().loaded()).toBe(true);
   });
 
   /*
@@ -972,67 +972,67 @@ describe('service worker — instrumentation reported by the document', () => {
    * half: a fresh page load must not inherit the previous document's flag, and the honest signal
    * that a document is gone is its relay port disconnecting.
    */
-  it('stops reporting instrumentation once the document that announced it is gone', () => {
+  it('stops reporting the capture layer once the document that reported it is gone', () => {
     const relay = relayPort(7);
     stub.connect(relay);
-    send(relay, installed);
-    expect(testHook().instrumented()).toBe(true);
+    send(relay, loadedReport);
+    expect(testHook().loaded()).toBe(true);
 
     relay.disconnect();
 
-    expect(testHook().instrumented()).toBe(false);
+    expect(testHook().loaded()).toBe(false);
   });
 
-  it('keeps the new document instrumented when the old one disconnects after it', () => {
-    // The ordering a real reload produces: the new document announces, and only then does the
+  it('keeps the new document loaded when the old one disconnects after it', () => {
+    // The ordering a real reload produces: the new document reports, and only then does the
     // previous document's port go away. Keying by port rather than by frame is what stops the
     // late disconnect from wiping the live document's flag.
     const before = relayPort(7);
     stub.connect(before);
-    send(before, installed);
+    send(before, loadedReport);
 
     const after = relayPort(7);
     stub.connect(after);
-    send(after, installed);
+    send(after, loadedReport);
 
     before.disconnect();
 
-    expect(testHook().instrumented()).toBe(true);
+    expect(testHook().loaded()).toBe(true);
   });
 
-  it('drops the previous document’s subframes when a new top-level document announces', () => {
+  it('drops the previous document’s subframes when a new top-level document reports', () => {
     const iframe = relayPort(7, 5);
     stub.connect(iframe);
-    send(iframe, installed);
+    send(iframe, loadedReport);
     const top = relayPort(7, 0);
     stub.connect(top);
-    send(top, installed);
+    send(top, loadedReport);
 
     // A new top-level document destroys every frame under it, so a subframe of the OLD document
-    // must not keep the tab looking instrumented after the new one is gone.
+    // must not keep the tab looking loaded after the new one is gone.
     const reloaded = relayPort(7, 0);
     stub.connect(reloaded);
-    send(reloaded, installed);
+    send(reloaded, loadedReport);
     reloaded.disconnect();
 
-    expect(testHook().instrumented()).toBe(false);
+    expect(testHook().loaded()).toBe(false);
   });
 
-  it('keeps instrumentation per tab', () => {
+  it('keeps the load report per tab', () => {
     const relay = relayPort(7);
     stub.connect(relay);
-    send(relay, installed);
+    send(relay, loadedReport);
 
     const other = panelPort();
     stub.connect(other);
     send(other, { kind: 'subscribe', tabId: 9 });
-    expect(snapshotOf(other).instrumented).toBe(false);
+    expect(snapshotOf(other).loaded).toBe(false);
   });
 
-  it('keeps instrumentation across a clear, which empties data and installs nothing', async () => {
+  it('keeps the load report across a clear, which empties data and unloads nothing', async () => {
     const relay = relayPort(7);
     stub.connect(relay);
-    send(relay, installed);
+    send(relay, loadedReport);
 
     const panel = panelPort();
     stub.connect(panel);
@@ -1040,9 +1040,9 @@ describe('service worker — instrumentation reported by the document', () => {
     send(panel, { kind: 'clear' });
     await settle();
 
-    // Clearing drops records. It does not uninstall the page's hooks, and a panel that started
-    // warning about instrumentation because the user pressed Clear would be lying.
-    expect(testHook().instrumented()).toBe(true);
+    // Clearing drops records. It does not unload the page's capture layer, and a panel that
+    // started warning about it because the user pressed Clear would be lying.
+    expect(testHook().loaded()).toBe(true);
   });
 });
 
@@ -1151,7 +1151,7 @@ describe('service worker restore after termination', () => {
           droppedBefore: 0,
           nextSeq: 1,
           recording: true,
-          instrumentedFrames: [],
+          loadedFrames: [],
           // The pre-fix shape: ids, no times.
           closedConns: ['c1'],
         },
@@ -1186,7 +1186,7 @@ describe('service worker restore after termination', () => {
 
     const relay = relayPort(7);
     stub.connect(relay);
-    send(relay, installed);
+    send(relay, loadedReport);
     // The announcement alone has to reach the mirror: a document that never makes a request is
     // exactly the case this whole message exists for, so waiting for a frame would lose it.
     await settle(300);
@@ -1199,7 +1199,7 @@ describe('service worker restore after termination', () => {
     const panel = panelPort();
     stub.connect(panel);
     send(panel, { kind: 'subscribe', tabId: 7 });
-    expect(snapshotOf(panel).instrumented).toBe(true);
+    expect(snapshotOf(panel).loaded).toBe(true);
   });
 
   it('does not restore instrumentation for a tab that never reported any', async () => {
@@ -1222,7 +1222,7 @@ describe('service worker restore after termination', () => {
     const panel = panelPort();
     stub.connect(panel);
     send(panel, { kind: 'subscribe', tabId: 7 });
-    expect(snapshotOf(panel).instrumented).toBe(false);
+    expect(snapshotOf(panel).loaded).toBe(false);
   });
 
   it('does not duplicate a restored request line when the open is re-stated', async () => {

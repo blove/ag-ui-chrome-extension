@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { installFetchPatch, type FetchHost } from './fetch-patch';
-import { isInjectMessage, type ConnectionMessage, type WireFrame } from './protocol';
+import { isInjectMessage, type InjectMessage, type WireFrame } from './protocol';
 
 const RUN_STARTED = '{"type":"RUN_STARTED","threadId":"t_1","runId":"r_1"}';
 const TEXT_START = '{"type":"TEXT_MESSAGE_START","messageId":"m_1","role":"assistant"}';
@@ -61,7 +61,7 @@ function settle(): Promise<void> {
 
 interface Harness {
   host: FetchHost;
-  posted: ConnectionMessage[];
+  posted: InjectMessage[];
   kinds(): string[];
   frames(): WireFrame[];
   patch: ReturnType<typeof installFetchPatch>;
@@ -71,7 +71,7 @@ function harness(
   respond: (...args: Parameters<typeof fetch>) => Promise<Response>,
   overrides: Partial<Parameters<typeof installFetchPatch>[1]> = {},
 ): Harness {
-  const posted: ConnectionMessage[] = [];
+  const posted: InjectMessage[] = [];
   const host: FetchHost = { fetch: respond as typeof fetch };
   let clock = 0;
   const patch = installFetchPatch(host, {
