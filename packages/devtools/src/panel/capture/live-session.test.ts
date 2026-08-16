@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AguiEvent, CaptureRecord } from '../../core/model/types';
-import type { RequestLine } from '../../sw/protocol';
+import type { RequestLine, SwMessage } from '../../sw/protocol';
 import { initialPanelState } from '../model/panel-types';
 import { createLiveSession } from './live-session';
 
@@ -776,5 +776,99 @@ describe('createLiveSession — /info agent discovery', () => {
     });
     state = session.apply(state, { kind: 'cleared' });
     expect(state.runtime).toBeNull();
+  });
+});
+
+/**
+ * The registration picture, folded.
+ *
+ * Whether the capture scripts are registered for an origin is a fact about the EXTENSION, not
+ * about this capture, and the panel needs it to tell "this document predates the registration, so
+ * reload it" from "there is no registration, so reloading achieves nothing".
+ */
+describe('live session — content-script registration', () => {
+  const REGISTERED = { matches: ['https://app.example.com/*'], error: null };
+
+  function snapshot(registration: {
+    matches: string[];
+    error: string | null;
+  }): Extract<SwMessage, { kind: 'snapshot' }> {
+    return {
+      kind: 'snapshot',
+      records: [],
+      requests: [],
+      closed: [],
+      droppedBefore: 0,
+      loaded: false,
+      info: null,
+      registration,
+    };
+  }
+
+  it('takes the registration out of the snapshot, not out of what it was holding', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshot(REGISTERED));
+    expect(state.registration).toEqual(REGISTERED);
+
+    // A reconnect happens precisely when the worker respawned, which is precisely when
+    // registrations may have been dropped — so the snapshot is the authority and the held value
+    // is the stale one. Keeping the held value here is how a panel would go on reporting a
+    // registration that no longer exists.
+    state = session.apply(state, snapshot({ matches: [], error: null }));
+    expect(state.registration).toEqual({ matches: [], error: null });
+  });
+
+  it('replaces the whole picture on a push rather than merging into it', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshot(REGISTERED));
+    state = session.apply(state, { kind: 'registration', matches: [], error: null });
+
+    // A merge would keep an origin listed after it had been unregistered — the worker states the
+    // entire picture every time, precisely so this cannot happen.
+    expect(state.registration).toEqual({ matches: [], error: null });
+  });
+
+  it('carries a registration failure through, rather than reporting a bare absence', () => {
+    const session = createLiveSession();
+    const state = session.apply(initialPanelState(), {
+      kind: 'registration',
+      matches: [],
+      error: 'Invalid value for parameter matches',
+    });
+    expect(state.registration).toEqual({
+      matches: [],
+      error: 'Invalid value for parameter matches',
+    });
+  });
+
+  it('spends no seq, adds no record and builds no run', () => {
+    const session = createLiveSession();
+    const state = session.apply(initialPanelState(), {
+      kind: 'registration',
+      ...REGISTERED,
+    });
+    // Nothing about the extension's own plumbing is a protocol event. A Timeline row here would
+    // be the panel asserting something the user's stream never contained.
+    expect(state.records).toEqual([]);
+    expect(state.runs).toEqual([]);
+    expect(state.issues).toEqual([]);
+  });
+
+  it('survives a refold, so Expand chunks does not un-explain the page', () => {
+    const session = createLiveSession();
+    const state = session.apply(initialPanelState(), snapshot(REGISTERED));
+    expect(session.refold(state, { expandChunks: true }).registration).toEqual(REGISTERED);
+  });
+
+  it('survives a clear, which empties data and unregisters nothing', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshot(REGISTERED));
+    state = session.apply(state, { kind: 'cleared' });
+
+    // Unlike `info`, this is not a fact about the page the capture came from — it is a fact about
+    // the extension, and no message is due to restate it. Dropping it here would put the panel
+    // back to "not known yet" for a page it had just explained.
+    expect(state.registration).toEqual(REGISTERED);
+    expect(state.records).toEqual([]);
   });
 });

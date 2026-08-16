@@ -140,10 +140,10 @@ export function CaptureBanner({
             Capture is on for {capture.origin}, but the capture scripts are not registered for it.
           </p>
           <p class="agui-banner__body">
-            {capture.origin} is still granted — Chrome drops the script registration whenever the
-            extension is updated or reloaded, and keeps the permission. Nothing is being captured
-            from this origin at all until the scripts are registered again, and nothing the page
-            itself does can put them back.
+            {capture.origin} is still granted — Chrome discards the script registration whenever
+            the extension updates, and keeps the permission. Nothing is being captured from this
+            origin at all until the scripts are registered again, and nothing the page itself does
+            can put them back.
             {failure !== null && (
               <>
                 {' '}

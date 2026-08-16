@@ -723,3 +723,139 @@ describe('panel live wiring', () => {
     expect(screen.queryByRole('option', { name: /seq 0 CUSTOM/ })).toBeNull();
   });
 });
+
+/**
+ * GRANTED IS NOT REGISTERED — end to end through the real panel, the real fold and the real port.
+ *
+ * Chrome drops dynamically registered content scripts when the extension is updated and keeps the
+ * permission, so `hasOriginGrant` is true, the capture layer is nowhere, and `permissions.onAdded`
+ * will never fire again. The panel used to have one banner for this and offered a page reload,
+ * which in this state does nothing at all — the user reloads, reads the same message, and
+ * concludes the tool is broken.
+ */
+describe('panel live wiring — a granted origin with nothing registered for it', () => {
+  const ORIGIN = 'https://app.example.com';
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function openOnGrantedOrigin(): Promise<{ port: FakePort }> {
+    stubOrigin(ORIGIN);
+    const { port } = stubPort();
+    stubPermissions({ contains: async () => true });
+    render(<App store={createPanelStore()} />);
+    await waitFor(() => {
+      expect(port.posted).toHaveLength(1);
+    });
+    return { port };
+  }
+
+  /** Spend the load-report grace period, which is what turns silence into a finding. */
+  async function elapseGrace(): Promise<void> {
+    await act(async () => {
+      vi.advanceTimersByTime(LOAD_REPORT_GRACE_MS + 50);
+      await Promise.resolve();
+    });
+  }
+
+  it('offers re-registration instead of a reload that cannot help', async () => {
+    const { port } = await openOnGrantedOrigin();
+
+    act(() => {
+      port.emit({
+        kind: 'snapshot',
+        records: [],
+        requests: [],
+        closed: [],
+        droppedBefore: 0,
+        loaded: false,
+        info: null,
+        // Granted, and nothing registered. The state an extension update leaves behind.
+        registration: { matches: [], error: null },
+      });
+    });
+    await elapseGrace();
+
+    expect(await screen.findByText(/capture scripts are not registered/i)).toBeTruthy();
+    // NOT the reload — neither in the banner nor in the note band beneath it. A panel offering
+    // both would be contradicting itself on screen.
+    expect(screen.queryByRole('button', { name: 'Reload the inspected page' })).toBeNull();
+
+    const action = await screen.findByRole('button', {
+      name: `Register the capture scripts for ${ORIGIN}`,
+    });
+    action.click();
+
+    await waitFor(() => {
+      expect(port.posted.at(-1)).toEqual({ kind: 'reconcile-registrations' });
+    });
+  });
+
+  it('switches to the reload remedy once the worker answers that it registered', async () => {
+    const { port } = await openOnGrantedOrigin();
+    act(() => {
+      port.emit({
+        kind: 'snapshot',
+        records: [],
+        requests: [],
+        closed: [],
+        droppedBefore: 0,
+        loaded: false,
+        info: null,
+        registration: { matches: [], error: null },
+      });
+    });
+    await elapseGrace();
+    expect(await screen.findByText(/capture scripts are not registered/i)).toBeTruthy();
+
+    // The worker's answer. The two states are sequential, not alternatives: registering fixes the
+    // ORIGIN, and the document that predates the registration still has no capture layer in it —
+    // which is the point at which "reload the inspected page" becomes the true answer.
+    act(() => {
+      port.emit({ kind: 'registration', matches: [`${ORIGIN}/*`], error: null });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/capture scripts are not registered/i)).toBeNull();
+    });
+    expect(await screen.findByText(/capture layer is not loaded/i)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Reload the inspected page' })).toBeTruthy();
+  });
+
+  it('reports a registration failure rather than going quiet about it', async () => {
+    const { port } = await openOnGrantedOrigin();
+    act(() => {
+      port.emit({
+        kind: 'snapshot',
+        records: [],
+        requests: [],
+        closed: [],
+        droppedBefore: 0,
+        loaded: false,
+        info: null,
+        registration: { matches: [], error: null },
+      });
+    });
+    await elapseGrace();
+    act(() => {
+      port.emit({
+        kind: 'registration',
+        matches: [],
+        error: 'Invalid value for parameter matches',
+      });
+    });
+
+    // The worker's `catch` used to discard everything, which is how a registration that never
+    // happened stayed invisible through a release. It reaches the user through this arm, so the
+    // arm must survive `asSwMessage` — a `registration` kind missing from `SW_MESSAGE_KINDS` is
+    // dropped silently and this assertion is what holds it there.
+    expect(
+      await screen.findByText(/Invalid value for parameter matches/),
+    ).toBeTruthy();
+  });
+});

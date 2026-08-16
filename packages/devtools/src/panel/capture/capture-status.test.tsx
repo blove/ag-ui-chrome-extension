@@ -277,3 +277,97 @@ describe('CaptureBanner — binary transport', () => {
     expect(banner.textContent).not.toMatch(/waiting for a run/i);
   });
 });
+
+/**
+ * GRANTED IS NOT REGISTERED — the second time in one day the panel was confidently wrong about
+ * capture, and the correction.
+ *
+ * Chrome drops dynamically registered content scripts when the extension is reloaded or updated
+ * and keeps the permission. The origin is then granted with nothing registered for it,
+ * `chrome.permissions.onAdded` never fires again because nothing was added, and capture is dead
+ * for that origin until something reconciles. The panel had exactly one banner for this — "the
+ * capture layer is not loaded in this page" — and offered a page reload, which in this state does
+ * nothing whatsoever: there are no scripts registered to load. The user reloads, reads the
+ * identical message, and concludes the tool is broken.
+ */
+describe('CaptureBanner — granted, but not registered for this origin', () => {
+  const ORIGIN = 'https://app.example.com';
+
+  function granted(matches: string[], error: string | null = null): PanelStore {
+    return createPanelStore({
+      ...initialPanelState(),
+      capture: { kind: 'on', origin: ORIGIN },
+      source: { kind: 'live', origin: ORIGIN },
+      // The document has been waited on and reported nothing — which is what an unregistered
+      // origin looks like from the document's side, and is exactly why the two used to be
+      // indistinguishable.
+      loaded: false,
+      registration: { matches, error },
+    });
+  }
+
+  it('says the scripts are not registered, and never tells the user to reload', () => {
+    render(<CaptureBanner store={granted([])} onEnable={vi.fn()} onReRegister={vi.fn()} />);
+
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toMatch(/capture scripts are not registered/i);
+    expect(text).toMatch(new RegExp(ORIGIN.replace(/[./]/g, '\\$&')));
+    // THE ASSERTION THIS BLOCK EXISTS FOR. Every other capture-off wording in this file offers a
+    // reload, correctly. Here it is the one remedy that provably cannot work.
+    expect(text).not.toMatch(/reload/i);
+    expect(text).not.toMatch(/capture layer is not loaded/i);
+  });
+
+  it('offers re-registration, which is the action that can actually fix it', () => {
+    const onReRegister = vi.fn();
+    render(<CaptureBanner store={granted([])} onEnable={vi.fn()} onReRegister={onReRegister} />);
+
+    const action = screen.getByRole('button', {
+      name: `Register the capture scripts for ${ORIGIN}`,
+    });
+    fireEvent.click(action);
+    expect(onReRegister).toHaveBeenCalledTimes(1);
+    // Strictly better than the alternative the user is otherwise left with, which is to find
+    // chrome://extensions, revoke the origin and grant it again.
+    expect(screen.getByRole('status').textContent).not.toMatch(/revoke/i);
+  });
+
+  it('names a registration failure rather than letting it disappear', () => {
+    const store = granted([], 'Invalid value for parameter matches');
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
+
+    // The worker's `catch` used to discard everything, which is how a registration that never
+    // happened stayed invisible through a release. If it failed, the panel says what Chrome said.
+    expect(screen.getByRole('status').textContent).toMatch(/Invalid value for parameter matches/);
+  });
+
+  it('goes back to the reload remedy once the scripts ARE registered', () => {
+    const store = granted([`${ORIGIN}/*`]);
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
+
+    // The two states are sequential, not alternatives: registering fixes the origin, and the
+    // document that predates the registration still needs a reload. That is the point at which
+    // "reload the inspected page" becomes true, and it is offered then and not before.
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toMatch(/capture layer is not loaded/i);
+    expect(text).toMatch(/requires a reload of the inspected page/i);
+    expect(text).not.toMatch(/not registered/i);
+  });
+
+  it('says nothing about registration while no worker has answered', () => {
+    const store = createPanelStore({
+      ...initialPanelState(),
+      capture: { kind: 'on', origin: ORIGIN },
+      source: { kind: 'live', origin: ORIGIN },
+      loaded: null,
+      registration: null,
+    });
+    render(<CaptureBanner store={store} onEnable={vi.fn()} onReRegister={vi.fn()} />);
+
+    // P12's grace period, intact. `null` is "not known yet", and warning on it would flash a false
+    // alarm on every panel open — the failure this banner's tri-state was built to avoid.
+    const text = screen.getByRole('status').textContent ?? '';
+    expect(text).toMatch(/checking/i);
+    expect(text).not.toMatch(/not registered/i);
+  });
+});
