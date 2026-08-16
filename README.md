@@ -48,10 +48,13 @@ The tool sits on the wire where prompts and completions flow, so its posture is 
   you export.
 - **Headers are never captured** except `content-type`. `Authorization` and cookies are never read,
   never stored, never exported.
-- **Redaction on export**, on by default for bug-report bundles: text deltas, reasoning content,
-  tool arguments, tool results, and state values become `«redacted: 412 chars»`. Structure, types,
-  ordering, sizes, and timings survive — which is what a protocol bug report actually needs. The
-  export header records exactly what was redacted. Unredacted export exists and is labelled as such.
+- **Redaction on export is opt-in, and off by default.** Text deltas, reasoning content, tool
+  arguments, tool results, and state values can each be replaced with `«redacted: 412 chars»`;
+  structure, types, ordering, sizes, and timings survive, which is what a protocol bug report
+  actually needs, and the export header records exactly what was redacted. Until you select a
+  group the control reads **Export (unredacted)** and the file carries the real content of the
+  streams you captured — so treat a capture you are about to share the way you would treat the
+  conversation it came from.
 - **Bounded memory.** The capture buffer caps at a configurable default of 5k events / 8 MB, oldest
   dropped.
 
@@ -174,9 +177,10 @@ errors, so a protocol addition degrades gracefully between regenerations.
 ## Releases
 
 CI runs typecheck, lint, test, build, `verify:build`, `verify:listing`, and `screenshot:panel` on
-every push and pull request. `screenshot:panel` is the gate that catches an unstyled or blank panel — the whole of the
-rest of that list once passed on a `dist/` whose panel had no stylesheet at all. Pushing a
-`v*` tag runs the same checks and attaches `ag-ui-devtools-<version>.zip` to a GitHub release.
+every push and pull request. `screenshot:panel` is the gate that catches an unstyled or blank
+panel — the whole of the rest of that list once passed on a `dist/` whose panel had no stylesheet
+at all. Pushing a `v*` tag runs the same checks and attaches `ag-ui-devtools-<version>.zip` to a
+GitHub release.
 Chrome Web Store upload is manual.
 
 ## Contributing
