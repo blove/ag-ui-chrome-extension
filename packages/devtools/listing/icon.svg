@@ -1,26 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="AG-UI DevTools">
   <!--
-    An event stream on a wire, with one event flagged.
+    A paper plane, for Threadplane. Original artwork: the threadplane.ai favicon is a placeholder
+    (an inline SVG holding the small-airplane emoji character), and an emoji glyph baked into a
+    shipped raster is both a licensing problem and a per-platform rendering one, since the result
+    would depend on which machine ran `pnpm icons`.
 
-    Four ticks, not six: at 16px a tick is width/128*16 px wide, so six ticks render as ~1.2px
-    bars separated by sub-pixel gaps and turn to mush. Four at width 15 render ~1.9px with ~1.1px
-    gaps, which survives.
+    Two flat shapes, not one, and no stroke anywhere. The fold line that makes a dart read as
+    FOLDED PAPER rather than as a plain arrow is the boundary between them, so it survives
+    rasterisation at any size instead of thinning to nothing the way a hairline would. The lower
+    wing is a flat tint rather than white at reduced alpha, so the 16px render composites the same
+    way on every background.
 
-    The tile is filled rather than transparent because Chrome renders toolbar icons over both
-    light and dark chrome, and a bare glyph disappears in one of them.
+    The tile is filled because Chrome draws toolbar icons over both light and dark chrome, and a
+    bare glyph disappears into one of them.
 
-    Colours are the panel's own tokens: agui-accent, and agui-severity-error's DARK-scheme
-    value for the flagged tick. The light-scheme error red (#b3261e) is near-unreadable on this
-    blue at 16px. (Token names here omit their leading hyphen pair: XML comments forbid two
-    adjacent hyphens anywhere in the body, not only at the delimiters.)
-
-    Every tick shares the baseline y=100 (y + height === 100).
+    Colours are the panel's own accent token, written here without the leading hyphen pair on
+    purpose: XML forbids two adjacent hyphens anywhere inside a comment body, not only at the
+    delimiters, and Chrome answers by refusing to parse the whole file. It still rasterises to
+    PNGs of exactly the right dimensions, so `file` reports success on a broken image.
   -->
   <rect width="128" height="128" rx="28" fill="#1a73e8"/>
-  <g fill="#ffffff">
-    <rect x="20" y="60" width="15" height="40" rx="7.5"/>
-    <rect x="44" y="36" width="15" height="64" rx="7.5"/>
-    <rect x="92" y="52" width="15" height="48" rx="7.5"/>
-  </g>
-  <rect x="68" y="16" width="15" height="84" rx="7.5" fill="#f28b82"/>
+  <path d="M113 19 13 60l49 8z" fill="#ffffff"/>
+  <path d="M113 19 62 68l-4 48z" fill="#a8c7fa"/>
 </svg>
