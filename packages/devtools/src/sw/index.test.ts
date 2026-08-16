@@ -1801,3 +1801,35 @@ describe('service worker — /info agent discovery', () => {
     expect(snapshotOf(panel).info).toBeNull();
   });
 });
+
+/**
+ * The registration failure reported is the one from THIS attempt.
+ *
+ * Its own block because it needs a stub whose `registerContentScripts` fails once and then works,
+ * which `failRegistration` cannot express — it is permanent by design, so that the error-reporting
+ * test above cannot pass by accident.
+ */
+describe('service worker — a registration failure does not outlive the attempt that caused it', () => {
+  it('clears a recorded failure once a later pass has nothing left to fail at', async () => {
+    const GRANTED = 'https://app.example.com/*';
+    const stub = installChrome(new Map(), {
+      granted: [GRANTED],
+      failRegistration: 'Invalid value for parameter matches',
+    });
+    await loadWorker();
+    await settle();
+    expect(testHook().registration().error).toBe('Invalid value for parameter matches');
+
+    // Whatever fixed it — a newer build, a retry, another path — the origin is now registered.
+    // A field only ever cleared by a successful WRITE would strand this failure for the life of
+    // the worker, and the panel would go on naming it for an origin that works.
+    stub.registered.push(
+      { id: `agui-dt-0-${GRANTED}`, matches: [GRANTED], js: ['inject.js'] },
+      { id: `agui-dt-1-${GRANTED}`, matches: [GRANTED], js: ['relay-loader.js'] },
+    );
+    await testHook().reconcileRegistrations();
+    await settle();
+
+    expect(testHook().registration()).toEqual({ matches: [GRANTED], error: null });
+  });
+});

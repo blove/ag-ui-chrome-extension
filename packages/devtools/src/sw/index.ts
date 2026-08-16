@@ -1073,11 +1073,17 @@ function broadcastRegistration(): void {
  * Per match rather than one batch call: `registerContentScripts` rejects the WHOLE batch on a
  * single bad entry, so batching would let one unregisterable origin silently take out every other
  * origin the user had granted.
+ *
+ * `registrationError` is cleared at the START of the pass rather than on each success, so it always
+ * describes THIS attempt. Clearing it only on a successful write would strand a failure forever
+ * once the steady state had nothing left to register, and the panel would go on naming a failure
+ * for an origin that was working.
  */
 async function registerMissing(matches: readonly string[]): Promise<void> {
   const declared = manifestContentScripts();
   if (declared.length === 0) return;
   const statics = staticMatches();
+  registrationError = null;
   const existing = await readOurScripts();
   rebuildRegisteredMatches(existing);
   const existingIds = new Set(existing.map((script) => script.id));
@@ -1089,7 +1095,6 @@ async function registerMissing(matches: readonly string[]): Promise<void> {
     try {
       await chrome.scripting.registerContentScripts(missing);
       for (const script of missing) existingIds.add(script.id);
-      registrationError = null;
     } catch (error) {
       if (isDuplicateIdError(error)) continue;
       // A real failure. Recorded rather than logged: it reaches the panel on the next snapshot or
@@ -1152,6 +1157,9 @@ function reconcileRegistrations(): Promise<void> {
 function unregisterForMatches(matches: readonly string[]): Promise<void> {
   return serializeRegistration(async () => {
     const statics = staticMatches();
+    // Cleared first, for the same reason `registerMissing` clears first: the field describes THIS
+    // attempt, not the last one that happened to write to it.
+    registrationError = null;
     const existingIds = new Set((await readOurScripts()).map((script) => script.id));
     // Driven by what Chrome holds, NOT by `registeredMatches`: the old code skipped any match its
     // in-memory Set had not seen, so after a worker respawn a revoked origin kept its scripts and
@@ -1163,7 +1171,6 @@ function unregisterForMatches(matches: readonly string[]): Promise<void> {
     if (ids.length > 0) {
       try {
         await chrome.scripting.unregisterContentScripts({ ids });
-        registrationError = null;
       } catch (error) {
         registrationError = describeError(error);
       }
