@@ -72,7 +72,24 @@ export const HARNESS_INSPECTED_ORIGIN = 'https://app.example.com';
  * screenshot would then carry a fabricated fact. `null` is the honest answer and the one the panel
  * already handles.
  */
-export type ShimKind = 'no-devtools' | 'devtools-ungranted';
+/**
+ * `devtools-granted-unregistered` is the third, and it is the ONE case that has to cross the line
+ * the note above draws — deliberately, and in the opposite direction.
+ *
+ * It stages a granted origin whose capture content scripts are NOT registered: the state Chrome
+ * leaves behind after an extension update, which discards dynamic registrations and keeps the
+ * permission. The panel used to have a single banner for it — "the capture layer is not loaded in
+ * this page" — and offered a page reload, which in that state does nothing at all: there are no
+ * scripts registered to load. The user reloads, reads the identical message, and concludes the
+ * tool is broken. Photographing the corrected banner is the only way to hold its wording, because
+ * the state cannot be produced with a real grant from a script.
+ *
+ * So this shim adds `permissions.contains` (true) and a `runtime.connect` port that answers
+ * `subscribe` with the real `snapshot` message. What the privacy shim must not do is tell the
+ * panel that capture WORKS; this tells it, in the panel's own wire format, that it does not. The
+ * snapshot is empty in every other field, so nothing here stages captured data either.
+ */
+export type ShimKind = 'no-devtools' | 'devtools-ungranted' | 'devtools-granted-unregistered';
 
 export const SHIMS: Record<ShimKind, string> = {
   'no-devtools': `
@@ -85,6 +102,57 @@ export const SHIMS: Record<ShimKind, string> = {
       runtime: { getManifest: () => ({ version: '0.0.0-harness' }) },
       devtools: {
         inspectedWindow: {
+          eval: (expression, callback) => {
+            callback(expression === 'location.origin' ? ${JSON.stringify(HARNESS_INSPECTED_ORIGIN)} : null);
+          },
+        },
+      },
+    };
+  `,
+  'devtools-granted-unregistered': `
+    globalThis.chrome = {
+      runtime: {
+        getManifest: () => ({ version: '0.0.0-harness' }),
+        connect: () => {
+          const listeners = [];
+          return {
+            onMessage: {
+              addListener: (fn) => { listeners.push(fn); },
+              removeListener: () => {},
+            },
+            onDisconnect: { addListener: () => {}, removeListener: () => {} },
+            postMessage: (command) => {
+              if (!command || command.kind !== 'subscribe') return;
+              // The real 'snapshot' message, in full. Granted, nothing registered, no document
+              // reporting: the post-update state, stated the way the worker states it.
+              setTimeout(() => {
+                for (const fn of listeners.slice()) {
+                  fn({
+                    kind: 'snapshot',
+                    records: [],
+                    requests: [],
+                    closed: [],
+                    droppedBefore: 0,
+                    loaded: false,
+                    info: null,
+                    registration: { matches: [], error: null },
+                  });
+                }
+              }, 0);
+            },
+            disconnect: () => {},
+          };
+        },
+      },
+      permissions: {
+        contains: () => Promise.resolve(true),
+      },
+      devtools: {
+        inspectedWindow: {
+          // The port effect returns early without a numeric \`tabId\`, so the panel would never
+          // subscribe and the snapshot above would never be delivered — the banner would sit in
+          // its "checking…" state and this shim would stage nothing at all.
+          tabId: 1,
           eval: (expression, callback) => {
             callback(expression === 'location.origin' ? ${JSON.stringify(HARNESS_INSPECTED_ORIGIN)} : null);
           },

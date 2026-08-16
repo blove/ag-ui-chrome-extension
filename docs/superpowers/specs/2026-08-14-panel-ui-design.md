@@ -29,7 +29,7 @@ is stated.
 | P7 | The list's left gutter shows `CaptureRecord.seq`, not a row index | Filtering reorders visible rows. `seq` is stable, and it is literally what `Issue.seq` refers to, so an issue and its event stay cross-referenceable under any filter. |
 | P8 | **Build the panel against imported fixtures before the capture layer exists** | See §7. This is the highest-leverage sequencing decision in the document. |
 | P9 | **Eviction is surfaced, never silent.** When the ring buffer drops events, the list shows a truncation marker at the boundary and the toolbar carries a persistent dropped-event count | Sessions are expected to be long and ongoing with multiple runs, so the 5k-event / 8MB default *will* evict in normal use. Requirements §15 asks for a visible "buffer full" state but §9 gives it no home. A panel that silently renders a truncated stream is the same class of trust failure as a hidden validator issue — the user would compute TTFT from a run whose start had been evicted and never know. |
-| P12 | **Capture status reports what the DOCUMENT says, never what the origin allows.** The extension's own ISOLATED-world relay reports that the capture layer is **loaded**; absence of that report — after a short grace period — is what produces the warning. **Revised 2026-08-15, see §5b: the report moved out of the page's view, and the claim weakened to match.** | Found in a real browser, 2026-08-15. The panel flipped capture to `on` from `chrome.permissions.contains` alone, but `chrome.scripting.registerContentScripts` affects only FUTURE navigations, so a document already open when the grant landed had no content scripts in it: `Function.prototype.toString.call(window.fetch)` still read `[native code]`, and the panel said it was capturing. Three divergence paths — a grant from a previous session, an extension reload with the page open, and a grant the user never acts on — and only the third was handled, by `awaitingReload`. The grace period is not optional: rendering the warning before the report is due would flash a false alarm on every panel open, and a warning that is usually wrong teaches the user to ignore the one that matters. `executeScript` into the open document was rejected as the remedy — it produces a PARTIALLY patched document (bundlers hoist `const f = window.fetch`; an already-constructed `EventSource` is unreachable) that reports itself fully patched, which is the same failure class again. A reload is honest. |
+| P12 | **Capture status reports what the DOCUMENT says, never what the origin allows.** The extension's own ISOLATED-world relay reports that the capture layer is **loaded**; absence of that report — after a short grace period — is what produces the warning. **Revised 2026-08-15, see §5b: the report moved out of the page's view, and the claim weakened to match.** | Found in a real browser, 2026-08-15. The panel flipped capture to `on` from `chrome.permissions.contains` alone, but `chrome.scripting.registerContentScripts` affects only FUTURE navigations, so a document already open when the grant landed had no content scripts in it: `Function.prototype.toString.call(window.fetch)` still read `[native code]`, and the panel said it was capturing. Three divergence paths — a grant from a previous session, an extension reload with the page open, and a grant the user never acts on — and only the third was handled, by `awaitingReload`. The grace period is not optional: rendering the warning before the report is due would flash a false alarm on every panel open, and a warning that is usually wrong teaches the user to ignore the one that matters. `executeScript` into the open document was rejected as the remedy — it produces a PARTIALLY patched document (bundlers hoist `const f = window.fetch`; an already-constructed `EventSource` is unreachable) that reports itself fully patched, which is the same failure class again. A reload is honest. **Revised again 2026-08-15, see §5c: a reload is honest for the state P12 was written about and useless for one it did not know existed, so the panel now tells the two apart.** |
 | P10 | The scope bar's run selector is a **searchable, virtualized list**, not a plain dropdown | Follows from the same answer: with many runs per session, a 4-item dropdown assumption breaks. Runs are labelled by thread, outcome, and issue count so the interesting one is findable without opening Runs. |
 
 ---
@@ -148,13 +148,18 @@ origin being granted and the document being patched are different facts:
 - **Capture on, checking** (P12) — the origin is enabled and nothing has reported the capture layer
   in this document yet. It may NOT say "capture is on": that is the claim that was wrong. It may not
   warn either, until the grace period is out
-- **Capture on, the capture layer is not loaded in this document** (P12) — granted, and nothing is
-  being captured here. Carries the same reload affordance a fresh grant does, for the same reason
+- **Capture on, but the capture scripts are not registered for this origin** (§5c) — granted, and
+  nothing is registered, so nothing loads on any navigation. It may NOT offer a reload: there is
+  nothing registered for a reload to load, and the user would come back to the identical message.
+  It offers re-registration instead
+- **Capture on, the capture layer is not loaded in this document** (P12) — granted, registered, and
+  nothing is being captured *here*. Carries the same reload affordance a fresh grant does, for the
+  same reason
 - **Capture on, capture layer loaded, idle** — waiting for a run. It says *loaded*, not
   *instrumented* and not *capturing*: see §5b for what the evidence supports
 
-All of them explain the reload requirement, and the two capture-off ones carry the same Enable
-button.
+All of them explain the reload requirement **except the not-registered one, which must not**, and
+the two capture-off ones carry the same Enable button.
 
 The framework label of §4a appears on the **Session** tab (`Framework: Angular 21.1.6`) and never in
 this banner — it is a fact about how the app was built, not about what it speaks.
@@ -245,6 +250,102 @@ assertion while leaving the worker-state assertions green.
 Import is first-class here rather than a fallback. Dropping a `.agui.jsonl` on a panel with no
 capture loads it read-only with every tab working, which is the shareable-bug-report workflow from
 requirements §10.
+
+---
+
+## 5c. P12 revised again — a reload is not always the remedy, and once it was not one at all
+
+**2026-08-15, later the same day.** P12 got the *fact* right — capture status must report what the
+DOCUMENT says — and then drew one conclusion too many from it: that a page reload is what fixes a
+document with no capture layer in it. That is true when the scripts are registered and this
+particular document predates them, which is the case P12 was written from. It is false when nothing
+is registered at all, and that case turned out to be every user's second day.
+
+### The failure mode
+
+`chrome.scripting.registerContentScripts` was called from exactly one trigger:
+`chrome.permissions.onAdded`. **Chrome discards dynamically registered content scripts when an
+extension is reloaded or updated, and keeps the host permission.** So after any update:
+
+- the origin is still granted, so `hasOriginGrant` is true and the panel flips capture to `on`;
+- nothing is registered for it, so no navigation loads anything and `loaded` settles to `false`;
+- `onAdded` never fires again, because nothing was added — **re-granting could not repair it**.
+
+Capture died silently and permanently for every origin the user had ever granted. The only escape
+was to revoke the origin and grant it again, which nothing told them to do. The service worker
+stated the wrong assumption in a comment on the `catch` that swallowed the evidence:
+`registerContentScripts` "persists across sessions by default" — true of a browser **restart**,
+false of an extension **reload or update**, and that difference was the whole bug.
+
+Measured in a real browser on 2026-08-15, on an origin granted that morning: `window.fetch`
+unpatched, `XMLHttpRequest.prototype.open` unpatched, `window.__AGUI_DEVTOOLS__` absent — **before
+and after a page reload**, which is what rules out P12's already-known "the document was open before
+the grant" case.
+
+### What the panel said, and why it was worse than saying nothing
+
+It rendered P12's banner — *"the capture layer is not loaded in this page"* — and offered **Reload
+the inspected page**. Both halves are individually true and the combination is a dead end: the user
+reloads, the new document has no content scripts either, the identical banner comes back, and the
+reasonable conclusion is that the tool is broken. A remedy that cannot work is worse than no remedy,
+for the same reason a warning that is usually wrong is worse than no warning.
+
+### The fix, in two places
+
+**The worker reconciles at module scope.** `chrome.permissions.getAll()` against
+`chrome.scripting.getRegisteredContentScripts()`, registering whatever is granted and missing, on
+every worker spawn. `onInstalled` + `onStartup` was rejected as insufficient — neither fires when
+Chrome respawns a worker it terminated for idleness, which is the most common spawn there is — and
+module scope is a strict superset of both. Registration work is serialized so a concurrent `onAdded`
+cannot race it, the manifest's own static matches are excluded (`permissions.getAll()` reports them,
+and registering a second dynamic copy would inject the capture layer twice), and what the worker
+believes is registered is **rebuilt from Chrome** rather than held in memory. That last part fixed a
+second latent bug of the same species: the in-memory set came back empty on every respawn, so
+revoking an origin after one unregistered nothing and a revoked origin kept being captured.
+
+The `catch` no longer discards everything. A duplicate-id rejection is the end state it wanted and
+is not reported; anything else is retained and travels to the panel.
+
+**The panel tells the two states apart.** `RegistrationState` — the dynamically registered match
+patterns, plus the last real registration failure — rides on the existing `snapshot` message and on
+a `registration` push. `isRegisteredForOrigin` reads it against the inspected origin, answering
+`true` for the manifest's static localhost family without consulting it, and `null` while no worker
+has answered so the P12 grace period is untouched. When it answers `false` the panel says the
+scripts are not registered, names the failure if there was one, and offers **Register the capture
+scripts for &lt;origin&gt;**, which sends `reconcile-registrations`. It offers no reload, and the
+post-grant reload note is suppressed in that state too — a panel offering both would be
+contradicting itself in two paragraphs.
+
+The two states are **sequential, not alternatives**. Registering fixes the ORIGIN; the document that
+predates the registration still has no capture layer in it, so the moment the worker answers, P12's
+banner takes over and asks for the reload *then* — which is the point at which a reload is true.
+
+The command deliberately carries no origin. The worker takes the list from
+`chrome.permissions.getAll()`, so nothing arriving on that port can cause an origin the user never
+opted in to to have code injected into it.
+
+### Why no test caught it
+
+Every harness e2e installed a **fresh** extension and granted the origin **inside** the test, so
+`onAdded` always fired and the one trigger the worker had always ran. Nothing exercised a second
+session against an existing grant — which is every real user's second day. That is the fourth hole
+this project has found in its own verification, and the first where the gap was in the FIXTURE
+rather than in an assertion.
+
+### The gates
+
+- `packages/devtools/src/sw/index.test.ts`, *"a second session against an existing grant"*: the
+  worker's boot path driven with a granted origin and nothing registered, and **no `onAdded` event**.
+- `packages/harness/e2e/registration-after-update.spec.ts`: the same sequence in a real browser —
+  the registrations unregistered with the grant left in place, the boot path re-run, a page loaded
+  and a run driven, and capture has to deliver it. It asserts the fixture as well as the product, so
+  an unregister that silently did nothing fails rather than passing everything.
+- `pnpm screenshot:panel` photographs the not-registered banner and asserts its wording never says
+  *reload*, and that no Reload control is on screen beside it.
+
+All three were mutation-tested: reverting the reconciliation fails the unit tests and the e2e (the
+latter with *"capture did not settle … 0 record(s)"*), and reverting the panel's distinction fails
+the visual gate with the exact wording that shipped.
 
 ---
 

@@ -42,7 +42,13 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Browser, BrowserContext, Page } from 'playwright';
 import { chromium } from 'playwright';
-import { importFixture, openPanel, PANEL_PATH, startServer } from './panel-harness';
+import {
+  HARNESS_INSPECTED_ORIGIN,
+  importFixture,
+  openPanel,
+  PANEL_PATH,
+  startServer,
+} from './panel-harness';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = process.env.PANEL_DIST ?? join(packageRoot, 'dist');
@@ -171,6 +177,100 @@ async function checkUnreachableControls(browser: Browser, origin: string): Promi
             'origin grant is not picking up its rule.',
         );
       }
+    }
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * THE REMEDY THAT CANNOT WORK — photographed, and its wording asserted.
+ *
+ * Chrome discards dynamically registered content scripts when an extension updates and keeps the
+ * host permission. The origin is then granted with nothing registered for it, and until the worker
+ * started reconciling at startup that killed capture permanently for every origin a user had ever
+ * granted. The panel had ONE banner for the resulting state — "the capture layer is not loaded in
+ * this page" — and it offered a page reload. In this failure mode a reload does exactly nothing:
+ * there are no scripts registered to load. The user reloads, reads the identical message, and
+ * concludes the tool is broken.
+ *
+ * WHY IT IS A VISUAL GATE AND NOT ONLY A UNIT TEST. The failing thing here is WORDING, on a state
+ * no other gate can reach: it needs a granted origin plus a worker saying nothing is registered
+ * for it, and neither is producible from a script without the shim. The unit tests hold the branch;
+ * this holds what a person actually reads, at the size they read it.
+ */
+async function checkNotRegisteredBanner(browser: Browser, origin: string): Promise<void> {
+  const session = await openPanel(browser, origin, {
+    scheme: 'light',
+    shim: 'devtools-granted-unregistered',
+  });
+  try {
+    const banner = session.page.locator('.agui-banner');
+    try {
+      await banner.waitFor({ timeout: 5000 });
+    } catch {
+      fail(
+        'the capture banner never rendered for a granted-but-unregistered origin. That state is ' +
+          'the one an extension update leaves behind, and the panel has to say something about it.',
+      );
+      return;
+    }
+    // Past the load-report grace period, so a regression that brought the post-grant Reload note
+    // band back would be on screen by the time this reads the document.
+    await session.page.waitForTimeout(2200);
+    await session.page.screenshot({
+      path: join(outDir, 'capture-not-registered.png'),
+      fullPage: true,
+    });
+
+    const text = ((await banner.textContent()) ?? '').replace(/\s+/g, ' ').trim();
+    if (text === '') {
+      fail('the capture banner rendered empty for a granted-but-unregistered origin.');
+      return;
+    }
+    if (!/capture scripts are not registered/i.test(text)) {
+      fail(
+        'the granted-but-unregistered banner does not say the capture scripts are not ' +
+          `registered. It says: ${text}`,
+      );
+    }
+    if (!text.includes(HARNESS_INSPECTED_ORIGIN)) {
+      fail(`the granted-but-unregistered banner does not name the origin. It says: ${text}`);
+    }
+    // THE ASSERTION THIS PHASE EXISTS FOR.
+    if (/reload/i.test(text)) {
+      fail(
+        'the granted-but-unregistered banner tells the user to reload. Nothing is registered for ' +
+          `this origin, so a reload provably cannot help — that is the remedy that sent the user ` +
+          `round in a circle. It says: ${text}`,
+      );
+    }
+
+    const action = session.page.locator('.agui-banner__action');
+    // `count()` rather than a bare `textContent()`: a banner with no action at all is a real and
+    // likely regression, and it should be reported as one rather than as a 30 s locator timeout
+    // that buries every assertion above it.
+    const label =
+      (await action.count()) === 0 ? '' : ((await action.textContent()) ?? '').trim();
+    if (!/^Register the capture scripts for /.test(label)) {
+      fail(
+        `the granted-but-unregistered banner offers "${label}" rather than re-registration. ` +
+          'The banner may not leave the user with nothing to do about a state it just described.',
+      );
+    }
+
+    // And not anywhere else on screen either: the note band under the banner offers its own
+    // Reload, and a panel showing both would be contradicting itself in two paragraphs.
+    const reloads = await session.page.locator('button', { hasText: /reload/i }).count();
+    if (reloads > 0) {
+      fail(
+        `${String(reloads)} Reload control(s) are on screen beside the granted-but-unregistered ` +
+          'banner. A reload cannot register a content script.',
+      );
+    }
+
+    if (session.errors.length > 0) {
+      fail(`the panel logged errors on the granted-but-unregistered state: ${session.errors.join(' | ')}`);
     }
   } finally {
     await session.close();
@@ -1828,6 +1928,7 @@ async function main(): Promise<void> {
     // Asserting on rows in a panel that is not painting tells you nothing the paint phase has
     // not already said, and buries the diagnosis under consequential failures.
     if (failures.length === 0) await checkUnreachableControls(browser, server.origin);
+    if (failures.length === 0) await checkNotRegisteredBanner(browser, server.origin);
     if (failures.length === 0) await checkFixtures(browser, server.origin);
     if (failures.length === 0) await checkSession(browser, server.origin);
     if (failures.length === 0) await checkMessages(browser, server.origin);
@@ -1919,6 +2020,10 @@ async function main(): Promise<void> {
       `${outDir}/runs-redacted.png`,
   );
   console.log('the post-grant Reload control is styled (.agui-app__note-action).');
+  console.log(
+    'a granted origin with nothing registered for it offers re-registration and never a page ' +
+      `reload — ${outDir}/capture-not-registered.png`,
+  );
   console.log('panel issued no off-origin requests (requirements §11).');
   console.log('export writes a real file from a real click (design decision E1, no `downloads` permission):');
   console.log(`  served dist/: toolbar 17 lines unredacted, redacted export leaks no text, fixture .ts`);
