@@ -16,6 +16,7 @@
  * Session storage is cleared by Chrome on browser close, which is what keeps requirements §11's
  * "no persistence by default" true: nothing here touches disk.
  */
+import { cloneRuntimeInfo, isRuntimeInfo, type RuntimeInfo } from '../core/detect/info';
 import type { AguiEvent, CaptureRecord } from '../core/model/types';
 import type { WireFrame } from '../inject/protocol';
 import {
@@ -63,6 +64,14 @@ declare global {
          * what runs `finalizeRules` — the run-end issues are anchored to that time.
          */
         closes(): ClosedConn[];
+        /**
+         * The runtime metadata this worker has seen, read through `snapshotFor` like everything
+         * else here — see the note on `everySnapshot`.
+         *
+         * `null` is the common answer and not a failure: most AG-UI apps never make an `/info`
+         * request at all.
+         */
+        info(): RuntimeInfo | null;
         clear(): void;
       }
     | undefined;
@@ -128,6 +137,21 @@ interface TabState {
    * them.
    */
   loadedFrames: Map<number, chrome.runtime.Port | null>;
+  /**
+   * The runtime metadata this tab has seen, or `null` when no `/info` response has arrived.
+   *
+   * RETAINED, not merely broadcast, for the same reason `closedConns` is: the discovery request
+   * happens at the client's CONNECT, which is normally long before a panel is opened. A fact
+   * delivered only to whoever was listening at the time would mean the agent list showed up for a
+   * panel that happened to be open and never for the ordinary case — and the ordinary case is the
+   * whole of done-when #2.
+   *
+   * LAST ANSWER WINS. A page that re-runs discovery — a client reconnect, a second runtime on the
+   * same page — has told us something more current than the previous answer, and reporting the
+   * stale one would describe a runtime that may no longer be the one in use. Nothing merges: two
+   * runtimes' agent lists concatenated would be an agent list no runtime ever reported.
+   */
+  info: RuntimeInfo | null;
 }
 
 /** `frameId` 0 is the top-level document. Everything else is a subframe (§12 `all_frames`). */
@@ -165,6 +189,15 @@ interface MirroredTab {
    */
   loadedFrames: number[];
   /**
+   * The runtime metadata this tab had seen when this was written.
+   *
+   * Mirrored for §15 risk row 1, and it is the field that needs it most: discovery happens ONCE,
+   * at the client's connect. A worker terminated at ~30 s idle would come back having never seen
+   * it and would never see it again for the life of that page — the Session tab would report an
+   * absence for a page that answered, with no way to recover short of a reload.
+   */
+  info: RuntimeInfo | null;
+  /**
    * Connections that had closed when this was written, with the time each closed at.
    *
    * Mirrored for the same reason as the flag above: the worker is terminated at ~30 s idle and a
@@ -195,6 +228,7 @@ function ensureTab(tabId: number): TabState {
     seenConns: new Set<string>(),
     closedConns: new Map<string, number>(),
     loadedFrames: new Map<number, chrome.runtime.Port | null>(),
+    info: null,
   };
   tabs.set(tabId, created);
   return created;
@@ -353,6 +387,7 @@ async function writeMirror(tabId: number): Promise<void> {
     nextSeq: state.nextSeq,
     recording: state.recording,
     loadedFrames: [...state.loadedFrames.keys()],
+    info: state.info,
     closedConns: closesFor(state),
   };
   await chrome.storage.session.set({ [sessionKey(tabId)]: mirrored });
@@ -438,6 +473,11 @@ function asMirroredTab(value: unknown): MirroredTab | null {
     // Absent in a mirror written by an older build. Empty is the honest reading: nothing was
     // recorded, so nothing is claimed.
     loadedFrames: Array.isArray(frames) ? frames.filter((id) => typeof id === 'number') : [],
+    // Re-validated on the way back in rather than trusted because it was ours on the way out:
+    // `chrome.storage.session` is shared by the whole extension, and a mirror written by an older
+    // build carries no `info` at all. `null` is the honest reading of both — nothing was recorded,
+    // so nothing is claimed, and the next discovery response fills it in.
+    info: isRuntimeInfo(value['info']) ? cloneRuntimeInfo(value['info']) : null,
     closedConns: Array.isArray(closed) ? closed.filter(isClosedConn) : [],
   };
 }
@@ -483,6 +523,7 @@ async function restoreFromSession(): Promise<void> {
       // just been terminated. The documents are still open and still patched, so these entries
       // survive until a new announcement replaces them.
       for (const frameId of mirrored.loadedFrames) state.loadedFrames.set(frameId, null);
+      state.info = mirrored.info;
       for (const close of mirrored.closedConns) state.closedConns.set(close.connId, close.tMs);
     }
   } finally {
@@ -505,6 +546,7 @@ const RELAY_KINDS: ReadonlySet<string> = new Set([
   'frames',
   'conn-close',
   'binary',
+  'info',
 ]);
 
 function asRelayMessage(value: unknown): RelayMessage | null {
@@ -518,6 +560,10 @@ function asRelayMessage(value: unknown): RelayMessage | null {
   if (kind === 'capture-loaded') return value as unknown as RelayMessage;
   if (typeof value['connId'] !== 'string') return null;
   if (kind === 'frames' && !Array.isArray(value['frames'])) return null;
+  // Re-checked here as well as at the relay. The relay is the boundary the page reaches; this is
+  // the boundary any extension-internal sender reaches, and `info` is the one arm whose payload is
+  // a nested structure the panel renders and an export writes into a shared file.
+  if (kind === 'info' && !isRuntimeInfo(value['info'])) return null;
   return value as unknown as RelayMessage;
 }
 
@@ -608,6 +654,24 @@ function handleRelayMessage(
       });
       return;
     }
+    case 'info': {
+      // Retained AND broadcast: retained so a panel opened later still gets it on its snapshot,
+      // broadcast so a panel already watching does not have to wait for one. Rebuilt on the way
+      // in for the same reason the relay rebuilds it.
+      const info = cloneRuntimeInfo(message.info);
+      state.info = info;
+      broadcast(tabId, {
+        kind: 'info',
+        connId: message.connId,
+        tMs: message.tMs,
+        url: message.url,
+        info,
+      });
+      // Discovery happens once per page, so losing it to a worker termination loses it for good —
+      // this one writes through rather than waiting out the debounce, like a connection close.
+      flushMirror(tabId);
+      return;
+    }
   }
 }
 
@@ -664,6 +728,10 @@ function snapshotFor(tabId: number): Snapshot {
     // the ordinary case, since the report fires at `document_start` and the panel is usually
     // opened later.
     loaded: loadedFor(state),
+    // How a panel opened AFTER the client connected learns which agents the runtime reported —
+    // which is the ordinary case, and the one done-when #2 is about. The push arm covers the
+    // panel that happened to already be watching.
+    info: state.info,
   };
 }
 
@@ -675,6 +743,19 @@ function clearTab(tabId: number, state: TabState): void {
   // here. Keeping their closes would let a reader mistake the previous scenario's finished
   // stream for the next one's.
   state.closedConns.clear();
+  /*
+   * The runtime metadata goes too, and this is the one place the decision is not obvious.
+   *
+   * KEEPING it would be nicer for a user who presses Clear: discovery happens once per page, so a
+   * cleared tab does not get a second `/info` response and the agent list is gone until a reload.
+   * But Clear is also what a NAVIGATION performs when preserve-log is off, and the next document
+   * may be a different app entirely, on a different runtime, or on no runtime at all. Metadata
+   * that survived a navigation would describe the previous page while the panel showed this one's
+   * stream — a stale claim presented as a current one, which is the failure this project has been
+   * corrected for twice. Losing a true fact is recoverable with a reload; showing a false one is
+   * not recoverable at all, because the reader has no way to tell.
+   */
+  state.info = null;
   void chrome.storage.session.remove(sessionKey(tabId));
   broadcast(tabId, { kind: 'cleared' });
 }
@@ -881,6 +962,12 @@ globalThis.__AGUI_DT_TEST__ = {
   },
   closes(): ClosedConn[] {
     return everySnapshot().flatMap((snapshot) => snapshot.closed);
+  },
+  info(): RuntimeInfo | null {
+    // First non-null across tabs. The harness drives one page; a `find` rather than a `flatMap`
+    // because this is one fact per tab, not a list, and concatenating two tabs' runtimes would
+    // describe neither.
+    return everySnapshot().map((snapshot) => snapshot.info).find((info) => info !== null) ?? null;
   },
   clear(): void {
     for (const [tabId, state] of tabs) clearTab(tabId, state);

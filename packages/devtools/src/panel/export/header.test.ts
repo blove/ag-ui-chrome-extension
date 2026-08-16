@@ -49,6 +49,7 @@ describe('buildHeader', () => {
       url: null,
       framework: null,
       transport: 'sse',
+      runtime: null,
     });
     expect(header.redacted).toEqual(['text', 'toolArgs', 'state']);
   });
@@ -62,6 +63,7 @@ describe('buildHeader', () => {
       url: null,
       framework: null,
       transport: 'sse',
+      runtime: null,
     });
     // You cannot un-redact. A header reading `[]` over content whose text was already replaced
     // upstream is a lie a colleague would act on.
@@ -77,6 +79,7 @@ describe('buildHeader', () => {
       url: null,
       framework: null,
       transport: 'sse',
+      runtime: null,
     });
     expect(header.capturedAt).toBe('2026-08-01T09:00:00.000Z');
     expect(header.url).toBe('https://agent.example.com/chat');
@@ -92,6 +95,7 @@ describe('buildHeader', () => {
       url: null,
       framework: null,
       transport: 'sse',
+      runtime: null,
     });
     expect(header.tool).toBe('ag-ui-devtools@0.1.0');
     expect(header.schemaVersion).toBe(1);
@@ -106,6 +110,7 @@ describe('buildHeader', () => {
       url: 'http://localhost:3000',
       framework: 'Angular 21.1.6',
       transport: 'sse',
+      runtime: null,
     });
     expect(header).toEqual({
       kind: 'header',
@@ -128,6 +133,7 @@ describe('buildHeader', () => {
       url: 'http://localhost:3000',
       framework: null,
       transport: 'sse',
+      runtime: null,
     });
     expect('framework' in header).toBe(false);
   });
@@ -141,6 +147,7 @@ describe('buildHeader', () => {
       url: null,
       framework: null,
       transport: 'sse',
+      runtime: null,
     });
     expect(header.url).toBe('unknown');
   });
@@ -154,6 +161,7 @@ describe('buildHeader', () => {
       url: 'http://localhost:3000',
       framework: null,
       transport: 'binary',
+      runtime: null,
     });
     expect(header.transport).toBe('binary');
   });

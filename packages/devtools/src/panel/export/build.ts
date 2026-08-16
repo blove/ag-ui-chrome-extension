@@ -12,6 +12,7 @@
  * identical IN THE TABS, which is semantic identity and is what a round trip through this
  * function proves.
  */
+import type { RuntimeInfo } from '../../core/detect/info';
 import type { JsonlHeader, JsonlLine } from '../../core/jsonl/codec';
 import { redactLine, type RedactionGroup } from '../../core/jsonl/redact';
 import type { CaptureRecord, Run } from '../../core/model/types';
@@ -34,6 +35,11 @@ export interface ExportSource {
   importedHeader: JsonlHeader | null;
   framework: string | null;
   binaryTransport: BinaryTransport | null;
+  /**
+   * What a `/info` response said during this capture. Exported so an imported capture shows the
+   * same Session metadata a live one did (requirements §10: import gives you all tabs working).
+   */
+  runtime: RuntimeInfo | null;
   source: PanelSource;
 }
 
@@ -150,6 +156,7 @@ export function buildExport(source: ExportSource, options: ExportOptions): Expor
     url: source.source.kind === 'live' ? source.source.origin : null,
     framework: source.framework,
     transport: source.binaryTransport !== null ? 'binary' : 'sse',
+    runtime: source.runtime,
   });
 
   const body: JsonlLine[] = [

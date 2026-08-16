@@ -174,6 +174,7 @@ function sourceOf(text: string): ExportSource {
     requests: loaded.requests,
     runs: loaded.runs,
     importedHeader: loaded.header,
+    runtime: loaded.runtime,
     framework: null,
     binaryTransport: null,
     source: { kind: 'imported', filename: 'capture.agui.jsonl', importedAtMs: 0 },

@@ -1,3 +1,4 @@
+import type { RuntimeInfo } from '../detect/info';
 import type { RedactionGroup } from './redact';
 
 export interface JsonlHeader {
@@ -9,6 +10,32 @@ export interface JsonlHeader {
   framework?: string;
   transport: 'sse' | 'binary';
   redacted: RedactionGroup[];
+  /**
+   * What a `/info` agent-discovery response said, when the capture saw one.
+   *
+   * IN THE HEADER, AND NOT A NEW LINE KIND. The header already carries exactly this class of
+   * fact — `framework`, `transport`, `url`, `capturedAt` are all session-scoped metadata rather
+   * than stream content — and this is one more of them: one per capture, not one per frame, with
+   * no `seq` and no place in the Timeline.
+   *
+   * The alternative was a fifth `kind`, and the deciding argument is what an OLDER decoder does
+   * with each. `decodeJsonl` below rejects any line whose `kind` is not in `KNOWN_KINDS` and
+   * records an error for it, so a new line kind would make every capture written by this build
+   * open in an older build with a spurious "unrecognized kind" — a file that is perfectly intact
+   * reporting itself as damaged, which is precisely the untruth `applyLoaded`'s partial-decode
+   * warning exists to tell. An unknown OBJECT KEY, by contrast, is ignored by every JSON decoder
+   * ever written: an older build reads the header, ignores this, and shows the capture exactly as
+   * it did before. That is why `schemaVersion` stays 1 — nothing about the format changed for a
+   * reader, only something was added for one that knows to look.
+   *
+   * Optional and absent-rather-than-null: most captures have nothing to put here, and a `null`
+   * would decode as a claim that discovery ran and reported nothing.
+   *
+   * NEVER REDACTED. §11's five groups are text, reasoning, toolArgs, toolResults and state, and
+   * none of them covers developer-authored metadata — the same reasoning that keeps `tools` in
+   * `redactInput`. See `core/detect/info.ts` for the full argument.
+   */
+  runtime?: RuntimeInfo;
 }
 
 export interface JsonlRequest {

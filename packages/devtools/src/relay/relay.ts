@@ -20,6 +20,7 @@
  * It has one thing of its own to say, at the bottom of this file: that the capture layer is
  * loaded in this document. That report goes up the `chrome.runtime` port and never near the page.
  */
+import { cloneRuntimeInfo } from '../core/detect/info';
 import { isInjectMessage, PROTOCOL_VERSION, type InjectMessage } from '../inject/protocol';
 import { RELAY_PORT_NAME, type RelayMessage } from '../sw/protocol';
 
@@ -135,6 +136,20 @@ function toRelayMessage(message: InjectMessage): RelayMessage {
         tMs: message.tMs,
         contentType: message.contentType,
         bytes: message.bytes,
+      };
+    case 'info':
+      return {
+        v: PROTOCOL_VERSION,
+        kind: 'info',
+        connId: message.connId,
+        tMs: message.tMs,
+        url: message.url,
+        // `cloneRuntimeInfo` is this function's field-by-field copy applied one level deeper.
+        // `info` is the only nested structure any message carries, and it is NOT `input`: the
+        // exception above is made for the page's own `RunAgentInput` because keeping it verbatim
+        // is the point of capturing it. This is metadata this build parsed and will render as
+        // its own claim, so nothing rides along.
+        info: cloneRuntimeInfo(message.info),
       };
   }
 }

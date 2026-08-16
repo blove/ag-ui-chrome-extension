@@ -4,6 +4,7 @@ import {
   type JsonlHeader,
   type JsonlKeepalive,
 } from '../../core/jsonl/codec';
+import { cloneRuntimeInfo, isRuntimeInfo, type RuntimeInfo } from '../../core/detect/info';
 import { createRunBuilder } from '../../core/normalizer/run-builder';
 import type { AguiEvent, CaptureRecord, Issue, Run } from '../../core/model/types';
 import type { RequestLine } from '../../sw/protocol';
@@ -29,6 +30,17 @@ export interface LoadedCapture {
    * re-exporting already had replaced, and no other part of the panel can tell it.
    */
   header: JsonlHeader | null;
+  /**
+   * The `/info` agent metadata the header carried, or `null` when it carried none or carried
+   * something this build cannot read.
+   *
+   * Validated rather than cast. `decodeJsonl` deliberately does not check field shapes, so a
+   * `runtime` key in a header is whatever the file happened to contain — a hand-edited capture, a
+   * file from a later version, or something hostile. It reaches the Session tab and then a
+   * re-export, so it goes through the same `isRuntimeInfo` grammar the relay and the service
+   * worker use, and a value that fails is dropped rather than repaired.
+   */
+  runtime: RuntimeInfo | null;
   /** One entry per malformed line, from `decodeJsonl`. Surfaced, never swallowed. */
   decodeErrors: string[];
 }
@@ -139,6 +151,7 @@ export function loadJsonl(text: string, options: { expandChunks?: boolean } = {}
     requests,
     issues: builder.allIssues(),
     header,
+    runtime: isRuntimeInfo(header?.runtime) ? cloneRuntimeInfo(header.runtime) : null,
     decodeErrors: errors,
   };
 }

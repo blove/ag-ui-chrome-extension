@@ -44,6 +44,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(next.records).toHaveLength(5);
@@ -65,6 +66,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
     state = session.apply(state, { kind: 'append', records: tail });
 
@@ -128,6 +130,7 @@ describe('createLiveSession', () => {
       closed: [{ connId: 'c1', tMs: 99 }],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(state.issues.map((issue) => issue.code)).toContain('run-never-terminated');
@@ -151,6 +154,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(state.issues.map((issue) => issue.code)).not.toContain('run-never-terminated');
@@ -170,6 +174,7 @@ describe('createLiveSession', () => {
       closed: [{ connId: 'c1', tMs: 50 }],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
     expect(state.runs[0]?.outcome).toBe('aborted');
 
@@ -182,6 +187,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(state.runs.map((run) => run.runId)).toEqual(['r2']);
@@ -199,6 +205,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(state.records.map((r) => r.seq)).toEqual([2, 3, 4]);
@@ -214,6 +221,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 7,
       loaded: true,
+      info: null,
     });
 
     expect(state.droppedBefore).toBe(9);
@@ -233,6 +241,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
     expect(state.droppedBefore).toBe(0);
 
@@ -255,6 +264,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 6,
       loaded: true,
+      info: null,
     });
     nextSeq = 5;
     state = session.apply(state, {
@@ -274,6 +284,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
     // Two evicted by the panel already.
     expect(state.droppedBefore).toBe(2);
@@ -298,6 +309,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 4,
       loaded: true,
+      info: null,
     });
     state = { ...state, selectedSeq: 2, scope: 'r1' };
 
@@ -327,6 +339,7 @@ describe('createLiveSession', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
     state = session.apply(state, { kind: 'closed', connId: 'c1', tMs: 40 });
     const before = state.issues.map((issue) => issue.code);
@@ -372,6 +385,7 @@ describe('createLiveSession', () => {
         closed: [],
         droppedBefore: 0,
         loaded: false,
+        info: null,
       });
       const before = state.records.map((r) => r.seq);
 
@@ -393,6 +407,7 @@ describe('createLiveSession', () => {
           closed: [],
           droppedBefore: 0,
           loaded: true,
+          info: null,
         },
       );
 
@@ -408,13 +423,13 @@ describe('createLiveSession', () => {
       // prevent — the finding is made by the timeout in `use-live-capture`, never here.
       const fresh = session.apply(
         { ...initialPanelState(), loaded: null },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null },
       );
       expect(fresh.loaded).toBeNull();
 
       const known = session.apply(
         { ...initialPanelState(), loaded: true },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null },
       );
       expect(known.loaded).toBe(true);
     });
@@ -442,6 +457,7 @@ describe('createLiveSession', () => {
         closed: [],
         droppedBefore: 0,
         loaded: true,
+        info: null,
       },
     );
 
@@ -552,6 +568,7 @@ describe('createLiveSession', () => {
         closed: [],
         droppedBefore: 0,
         loaded: true,
+        info: null,
       });
 
       expect(state.binaryTransport?.contentType).toBe('application/vnd.ag-ui.event+proto');
@@ -585,6 +602,7 @@ describe('the request lines an export has to put back', () => {
       closed: [],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     expect(state.requests.map((request) => request.connId)).toEqual(['c1']);

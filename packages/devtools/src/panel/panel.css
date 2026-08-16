@@ -1124,6 +1124,49 @@ li[data-severity='warning'] .agui-detail__severity {
   font-variant-numeric: tabular-nums;
 }
 
+/* The `/info` agent list (spec §13 done-when #2). One row per agent: the id the
+ * client addresses, then anything the runtime said about it. The id is
+ * monospaced because it is a literal a developer copies. */
+
+.agui-session__agents {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agui-session__agent {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.agui-session__agent-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--agui-fg);
+}
+
+.agui-session__agent-name {
+  color: var(--agui-fg);
+}
+
+.agui-session__agent-description {
+  color: var(--agui-fg-muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* An absence, drawn as one. The runtime authored no description; that is not the
+ * same as a description this panel failed to read, and it must not look like a
+ * value. Same rule the Runs table applies to an unmeasurable duration. */
+.agui-session__agent-description[data-known='false'] {
+  font-style: italic;
+  opacity: 0.75;
+}
+
 .agui-session__note {
   margin: 0 0 8px;
   max-width: 72ch;

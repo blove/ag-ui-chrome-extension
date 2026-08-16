@@ -5,6 +5,7 @@
  * the view-level fields below. Nothing here is persisted — requirements §11 — and nothing here is
  * derived: derivations live in `selectors.ts` so state stays a single, comparable snapshot.
  */
+import type { RuntimeInfo } from '../../core/detect/info';
 import type { Run, Issue, CaptureRecord } from '../../core/model/types';
 import type { JsonlHeader } from '../../core/jsonl/codec';
 import type { RequestLine } from '../../sw/protocol';
@@ -110,6 +111,24 @@ export interface PanelState {
    * the stronger fact, and the banner already goes quiet on those.
    */
   loaded: boolean | null;
+  /**
+   * What a `/info` agent-discovery response said, or `null` when none has been seen.
+   *
+   * Session metadata, exactly like `framework`, and it gates nothing: an app with no CopilotKit
+   * runtime never emits this and is captured identically. Spec §13 done-when #2 asks for it to be
+   * "shown in Session before any run", which it is — the v2 client fetches it at connect time, so
+   * the panel has it before the user types.
+   *
+   * `null` IS THE COMMON CASE, not a failure. Measured across three page loads of a production
+   * AG-UI deployment: no `/info` request, ever, because it is not a CopilotKit app. Everything
+   * that reads this field has to be written for that, and the Session tab's wording is where that
+   * obligation actually lands.
+   *
+   * Filled from the live capture's `info` message or its `snapshot`, or from an imported file's
+   * header — one field either way, so an imported capture shows the Session metadata a live one
+   * did (requirements §10: import gives you all tabs working).
+   */
+  runtime: RuntimeInfo | null;
   tab: TabId;
   scope: RunScope;
   filter: EventFilter;
@@ -185,6 +204,7 @@ export function initialPanelState(): PanelState {
     capture: { kind: 'unsupported' },
     framework: null,
     loaded: null,
+    runtime: null,
     tab: 'timeline',
     scope: null,
     filter: { text: '', issuesOnly: false },

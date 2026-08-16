@@ -128,6 +128,7 @@ describe('routeHint', () => {
     expect(routeHint('https://app.example.com/api/copilotkit/info', 'GET')).toEqual({
       kind: 'copilotkit-info',
       basePath: '/api/copilotkit',
+      mode: 'multi-route',
     });
   });
 
@@ -167,18 +168,21 @@ describe('routeHint', () => {
     expect(routeHint('/v3/ck/info', 'GET')).toEqual({
       kind: 'copilotkit-info',
       basePath: '/v3/ck',
+      mode: 'multi-route',
     });
-    expect(routeHint('/info', 'GET')).toEqual({ kind: 'copilotkit-info', basePath: '' });
+    expect(routeHint('/info', 'GET')).toEqual({ kind: 'copilotkit-info', basePath: '', mode: 'multi-route' });
   });
 
   it('works on path-only strings and ignores query and hash', () => {
     expect(routeHint('/api/copilotkit/info?v=2', 'GET')).toEqual({
       kind: 'copilotkit-info',
       basePath: '/api/copilotkit',
+      mode: 'multi-route',
     });
     expect(routeHint('https://app.example.com/api/copilotkit/info?v=2#x', 'GET')).toEqual({
       kind: 'copilotkit-info',
       basePath: '/api/copilotkit',
+      mode: 'multi-route',
     });
   });
 

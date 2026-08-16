@@ -29,6 +29,9 @@ export function applyLoaded(
     issues: loaded.issues,
     // E3: what this file already had redacted, kept so a re-export cannot under-report it.
     importedHeader: loaded.header,
+    // §10: an imported capture gives you all tabs working, and Session is a tab. The agent
+    // metadata the capture saw is part of what that tab shows, so it comes back with the file.
+    runtime: loaded.runtime,
     scope: null,
     selectedSeq: null,
     droppedBefore: 0,

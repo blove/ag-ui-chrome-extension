@@ -136,6 +136,7 @@ describe('loadJsonl: bad input', () => {
       requests: [],
       issues: [],
       header: null,
+      runtime: null,
       decodeErrors: [],
     });
   });

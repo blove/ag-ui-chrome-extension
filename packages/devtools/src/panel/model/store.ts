@@ -117,6 +117,9 @@ export function captureOn(s: PanelState, origin: string): PanelState {
     issues: wasImported ? [] : s.issues,
     droppedBefore: wasImported ? 0 : s.droppedBefore,
     binaryTransport: wasImported ? null : s.binaryTransport,
+    // An imported file's runtime metadata describes the page THAT capture was taken on, not the
+    // tab now being watched. Keeping it would put another app's agent list beside a live stream.
+    runtime: wasImported ? null : s.runtime,
     scope: wasImported ? null : s.scope,
     selectedSeq: wasImported ? null : s.selectedSeq,
     loadError: wasImported ? null : s.loadError,

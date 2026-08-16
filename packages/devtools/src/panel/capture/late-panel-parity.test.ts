@@ -75,6 +75,7 @@ function afterLateOpen(stream: CapturedStream): PanelState {
     closed: [{ connId: CONN_ID, tMs: CLOSED_AT_MS }],
     droppedBefore: 0,
     loaded: true,
+    info: null,
   });
 }
 
@@ -180,6 +181,7 @@ describe('a run that finished before the panel opened', () => {
       closed: [{ connId: CONN_ID, tMs: CLOSED_AT_MS }],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
     const twice = session.apply(once, { kind: 'closed', connId: CONN_ID, tMs: 999 });
 
@@ -203,6 +205,7 @@ describe('a run that finished before the panel opened', () => {
       closed: [{ connId: CONN_ID, tMs: CLOSED_AT_MS }],
       droppedBefore: 0,
       loaded: true,
+      info: null,
     });
 
     const refolded = session.refold(state, { expandChunks: false });
