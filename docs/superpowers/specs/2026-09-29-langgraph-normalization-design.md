@@ -1,0 +1,229 @@
+# LangGraph normalization — design
+
+**Date:** 2026-09-29
+**Requirements:** [`docs/spec/ag-ui-devtools-v0.1.md`](../../spec/ag-ui-devtools-v0.1.md) §14.1 (and §14.2, which depends on it)
+**Status:** v0.1 is complete — all eight §13 done-when criteria are closed. Nothing in the codebase
+knows LangGraph exists. A LangGraph stream is captured today (detection gates nothing), but its SSE
+`event:` names are dropped at the world boundary and every record lands in the `__orphaned__` run.
+
+---
+
+## 1. Why this, and why first
+
+§14.1: Threadplane's `@threadplane/langgraph` adapter talks to LangGraph Platform, which is not
+AG-UI on the wire. Mapping it into the same run model means one panel covers both Threadplane
+adapters, and an AG-UI stream and a LangGraph stream sit side by side in one capture.
+
+It goes before §14.2 because §14.2's target, `MockAgentTransport`, lives in
+`@threadplane/langgraph` and replays **LangGraph** `StreamEvent`s — `{type:'values', …}`,
+`{type:'messages', messages:[chunk], messageMetadata}` — not AG-UI events. Until the extension
+captures LangGraph faithfully, there is nothing to export into it. (The AG-UI seam,
+`@threadplane/ag-ui`'s `FakeAgent`, wraps every script branch in its own `RUN_STARTED`/
+`RUN_FINISHED` and so cannot reproduce a broken run boundary; that was considered and set aside.)
+
+**Consequence for this design:** the raw LangGraph frame, *with its event name*, must survive
+capture, storage, export and import untouched. §14.2 is built on it.
+
+## 2. The wire format, briefly
+
+Sources: `@langchain/langgraph-sdk` (`libs/sdk`), the JS reference server (`libs/langgraph-api`),
+Threadplane's transport and bridge, and one real Python-server recording
+(`angular-agent-framework/libs/langgraph/test/fixtures/streaming-reasoning-puzzle.json`).
+
+- **Routes:** `POST /threads/{thread_id}/runs/stream`, `POST /runs/stream` (threadless), and the
+  join streams `GET /threads/{thread_id}/runs/{run_id}/stream` / `GET /runs/{run_id}/stream`.
+  Request body: `{assistant_id, input, command, config, stream_mode, stream_subgraphs, …}`.
+- **Framing:** SSE, the type in `event:`, JSON in `data:`. The JS server pretty-prints, so one
+  payload spans many `data:` lines. `id:` is present on thread routes only.
+- **First event:** always `metadata` → `{run_id, attempt}`.
+- **`messages` (the `messages-tuple` mode):** `[chunk, metadata]`, **per-chunk delta**. `content`
+  is a string or a block array (`{type:'text', text, index}`, `{type:'reasoning', summary:[…]}`)
+  merged by block `index`. `tool_call_chunks: [{name, args, id, index}]` — `args` are fragments,
+  merged by `index`. Final chunk: `content: []`, `chunk_position: 'last'`, usage.
+  **Id quirk:** the Python server opens with one empty-content chunk under a `resp_…` id; every
+  later chunk uses `lc_run--…`.
+- **`messages/partial` (legacy):** **cumulative** — the whole message so far. `messages/complete`
+  and `messages/metadata` accompany it.
+- **`values`:** full state. **`updates`:** `{[node]: partialState}`. Either may carry
+  `__interrupt__`; a `values` whose only key is `__interrupt__` is an interrupt, not a state.
+- **`custom`:** whatever the node wrote. **`error`:** `{error, message}`, last event.
+- **Subgraphs:** `stream_subgraphs: true` names events `mode|node:task_id|…`. `metadata` is never
+  namespaced.
+- **There is no end event.** The run ends when the body closes.
+
+Threadplane's default request: `stream_mode: ['values','messages-tuple','updates','custom']`,
+`stream_subgraphs: true`.
+
+## 3. Scope
+
+**In:** `metadata`, `messages` (tuple), `messages/partial|complete|metadata`, `values`, `updates`,
+`custom`, `error`, and namespaced forms of all of them, folded into child runs.
+
+**Raw only (Timeline row, no derived events):** `debug`, `tasks`, `checkpoints`, `events`,
+`tools`, `feedback`, and any unknown name (which also raises an issue — see L12).
+
+**Out:** `EventSource`-transport LangGraph (named events are not mirrored on that path today; the
+SDK uses `fetch`, so no known client is affected — documented, not fixed); resumed streams across
+reconnects (`Last-Event-ID`) as one run; §14.2 itself.
+
+**Acceptance:** a Threadplane LangGraph app, with its default stream modes and subgraphs on, is
+captured with no configuration, and Timeline, Messages, State, Runs and Session all render it.
+
+---
+
+## 4. Approach
+
+**Store the raw frame; translate when folding into runs.** Rejected alternatives:
+
+- *A second run builder for LangGraph* — no synthetic events, but duplicates message, tool-call and
+  state logic, and every future tab feature would be built twice.
+- *Translate at capture, store AG-UI* — the least downstream work, and it destroys the original
+  stream: §14.2 becomes impossible and exports stop being true.
+
+Everything downstream of the run builder reads the derived `Run` (`messages`, `toolCalls`,
+`stateTimeline`, `metrics`), not raw event types — confirmed for Messages, State, Waterfall and
+Runs. The builder already has a slot that turns one record into zero or more events
+(`expandChunk`). A LangGraph expander in that slot makes every tab work unchanged.
+
+## 5. Decisions
+
+### Capture and storage
+
+| # | Decision | Rationale |
+|---|---|---|
+| **L1** | **`WireFrame` gains an optional `eventName`**, set by the fetch and XHR paths from `SseFrame.eventName`. `relay.ts` `toRelayMessage` copies it explicitly; `isWireFrame` accepts it only as an own string property. | `protocol.ts` already says a frame field "needs a field of its own on this type". The relay rebuilds frames field by field, so a field it does not name is silently stripped — the one step easiest to forget, and it gets its own test. `raw-invariant.test.ts` is extended so fetch and XHR stay byte-identical *including* the name. |
+| **L2** | **`CaptureRecord` and `JsonlEvent` gain an optional `sseEvent`.** Absent when the frame had no `event:` line. `schemaVersion` stays `1`. | Same argument as #41's `runtime` header key: an older decoder ignores an unknown object key and shows the capture as before; a new line kind would make it report an intact file as damaged. Absent, not `null`, so there is no claim when there is nothing to say. |
+| **L3** | **`RouteHint` gains `langgraph-run`**, matching the four routes in §2, carrying `threadId` from the URL when present. | The URL is the strongest signal and is available before any byte of the response. |
+
+### Dialect
+
+| # | Decision | Rationale |
+|---|---|---|
+| **L4** | **Dialect is per connection**: `'agui' \| 'langgraph'`, decided by one pure function `dialectOf(request, firstEvent)` in `core/`. `langgraph` if the request matches L3; otherwise if the first event record has `sseEvent === 'metadata'` and a string `run_id`; otherwise `agui`. | Per-session would forbid the side-by-side case §14.1 names. Deriving it from the request line and first event — both stored — means an imported file classifies exactly as the live capture did, with nothing new persisted. Every existing capture classifies as `agui`, so nothing changes for it. |
+| **L5** | **Every consumer that branches on dialect calls `dialectOf`** — run builder, redaction, fixture export, Timeline labels. | One rule, one place. If redaction and the builder ever disagreed about which connections are LangGraph, a redacted export would leak. |
+
+### The expander
+
+`core/normalizer/langgraph/expander.ts`, one state per connection. Input: a record
+(`sseEvent`, parsed data, `seq`, `tMs`). Output:
+
+```ts
+interface LangGraphExpansion {
+  events: { runKey: string; event: AguiEvent }[]; // synthetic, stamped with the record's seq/tMs
+  issues: Issue[];
+}
+```
+
+**L6 — the mapping.**
+
+| LangGraph | Synthetic AG-UI |
+|---|---|
+| `metadata {run_id}` | `RUN_STARTED {runId: run_id, threadId: URL ?? data.thread_id, input: request.input}` |
+| first non-`metadata` event with no run open | `RUN_STARTED {runId: 'lg:' + connId}` plus issue `lg-no-metadata` |
+| `messages` chunk, `type` ai / `AIMessageChunk` | `TEXT_MESSAGE_START` on the first chunk **with content**, then `TEXT_MESSAGE_CONTENT` per text delta; reasoning blocks → `REASONING_MESSAGE_START/CONTENT`; `tool_call_chunks` → `TOOL_CALL_START` when an entry's `id` or `name` is first known, `TOOL_CALL_ARGS` per `args` fragment, merged by `index` |
+| message end: `chunk_position: 'last'`, a chunk for a different message id, or run end | `REASONING_MESSAGE_END`, `TOOL_CALL_END` for each open call, `TEXT_MESSAGE_END` |
+| `messages` chunk, `type` tool | `TOOL_CALL_RESULT {toolCallId: tool_call_id, content}` once per id |
+| `messages` chunk, `type` human / system | nothing — input messages come from the request |
+| `messages/partial [msg]` | the suffix beyond the previous partial for that id, as the same events as a tuple delta |
+| `messages/complete [msg…]` | message end for each; issue `lg-complete-mismatch` if final text ≠ accumulated |
+| `messages/metadata` | nothing |
+| `values {…}` | `STATE_SNAPSHOT {snapshot}`; each `type:'tool'` message not yet seen → `TOOL_CALL_RESULT` |
+| `values`/`updates` carrying `__interrupt__` | recorded on the run as an interrupt (L9); a `values` whose only key is `__interrupt__` emits no snapshot |
+| `updates {node: …}` | `STEP_STARTED` + `STEP_FINISHED {stepName: node}` per key other than `__interrupt__` |
+| `custom` | `CUSTOM {name: 'langgraph.custom', value: data}` |
+| `error {error, message}` | close open messages, then `RUN_ERROR {message, code: error}` |
+| connection close, `complete`, no `error` seen | close open messages and child runs, then `RUN_FINISHED` |
+
+| # | Decision | Rationale |
+|---|---|---|
+| **L7** | **The id quirk is absorbed, not special-cased by prefix:** a message opens only on its first chunk carrying text, reasoning or a tool-call chunk. An empty chunk under an unseen id opens nothing. | The real recording has one empty `resp_…` chunk and 1,209 `lc_run--…` chunks. Keying on id alone invents a phantom empty message; matching on `resp_` couples us to one provider's id scheme. |
+| **L8** | **A tool call with no `id` in its first chunk gets `messageId + '#' + index`**, and keeps it for the life of the call even if a later chunk carries a real id. | AG-UI requires the id at `TOOL_CALL_START`. Re-keying mid-call would split one call into two in the Messages tab. |
+| **L9** | **`RunOutcome` gains `'interrupted'`.** The expander marks the run; the builder sets the outcome when the run closes normally after an interrupt. No wire field is invented on the synthetic `RUN_FINISHED`. | An interrupt is the normal human-in-the-loop pause, not an error and not a plain finish. Runs shows it; the AG-UI path never sets it, so nothing existing changes. |
+| **L10** | **Synthetic events are stamped with their source record's `seq` and `tMs`** and are never Timeline rows. | TTFT, stalls and Waterfall timing come out right with no special handling, and Timeline keeps its promise of showing what was on the wire. |
+
+### Subgraphs
+
+| # | Decision | Rationale |
+|---|---|---|
+| **L11** | **`mode|ns…` events fold into a child run**: `runId = parentRunId + '/' + ns.join('|')`, `parentRunId` set, opened on the first event for that namespace, closed (before the parent) at parent close or error. The builder's single `conn.openRunId` becomes a per-connection map of open runs, and it routes each synthetic event by its `runKey`. | `Run.parentRunId` already exists. Threadplane itself routes namespaced messages out of the main transcript into subagents; child runs are the same separation in this model. The map is the only structural change to the builder, and the AG-UI path uses exactly one entry in it. |
+
+### Validation and metrics
+
+| # | Decision | Rationale |
+|---|---|---|
+| **L12** | **AG-UI validator rules do not run on synthetic events. The expander raises LangGraph issues instead:** `lg-unknown-event` (name not in the known set), `lg-no-metadata`, `lg-partial-regressed` (a partial that does not extend the previous one), `lg-tool-args-invalid` (accumulated args not JSON at call end), `lg-complete-mismatch`, `lg-no-final-values` (closed without a top-level `values`, **only** when the request's `stream_mode` included `values`), `lg-undecodable` (data not JSON). | Synthetic events are correct by construction; an AG-UI issue on one would be our translation bug reported as the user's. `lg-no-final-values` is the condition Threadplane's own bridge treats as "interrupted", so it is a real diagnostic — but only meaningful if `values` was asked for. |
+| **L13** | **`eventCountByType` counts wire event names for LangGraph runs** (`messages`, `values`, `messages|research:…`), not synthetic types. Other metrics read synthetic events. | The Runs table's event count must equal the number of Timeline rows for the run. |
+
+### Panel
+
+| # | Decision | Rationale |
+|---|---|---|
+| **L14** | **Timeline row label is `sseEvent` for LangGraph connections.** The detail pane keeps the raw payload and adds a **Derived** section listing the synthetic events the record produced (from a builder query, `derivedFor(seq)`). | The user sees the wire as it was and how we read it, side by side — which is also how a translation bug gets reported. |
+| **L15** | **Session's transport row names the dialect per connection** ("LangGraph Platform", "AG-UI"). | The side-by-side case is invisible otherwise. |
+
+### Redaction and export
+
+| # | Decision | Rationale |
+|---|---|---|
+| **L16** | **`redact.ts` gains LangGraph rules over the same five groups**, selected by `dialectOf`: message and text-block content → `text`; reasoning blocks and summaries → `reasoning`; `tool_call_chunks[].args`, `tool_calls[].args` → `toolArgs`; `type:'tool'` message content → `toolResults`; `values` / `updates` payloads (excluding `__interrupt__` structure) → `state`. The request line's `input` is redacted as today. | Without this the privacy policy's description of a redacted export is false for LangGraph captures. Messages appear inside `values` too, so `state` and `text` both apply there — a redacted `text` group must reach them either way. |
+| **L17** | **The E6 leak check runs on a redacted LangGraph fixture** and restates §11 for this format rather than importing the redactor. | Same reason as E6: `redact.ts` has shipped a hole its own tests could not see. |
+| **L18** | **E7's fixture export writes `{event, data}` pairs for LangGraph connections** instead of bare payloads. | A bare `data` array without names is not replayable by anything. This is the minimum to stay truthful; the `MockAgentTransport` module is §14.2. |
+
+## 6. Structure
+
+```
+core/detect/classifier.ts           + langgraph-run route hint (L3)
+core/normalizer/dialect.ts          dialectOf (L4)
+core/normalizer/langgraph/
+  expander.ts                       per-connection state machine (L6–L11)
+  messages.ts                       chunk/partial merging by id and index
+  names.ts                          known event names, namespace parsing
+core/normalizer/run-builder.ts      open-run map; route by runKey; skip AG-UI rules for synthetic
+core/jsonl/codec.ts, redact.ts      sseEvent (L2); LangGraph rules (L16)
+inject/protocol.ts, fetch-patch.ts, wire-frame.ts, relay/relay.ts, sw/index.ts   eventName (L1)
+panel/tabs/timeline/, panel/tabs/session/                                        L14, L15
+```
+
+The expander is Chrome-free and pure over its state, like the rest of `core/`.
+
+## 7. Testing
+
+- **Golden fixtures** (`src/test/fixtures/*.langgraph.agui.jsonl`):
+  - `lg-reasoning` — the real Python recording, trimmed to a few hundred chunks; covers reasoning
+    and text blocks, the id quirk, the usage-only last chunk, final `values`. Asserts the Messages
+    reconstruction equals the recording's `canonical_text`.
+  - `lg-tools`, `lg-subgraph`, `lg-interrupt`, `lg-error` — built from `langgraph-api`'s test
+    sequences (`api.test.mts`); tool args split across chunks, namespaced events, `__interrupt__`,
+    `error` as last event.
+  - `lg-legacy` — `messages/partial|complete|metadata`, including one regressing partial.
+  - `lg-malformed` — exactly the L12 issues at known seqs, in the style of done-when #5.
+- **Round-trip:** export → clear → import on each LangGraph fixture; tabs identical, `sseEvent`
+  preserved, redacted and not.
+- **Capture:** unit tests that the event name survives inject → relay → sw, including the relay's
+  hostile-input guard; a pretty-printed multi-line `data:` payload decodes.
+- **Harness:** the server gains `/threads/:id/runs/stream` writing named events with multi-line
+  `data:`; a second page client uses `@langchain/langgraph-sdk` (harness dev dependency only — the
+  extension gains none). One e2e captures a LangGraph run; one captures an AG-UI run and a
+  LangGraph run from the same page.
+- **Visual gate:** every tab on a LangGraph capture, a redacted one, and a subgraph one; Timeline
+  labels are wire names; Runs shows `interrupted`.
+- **Mutations to watch fail:** relay drops `eventName`; `dialectOf` returns `agui`; expander opens
+  on empty chunks; redaction skips `values`.
+
+## 8. Sequencing
+
+One PR each, merged on green:
+
+1. **Event names survive** — L1, L2, L3, L18. No behaviour change for AG-UI; LangGraph captures
+   now keep their names.
+2. **The expander** — L4–L10, L12, L13 in `core/`, top-level runs only, golden fixtures.
+3. **Subgraphs** — L11, the builder's open-run map.
+4. **Panel and privacy** — L14–L17, harness e2e, visual gate.
+
+## 9. Open questions
+
+1. `TOOL_CALL_RESULT` can arrive twice (as a `messages` tool chunk and inside `values`); L6 dedupes
+   by `tool_call_id`. If a graph emits a tool message with no `tool_call_id`, it is kept in state
+   only. Acceptable for v1?
+2. Child-run ids (`parent/ns`) are ours, not LangGraph's. A namespaced `metadata` does not exist to
+   give them a real id. Fine for display; worth noting before §14.2 exports per-run fixtures.
