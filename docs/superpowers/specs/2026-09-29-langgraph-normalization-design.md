@@ -91,7 +91,7 @@ Runs. The builder already has a slot that turns one record into zero or more eve
 
 | # | Decision | Rationale |
 |---|---|---|
-| **L1** | **`WireFrame` gains an optional `eventName`**, set by the fetch and XHR paths from `SseFrame.eventName`. `relay.ts` `toRelayMessage` copies it explicitly; `isWireFrame` accepts it only as an own string property. | `protocol.ts` already says a frame field "needs a field of its own on this type". The relay rebuilds frames field by field, so a field it does not name is silently stripped — the one step easiest to forget, and it gets its own test. `raw-invariant.test.ts` is extended so fetch and XHR stay byte-identical *including* the name. |
+| **L1** | **`WireFrame` gains an optional `eventName`**, set by the fetch and XHR paths from `SseFrame.eventName`. `relay.ts` `toRelayMessage` copies it explicitly; `isWireFrame` accepts it only as an own string property. **An empty name and the SSE default `message` are normalized to absent.** | `protocol.ts` already says a frame field "needs a field of its own on this type". The relay rebuilds frames field by field, so a field it does not name is silently stripped — the one step easiest to forget, and it gets its own test. `raw-invariant.test.ts` is extended so fetch and XHR stay byte-identical *including* the name. `EventSource` cannot tell `event: message` from no `event:` line, so treating both as absent keeps all three transports in agreement. |
 | **L2** | **`CaptureRecord` and `JsonlEvent` gain an optional `sseEvent`.** Absent when the frame had no `event:` line. `schemaVersion` stays `1`. | Same argument as #41's `runtime` header key: an older decoder ignores an unknown object key and shows the capture as before; a new line kind would make it report an intact file as damaged. Absent, not `null`, so there is no claim when there is nothing to say. |
 | **L3** | **`RouteHint` gains `langgraph-run`**, matching the four routes in §2, carrying `threadId` from the URL when present. | The URL is the strongest signal and is available before any byte of the response. |
 
@@ -214,9 +214,10 @@ The expander is Chrome-free and pure over its state, like the rest of `core/`.
 
 One PR each, merged on green:
 
-1. **Event names survive** — L1, L2, L3, L18. No behaviour change for AG-UI; LangGraph captures
+1. **Event names survive** — L1, L2, L3. No behaviour change for AG-UI; LangGraph captures
    now keep their names.
-2. **The expander** — L4–L10, L12, L13 in `core/`, top-level runs only, golden fixtures.
+2. **The expander** — L4–L10, L12, L13, L18 in `core/`, top-level runs only, golden fixtures.
+   (L18 lives here, not in PR 1, because it branches on `dialectOf` per L5.)
 3. **Subgraphs** — L11, the builder's open-run map.
 4. **Panel and privacy** — L14–L17, harness e2e, visual gate.
 
