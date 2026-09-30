@@ -1,7 +1,7 @@
 import ts from 'typescript';
 import { describe, expect, test } from 'vitest';
 import lgReasoningJsonl from '../../test/fixtures/lg-reasoning.agui.jsonl?raw';
-import { THREADPLANE_VERSION, TO_STREAM_EVENT_SOURCE } from './threadplane-normalizer';
+import { THREADPLANE_VERSION, TO_STREAM_EVENT_SOURCE, frameOf, toStreamEvent as runtimeToStreamEvent } from './threadplane-normalizer';
 
 type Frame = { event: string; data: unknown };
 
@@ -156,5 +156,25 @@ describe('TO_STREAM_EVENT_SOURCE (T1)', () => {
     const inner = { data: 'inner' };
     expect(toStreamEvent({ event: 'values', data: inner }).data).toBe(inner);
     expect(toStreamEvent({ event: 'updates', data: [1] })).toStrictEqual({ type: 'updates', data: [1] });
+  });
+});
+
+describe('toStreamEvent, the runtime twin', () => {
+  test('matches the embedded source on every lg-reasoning frame and every edge frame', () => {
+    const compiled = compileToStreamEvent();
+    const frames = [...capturedFrames(lgReasoningJsonl), ...EDGE_FRAMES.map(([, frame]) => frame)];
+    for (const frame of frames) {
+      expect(runtimeToStreamEvent(frame)).toStrictEqual(compiled(frame));
+    }
+  });
+});
+
+describe('frameOf', () => {
+  test('reads the SSE name and payload of an event line', () => {
+    expect(frameOf({ sseEvent: 'values', event: { a: 1 } })).toEqual({ event: 'values', data: { a: 1 } });
+  });
+
+  test('an unnamed frame is SSE\'s default event, message', () => {
+    expect(frameOf({ event: [1] })).toEqual({ event: 'message', data: [1] });
   });
 });
