@@ -73,8 +73,16 @@ interface RegisteredScript {
   allFrames?: boolean;
 }
 
+/** One `chrome.action` call, as the worker made it. */
+interface ActionCall {
+  method: 'setBadgeText' | 'setBadgeBackgroundColor' | 'setTitle';
+  details: { tabId?: number; text?: string; title?: string; color?: string };
+}
+
 interface ChromeStub {
   session: Map<string, unknown>;
+  /** Every `chrome.action` call, in order. */
+  actions: ActionCall[];
   connect(port: FakePort): void;
   removeTab(tabId: number): void;
   /** Resolve reads held back by `deferGet` — lets a test pin the worker mid-restore. */
@@ -123,6 +131,13 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
   const registered: RegisteredScript[] = [...(options.registered ?? [])];
   const heldScriptReads: (() => void)[] = [];
   const grantedOrigins: string[] = [...(options.granted ?? [])];
+  const actions: ActionCall[] = [];
+  const recordAction =
+    (method: ActionCall['method']) =>
+    (details: ActionCall['details']): Promise<void> => {
+      actions.push({ method, details: { ...details } });
+      return Promise.resolve();
+    };
 
   const storageSession = {
     get(keys: string | string[] | null): Promise<Record<string, unknown>> {
@@ -224,10 +239,16 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
         }),
     },
     scripting,
+    action: {
+      setBadgeText: recordAction('setBadgeText'),
+      setBadgeBackgroundColor: recordAction('setBadgeBackgroundColor'),
+      setTitle: recordAction('setTitle'),
+    },
   } as unknown as typeof chrome;
 
   return {
     session,
+    actions,
     registered,
     grantedOrigins,
     connect: (port) => {
@@ -1908,5 +1929,301 @@ describe('service worker — a registration failure does not outlive the attempt
     await settle();
 
     expect(testHook().registration()).toEqual({ matches: [GRANTED], error: null });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The toolbar badge (§14.6)                                                     */
+/* -------------------------------------------------------------------------- */
+
+const DEFAULT_TITLE = 'AG-UI DevTools';
+
+function actionsFor(stub: ChromeStub, tabId: number, method?: ActionCall['method']): ActionCall[] {
+  return stub.actions.filter(
+    (call) => call.details.tabId === tabId && (method === undefined || call.method === method),
+  );
+}
+
+/** What the tab's badge shows now: the last value the worker set, or Chrome's default. */
+function badgeOf(stub: ChromeStub, tabId: number): { text: string; title: string } {
+  const text = actionsFor(stub, tabId, 'setBadgeText').at(-1)?.details.text ?? '';
+  const title = actionsFor(stub, tabId, 'setTitle').at(-1)?.details.title ?? DEFAULT_TITLE;
+  return { text, title };
+}
+
+function runStarted(connId: string, tMs = 1): RelayMessage {
+  return { v: 1, kind: 'frames', connId, frames: [eventFrame(tMs, { type: 'RUN_STARTED' })] };
+}
+
+describe('service worker — the toolbar badge', () => {
+  let stub: ChromeStub;
+
+  beforeEach(async () => {
+    stub = installChrome();
+    await loadWorker();
+    await settle();
+  });
+
+  it('lights AG for the tab that spoke AG-UI, and only that tab', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, connOpen('c1'));
+    send(relay, runStarted('c1'));
+
+    expect(badgeOf(stub, 7)).toEqual({
+      text: 'AG',
+      title: 'AG-UI DevTools — AG-UI · 1 connection — open DevTools → AG-UI',
+    });
+    expect(actionsFor(stub, 7, 'setBadgeBackgroundColor')).toEqual([
+      { method: 'setBadgeBackgroundColor', details: { tabId: 7, color: '#1a73e8' } },
+    ]);
+    // Every call is scoped to a tab. A global call would light the icon on every tab in the
+    // window, including ones that never spoke AG-UI.
+    expect(stub.actions.every((call) => call.details.tabId === 7)).toBe(true);
+  });
+
+  it('lights LG for a LangGraph Platform stream', () => {
+    const relay = relayPort(8);
+    stub.connect(relay);
+    send(relay, {
+      ...connOpen('lg1'),
+      url: 'http://localhost:2024/threads/t1/runs/stream',
+    } as RelayMessage);
+    send(relay, {
+      v: 1,
+      kind: 'frames',
+      connId: 'lg1',
+      frames: [{ kind: 'event', tMs: 1, raw: '{"run_id":"r1"}', eventName: 'metadata' }],
+    });
+
+    expect(badgeOf(stub, 8)).toEqual({
+      text: 'LG',
+      title: 'AG-UI DevTools — LangGraph Platform · 1 connection — open DevTools → AG-UI',
+    });
+  });
+
+  it('stays dark for an SSE stream that is not AG-UI (B4)', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, { ...connOpen('c1'), url: '/ticks', method: 'GET' } as RelayMessage);
+    send(relay, {
+      v: 1,
+      kind: 'frames',
+      connId: 'c1',
+      frames: [eventFrame(1, { tick: 1 }), eventFrame(2, { hello: 1 })],
+    });
+
+    expect(testHook().records().length).toBe(2);
+    expect(stub.actions.filter((call) => call.details.text !== undefined && call.details.text !== ''))
+      .toEqual([]);
+  });
+
+  it('lights AG for a binary AG-UI transport, which leaves no records', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, {
+      v: 1,
+      kind: 'binary',
+      connId: 'b1',
+      tMs: 4,
+      contentType: 'application/vnd.ag-ui.event+proto',
+      bytes: 512,
+    });
+    expect(badgeOf(stub, 7).text).toBe('AG');
+  });
+
+  it('names the runtime in the title when an /info response arrives', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, runStarted('c1'));
+    send(relay, {
+      v: 1,
+      kind: 'info',
+      connId: 'c-info',
+      tMs: 3,
+      url: 'http://localhost:3000/api/copilotkit/info',
+      info: { version: '1.52.1', mode: 'multi-route', agents: [] },
+    });
+
+    expect(badgeOf(stub, 7)).toEqual({
+      text: 'AG',
+      title:
+        'AG-UI DevTools — AG-UI · CopilotKit runtime 1.52.1 (multi-route) · 1 connection — open DevTools → AG-UI',
+    });
+    // The text did not change, so it was not set again.
+    expect(actionsFor(stub, 7, 'setBadgeText').length).toBe(1);
+  });
+
+  it('does not touch the badge again while nothing changes', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, connOpen('c1'));
+    send(relay, runStarted('c1'));
+    const before = stub.actions.length;
+
+    for (let i = 0; i < 50; i += 1) {
+      send(relay, {
+        v: 1,
+        kind: 'frames',
+        connId: 'c1',
+        frames: [eventFrame(i, { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'x' })],
+      });
+    }
+    send(relay, connOpen('c1'));
+    send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 99, reason: 'complete' });
+
+    expect(stub.actions.length).toBe(before);
+  });
+
+  it('counts a second connection in the title without re-setting the text', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, runStarted('c1'));
+    send(relay, runStarted('c2'));
+
+    expect(badgeOf(stub, 7).title).toBe(
+      'AG-UI DevTools — AG-UI · 2 connections — open DevTools → AG-UI',
+    );
+    expect(actionsFor(stub, 7, 'setBadgeText').length).toBe(1);
+  });
+
+  it('resets the tab on the clear command', () => {
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, runStarted('c1'));
+    expect(badgeOf(stub, 7).text).toBe('AG');
+
+    send(panel, { kind: 'clear' });
+
+    expect(badgeOf(stub, 7)).toEqual({ text: '', title: DEFAULT_TITLE });
+    // Reset explicitly, not left to a default: Chrome keeps a tab's badge until told otherwise.
+    expect(actionsFor(stub, 7, 'setBadgeText').at(-1)?.details.text).toBe('');
+    expect(actionsFor(stub, 7, 'setTitle').at(-1)?.details.title).toBe(DEFAULT_TITLE);
+  });
+
+  it('forgets a closed tab, so nothing it decided answers for a later one', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, runStarted('c1'));
+    stub.removeTab(7);
+    const before = actionsFor(stub, 7, 'setBadgeText').length;
+
+    // Were the last-applied badge still held, this would be skipped as "unchanged".
+    const again = relayPort(7);
+    stub.connect(again);
+    send(again, runStarted('c9'));
+    expect(actionsFor(stub, 7, 'setBadgeText').length).toBe(before + 1);
+    expect(badgeOf(stub, 7).title).toBe(
+      'AG-UI DevTools — AG-UI · 1 connection — open DevTools → AG-UI',
+    );
+  });
+
+  it('does not light while recording is paused, because nothing is captured', () => {
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    send(panel, { kind: 'set-recording', recording: false });
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, runStarted('c1'));
+    expect(stub.actions).toEqual([]);
+  });
+});
+
+/**
+ * A tab id no other test uses. An earlier test's worker instance can still hold a pending mirror
+ * write, which fires against whichever `chrome` stub is installed by then — a shared tab id would
+ * let it overwrite this block's session storage mid-test.
+ */
+const RESTORED_TAB = 41;
+
+describe('service worker — the toolbar badge after a worker restart', () => {
+  it('re-applies the badge for a restored tab, including what the records alone cannot show', async () => {
+    const session = new Map<string, unknown>();
+    let stub = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const relay = relayPort(RESTORED_TAB);
+    stub.connect(relay);
+    send(relay, runStarted('c1'));
+    // A binary stream leaves no record behind; only the mirrored decision remembers it.
+    send(relay, {
+      v: 1,
+      kind: 'binary',
+      connId: 'b1',
+      tMs: 4,
+      contentType: 'application/vnd.ag-ui.event+proto',
+      bytes: 512,
+    });
+    send(relay, { v: 1, kind: 'conn-close', connId: 'c1', tMs: 9, reason: 'complete' });
+    await settle(300);
+
+    // ---- worker terminated; a new one restores from the same session storage ----
+    stub = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    // Recomputed and applied even though Chrome keeps tab-scoped action state across a worker
+    // restart: applying from the restored state is what guarantees the two cannot disagree.
+    expect(badgeOf(stub, RESTORED_TAB)).toEqual({
+      text: 'AG',
+      title: 'AG-UI DevTools — AG-UI · 2 connections — open DevTools → AG-UI',
+    });
+
+    // And the restored decisions are live: the same connection does not re-apply.
+    const before = stub.actions.length;
+    const revived = relayPort(RESTORED_TAB);
+    stub.connect(revived);
+    send(revived, runStarted('c1', 20));
+    expect(stub.actions.length).toBe(before);
+  });
+
+  it('rebuilds from the records when the mirror was written by a build without decisions', async () => {
+    const session = new Map<string, unknown>([
+      [
+        `agui-dt:tab:${String(RESTORED_TAB)}`,
+        {
+          v: 1,
+          records: [
+            {
+              kind: 'event',
+              seq: 1,
+              tMs: 1,
+              connId: 'c1',
+              raw: { type: 'RUN_STARTED' },
+              event: { type: 'RUN_STARTED' },
+              issues: [],
+            },
+          ],
+          requests: [],
+          droppedBefore: 0,
+          nextSeq: 2,
+          recording: true,
+        },
+      ],
+    ]);
+    const stub = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    expect(badgeOf(stub, RESTORED_TAB).text).toBe('AG');
+  });
+
+  it('applies nothing for a restored tab that never spoke a known stack', async () => {
+    const session = new Map<string, unknown>([
+      [
+        `agui-dt:tab:${String(RESTORED_TAB)}`,
+        { v: 1, records: [], requests: [], droppedBefore: 0, nextSeq: 1, recording: true },
+      ],
+    ]);
+    const stub = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    expect(badgeOf(stub, RESTORED_TAB)).toEqual({ text: '', title: DEFAULT_TITLE });
   });
 });

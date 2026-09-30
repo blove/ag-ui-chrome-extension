@@ -52,6 +52,17 @@ export default defineManifest({
     48: 'icons/icon-48.png',
     128: 'icons/icon-128.png',
   },
+  // The toolbar badge of spec §14.6: `chrome.action` exists only when this key does. It needs no
+  // permission, and there is no popup, so clicking the icon does nothing. The badge text and title
+  // are drawn in the browser's toolbar, which the page cannot read — the page still never learns
+  // the extension is there.
+  action: {
+    default_title: 'AG-UI DevTools',
+    default_icon: {
+      16: 'icons/icon-16.png',
+      32: 'icons/icon-32.png',
+    },
+  },
   devtools_page: 'src/panel/devtools.html',
   background: {
     service_worker: 'src/sw/index.ts',

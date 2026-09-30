@@ -17,6 +17,15 @@
  * "no persistence by default" true: nothing here touches disk.
  */
 import { cloneRuntimeInfo, isRuntimeInfo, type RuntimeInfo } from '../core/detect/info';
+import {
+  BADGE_COLOR,
+  BADGE_DEFAULT_TITLE,
+  badgeFor,
+  createStackTracker,
+  type Badge,
+  type StackDecision,
+  type StackTracker,
+} from '../core/detect/stack';
 import type { AguiEvent, CaptureRecord } from '../core/model/types';
 import type { WireFrame } from '../inject/protocol';
 import {
@@ -171,6 +180,17 @@ interface TabState {
    * runtimes' agent lists concatenated would be an agent list no runtime ever reported.
    */
   info: RuntimeInfo | null;
+  /**
+   * Which stack each connection of this tab has spoken (§14.6), decided once per connection and
+   * then kept — so the badge costs a map lookup per frame rather than a rescan of the buffer.
+   */
+  stack: StackTracker;
+  /**
+   * The badge this worker last applied to the tab, or `null` when it does not know what Chrome is
+   * showing — a tab restored from the mirror, whose badge a previous incarnation set. `null`
+   * forces the next apply to write every field, so the badge is always derived from this state.
+   */
+  badge: Badge | null;
 }
 
 /** `frameId` 0 is the top-level document. Everything else is a subframe (§12 `all_frames`). */
@@ -230,6 +250,15 @@ interface MirroredTab {
    * run-end issues at the last FRAME rather than at the close.
    */
   closedConns: ClosedConn[];
+  /**
+   * Which stack each connection had been decided as when this was written (§14.6).
+   *
+   * Mirrored because the records alone cannot always re-derive it: the mirror keeps only the last
+   * `MIRROR_MAX_RECORDS` records, and a binary stream leaves no record at all. Without this a
+   * worker restart would drop those connections from the count and change the badge of a tab on
+   * which nothing happened.
+   */
+  stack: StackDecision[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -248,6 +277,9 @@ function ensureTab(tabId: number): TabState {
     closedConns: new Map<string, number>(),
     loadedFrames: new Map<number, chrome.runtime.Port | null>(),
     info: null,
+    stack: createStackTracker(),
+    // A tab this worker has never touched shows Chrome's default.
+    badge: { text: '', title: BADGE_DEFAULT_TITLE },
   };
   tabs.set(tabId, created);
   return created;
@@ -304,6 +336,41 @@ function forgetLoadedPort(port: chrome.runtime.Port): void {
     }
     if (changed) scheduleMirror(tabId);
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Toolbar badge (§14.6)                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Chrome answers a call for a tab that has since closed with a rejection. That is not a failure
+ * worth anything here — the badge it would have set is gone with the tab — and an unhandled
+ * rejection in a worker is a broken worker.
+ */
+function ignoreRejection(promise: Promise<void> | undefined): void {
+  void promise?.catch(() => undefined);
+}
+
+/**
+ * Bring the tab's toolbar badge in line with what this tab has spoken, writing only what changed.
+ *
+ * Always `{ tabId }`: a badge set without one is the window-wide default, and would light the icon
+ * on every tab, including ones that never spoke AG-UI. The badge and title live in the browser's
+ * toolbar, where the page cannot read them, so this tells the page nothing (B7).
+ */
+function applyBadge(tabId: number, state: TabState): void {
+  const next = badgeFor(state.stack.summary(state.info));
+  const previous = state.badge;
+  if (previous?.text !== next.text) {
+    if (next.text !== '') {
+      ignoreRejection(chrome.action.setBadgeBackgroundColor({ tabId, color: BADGE_COLOR }));
+    }
+    ignoreRejection(chrome.action.setBadgeText({ tabId, text: next.text }));
+  }
+  if (previous?.title !== next.title) {
+    ignoreRejection(chrome.action.setTitle({ tabId, title: next.title }));
+  }
+  state.badge = next;
 }
 
 function broadcast(tabId: number, message: SwMessage): void {
@@ -410,6 +477,7 @@ async function writeMirror(tabId: number): Promise<void> {
     loadedFrames: [...state.loadedFrames.keys()],
     info: state.info,
     closedConns: closesFor(state),
+    stack: state.stack.decisions(),
   };
   await chrome.storage.session.set({ [sessionKey(tabId)]: mirrored });
 }
@@ -464,6 +532,14 @@ function isClosedConn(value: unknown): value is ClosedConn {
   return isRecord(value) && typeof value['connId'] === 'string' && typeof value['tMs'] === 'number';
 }
 
+function isStackDecision(value: unknown): value is StackDecision {
+  return (
+    isRecord(value) &&
+    typeof value['connId'] === 'string' &&
+    (value['kind'] === 'agui' || value['kind'] === 'langgraph')
+  );
+}
+
 function isRequestLine(value: unknown): value is RequestLine {
   return (
     isRecord(value) &&
@@ -484,6 +560,7 @@ function asMirroredTab(value: unknown): MirroredTab | null {
   if (typeof droppedBefore !== 'number' || typeof nextSeq !== 'number') return null;
   const frames = value['loadedFrames'];
   const closed = value['closedConns'];
+  const stack = value['stack'];
   return {
     v: 1,
     records: records.filter(isCaptureRecord),
@@ -500,6 +577,8 @@ function asMirroredTab(value: unknown): MirroredTab | null {
     // so nothing is claimed, and the next discovery response fills it in.
     info: isRuntimeInfo(value['info']) ? cloneRuntimeInfo(value['info']) : null,
     closedConns: Array.isArray(closed) ? closed.filter(isClosedConn) : [],
+    // Absent in a mirror written by an older build; the restored records re-derive what they can.
+    stack: Array.isArray(stack) ? stack.filter(isStackDecision) : [],
   };
 }
 
@@ -530,13 +609,18 @@ async function restoreFromSession(): Promise<void> {
       const mirrored = asMirroredTab(value);
       if (!mirrored) continue;
       const state = ensureTab(tabId);
+      state.stack = createStackTracker(mirrored.stack);
       for (const request of mirrored.requests) {
         state.buffer.addRequest(request);
+        state.stack.request(request);
         // A connection that outlives the worker will re-state its open; the restored request
         // line is the one that already answers it.
         state.seenConns.add(request.connId);
       }
-      for (const record of mirrored.records) state.buffer.push(record);
+      for (const record of mirrored.records) {
+        state.buffer.push(record);
+        state.stack.record(record);
+      }
       state.restoredDropped = mirrored.droppedBefore;
       state.nextSeq = mirrored.nextSeq;
       state.recording = mirrored.recording;
@@ -546,6 +630,15 @@ async function restoreFromSession(): Promise<void> {
       for (const frameId of mirrored.loadedFrames) state.loadedFrames.set(frameId, null);
       state.info = mirrored.info;
       for (const close of mirrored.closedConns) state.closedConns.set(close.connId, close.tMs);
+      /*
+       * Re-applied from the restored state rather than trusted to still be showing. Chrome does
+       * keep a tab's action state across a worker restart, but "what the previous incarnation last
+       * set" and "what this state says" are only the same if nothing went wrong in between — a
+       * write that never landed, a mirror trimmed or written by an older build. Applying from
+       * state is what makes the two unable to disagree.
+       */
+      state.badge = null;
+      applyBadge(tabId, state);
     }
   } finally {
     restored = true;
@@ -625,18 +718,23 @@ function handleRelayMessage(
         input: message.input,
       };
       state.buffer.addRequest(request);
+      if (state.stack.request(request)) applyBadge(tabId, state);
       broadcast(tabId, { kind: 'request', request });
       scheduleMirror(tabId);
       return;
     }
     case 'frames': {
       const appended: CaptureRecord[] = [];
+      let stackChanged = false;
       for (const frame of message.frames) {
         const record = toRecord(frame, state.nextSeq, message.connId);
         state.nextSeq += 1;
         state.buffer.push(record);
         appended.push(record);
+        if (state.stack.record(record)) stackChanged = true;
       }
+      // Once per batch, not per frame: a batch that decides a connection changes the badge once.
+      if (stackChanged) applyBadge(tabId, state);
       if (appended.length > 0) {
         // `droppedBefore` rides along on every append, not just the snapshot: eviction happens
         // during long sessions, which is exactly when P9's truncation marker has to be right.
@@ -673,6 +771,12 @@ function handleRelayMessage(
         contentType: message.contentType,
         bytes: message.bytes,
       });
+      // The notice itself is not retained — only the decision is, through the mirror — so a
+      // binary stream is still counted after a worker restart.
+      if (state.stack.binary(message.connId)) {
+        applyBadge(tabId, state);
+        scheduleMirror(tabId);
+      }
       return;
     }
     case 'info': {
@@ -681,6 +785,8 @@ function handleRelayMessage(
       // in for the same reason the relay rebuilds it.
       const info = cloneRuntimeInfo(message.info);
       state.info = info;
+      // The runtime is named in the title; `applyBadge` writes nothing if the answer is the same.
+      applyBadge(tabId, state);
       broadcast(tabId, {
         kind: 'info',
         connId: message.connId,
@@ -781,6 +887,10 @@ function clearTab(tabId: number, state: TabState): void {
    * not recoverable at all, because the reader has no way to tell.
    */
   state.info = null;
+  // What the tab has spoken is a claim about the buffer's contents, and the buffer is now empty.
+  // A navigation clears too, and the next document may speak nothing at all.
+  state.stack = createStackTracker();
+  applyBadge(tabId, state);
   void chrome.storage.session.remove(sessionKey(tabId));
   broadcast(tabId, { kind: 'cleared' });
 }
