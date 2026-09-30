@@ -15,6 +15,7 @@ import {
   scopedRun,
   selectedRecord,
   issuesBySeq,
+  connectionDialects,
 } from './selectors';
 
 function eventRecord(seq: number, event: AguiEvent): CaptureRecord {
@@ -238,5 +239,34 @@ describe('selectedRecord', () => {
     const s = state({ scope: 'r_1', filter: { text: 'zzz', issuesOnly: true }, selectedSeq: 5 });
 
     expect(selectedRecord(s)?.seq).toBe(5);
+  });
+});
+
+describe('connectionDialects', () => {
+  it('classifies each connection by its request line and first event record (L4, L15)', () => {
+    const state: PanelState = {
+      ...initialPanelState(),
+      requests: [
+        { connId: 'lg', tMs: 0, method: 'POST', url: 'http://localhost:2024/threads/t/runs/stream', input: {} },
+        { connId: 'ag', tMs: 0, method: 'POST', url: 'http://localhost:3000/api/agent', input: {} },
+      ],
+      records: [
+        keepaliveRecord(1, 'ka'),
+        { kind: 'event', seq: 2, tMs: 20, connId: 'proxy', raw: { run_id: 'r' }, event: null, sseEvent: 'metadata', issues: [] },
+        eventRecord(3, { type: 'RUN_STARTED', runId: 'r', threadId: 't' }),
+      ],
+    };
+    expect(connectionDialects(state)).toEqual(
+      new Map([
+        ['lg', 'langgraph'],
+        ['ag', 'agui'],
+        ['c1', 'agui'],
+        ['proxy', 'langgraph'],
+      ]),
+    );
+  });
+
+  it('is empty for an empty capture', () => {
+    expect(connectionDialects(initialPanelState()).size).toBe(0);
   });
 });

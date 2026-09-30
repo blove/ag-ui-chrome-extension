@@ -4,6 +4,10 @@ import { Session } from './session';
 import { createPanelStore } from '../../model/store';
 import { initialPanelState, type PanelState } from '../../model/panel-types';
 import { makeIssue } from '../../../core/model/types';
+import happyJsonl from '../../../test/fixtures/happy-run.agui.jsonl?raw';
+import { aiChunk, langGraphJsonl } from '../../../test/langgraph-capture';
+import { loadJsonl } from '../../import/load-jsonl';
+import { applyLoaded } from '../../import/apply-loaded';
 
 const HAPPY =
   '{"kind":"event","connId":"c1","seq":1,"tMs":0,"event":{"type":"RUN_STARTED","threadId":"t_1","runId":"r_1"}}\n' +
@@ -358,5 +362,66 @@ describe('Session — /info agent discovery', () => {
   it('no longer offers the placeholder it replaced', () => {
     withRuntime(null);
     expect(screen.queryByText(/\/info discovery ships with the capture layer/)).toBeNull();
+  });
+
+  describe('the Protocol row (L15)', () => {
+    /** A LangGraph connection numbered after the happy-run fixture's 15 records. */
+    function lgConnection(connId: string, firstSeq: number): string {
+      return langGraphJsonl(
+        [{ event: 'metadata', data: { run_id: `run-${connId}` } }, aiChunk('m1', 'Hi'), { event: 'values', data: { messages: [] } }],
+        { connId, header: false, firstSeq },
+      );
+    }
+
+    function renderCapture(text: string): string {
+      const loaded = loadJsonl(text);
+      expect(loaded.decodeErrors).toEqual([]);
+      const store = createPanelStore(applyLoaded(initialPanelState(), loaded, 'capture.agui.jsonl', 0));
+      render(<Session store={store} />);
+      return screen.getByText('Protocol').nextElementSibling?.textContent ?? '';
+    }
+
+    const FAULT_WORDS =
+      /not detected|detection|failed|failure|error|unable|could not|missing|broken|none found|no agents/i;
+
+    it('says nothing is on the wire yet for an empty capture, in the Transport row’s words', () => {
+      render(<Session store={createPanelStore()} />);
+      const value = screen.getByText('Protocol').nextElementSibling?.textContent ?? '';
+      expect(value).toBe('nothing on the wire yet, which is normal before the first message');
+      expect(value).not.toMatch(FAULT_WORDS);
+    });
+
+    it('sits right after the Transport row', () => {
+      render(<Session store={createPanelStore()} />);
+      expect(screen.getByText('Transport').parentElement?.nextElementSibling?.firstElementChild?.textContent).toBe(
+        'Protocol',
+      );
+    });
+
+    it('names AG-UI for an AG-UI capture', () => {
+      const value = renderCapture(happyJsonl);
+      expect(value).toBe('AG-UI');
+      expect(value).not.toMatch(FAULT_WORDS);
+    });
+
+    it('names LangGraph Platform for a LangGraph capture', () => {
+      const value = renderCapture(langGraphJsonl([{ event: 'metadata', data: { run_id: 'r-1' } }, aiChunk('m1', 'Hi')]));
+      expect(value).toBe('LangGraph Platform');
+      expect(value).not.toMatch(FAULT_WORDS);
+    });
+
+    it('names both, one connection each, for a mixed capture', () => {
+      const value = renderCapture(`${happyJsonl.trimEnd()}\n${lgConnection('lg1', 100)}`);
+      expect(value).toBe('AG-UI and LangGraph Platform — 1 connection each');
+      expect(value).not.toMatch(FAULT_WORDS);
+    });
+
+    it('counts each protocol’s connections when they differ', () => {
+      const value = renderCapture(
+        `${happyJsonl.trimEnd()}\n${lgConnection('lg1', 100)}\n${lgConnection('lg2', 200)}`,
+      );
+      expect(value).toBe('AG-UI (1 connection) and LangGraph Platform (2 connections)');
+      expect(value).not.toMatch(FAULT_WORDS);
+    });
   });
 });
