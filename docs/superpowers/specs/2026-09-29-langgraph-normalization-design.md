@@ -229,10 +229,16 @@ The expander is Chrome-free and pure over its state, like the rest of `core/`.
   preserved, redacted and not.
 - **Capture:** unit tests that the event name survives inject → relay → sw, including the relay's
   hostile-input guard; a pretty-printed multi-line `data:` payload decodes.
-- **Harness:** the server gains `/threads/:id/runs/stream` writing named events with multi-line
-  `data:`; a second page client uses `@langchain/langgraph-sdk` (harness dev dependency only — the
-  extension gains none). One e2e captures a LangGraph run; one captures an AG-UI run and a
-  LangGraph run from the same page.
+- **Harness:** *(built in 4c)* the page server gains `POST /threads/:id/runs/stream` and the
+  join `GET /threads/:id/runs/:runId/stream`, writing named events with pretty-printed multi-line
+  `data:`, cut into 256-character pieces so frames straddle reads. A second page client
+  (`page/langgraph.ts`) sends the SDK's request with a raw `fetch` rather than
+  `@langchain/langgraph-sdk` — the extension patches `fetch`, so the SDK adds nothing capture can
+  see, and the harness gains no dependency. `e2e/langgraph.spec.ts` captures the real
+  `lg-reasoning` recording whole (canonical text byte for byte), a tools + subgraph run, an
+  interrupt, a join, and an AG-UI run and a LangGraph run from the same page; every scenario is
+  folded through both `reconstruct` and `foldAsLatePanel`. Watched fail with the relay's
+  `eventName` copy disabled: every test red, naming the lost names.
 - **Visual gate:** every tab on a LangGraph capture, a redacted one, and a subgraph one; Timeline
   labels are wire names; Runs shows `interrupted`.
 - **Mutations to watch fail:** relay drops `eventName`; `dialectOf` returns `agui`; expander opens
@@ -255,7 +261,7 @@ One PR each, merged on green:
    - **4a — the panel:** L14, L15, and the visual gate drawing a real LangGraph capture and a
      subgraph.
    - **4b — field-level redaction:** L16, L17.
-   - **4c — harness e2e.**
+   - **4c — harness e2e.** Built: `packages/harness/e2e/langgraph.spec.ts` (see §7, Harness).
 
 ## 9. Open questions
 

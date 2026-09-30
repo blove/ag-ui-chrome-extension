@@ -16,6 +16,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { handleLangGraph } from '../server/langgraph-server.js';
+
 export interface PageServer {
   readonly url: string;
   stop(): Promise<void>;
@@ -175,6 +177,9 @@ export function startPageServer(opts: { agentUrl: string; port?: number }): Prom
       proxy(req, res, opts.agentUrl);
       return;
     }
+    // LangGraph Platform runs and joins, same-origin so the path the capture layer classifies on
+    // is the one the page sent — see `server/langgraph-server.ts`.
+    if (handleLangGraph(req, res, url.pathname)) return;
     if (url.pathname === DOCUMENT_START_PATH) {
       writeEarlyStream(res);
       return;
