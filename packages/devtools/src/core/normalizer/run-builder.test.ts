@@ -967,6 +967,60 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     expect(builder.runs()[0]?.outcome).toBe('interrupted');
   });
 
+  it('records every frame exactly once — no-event frames, multi-event frames, frames after an error (L13)', () => {
+    const builder = lgBuilder();
+    const frames = [
+      lgRecord(1, 'metadata', { run_id: 'r-1' }),
+      lgRecord(2, 'debug', { step: 1 }), // no synthetic event
+      lgRecord(3, 'messages|sub:1', chunk('s1', 'sub')), // namespaced: no synthetic event yet
+      lgRecord(4, 'messages', chunk('m1', 'Hi')), // several synthetic events
+      lgRecord(5, 'metadata', { run_id: 'r-1' }), // a repeated metadata: no synthetic event
+      lgRecord(6, 'error', { error: 'E', message: 'boom' }),
+      lgRecord(7, 'values', { messages: [] }), // after the error: recorded, folds nothing
+    ];
+    for (const frame of frames) builder.addRecord(frame);
+    builder.closeConnection('c1', 100);
+
+    const [run] = builder.runs();
+    expect(builder.runs()).toHaveLength(1);
+    expect(run?.outcome).toBe('error');
+    expect(run?.recordSeqs).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(run?.metrics.eventCountByType).toEqual({
+      metadata: 2,
+      debug: 1,
+      'messages|sub:1': 1,
+      messages: 1,
+      error: 1,
+      values: 1,
+    });
+    const bytes = frames.reduce((sum, frame) => sum + new TextEncoder().encode(JSON.stringify(frame.raw)).length, 0);
+    expect(run?.metrics.totalStreamBytes).toBe(bytes);
+    expect(run?.issues).toEqual([]);
+  });
+
+  it('closes once: a second close raises nothing and settles nothing again', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hi')));
+    builder.closeConnection('c1', 30);
+    builder.closeConnection('c1', 90);
+    const [run] = builder.runs();
+    expect(run?.issues.map((issue) => [issue.code, issue.seq, issue.tMs])).toEqual([['lg-no-final-values', 2, 30]]);
+    expect(run?.endedAtMs).toBe(30);
+    expect(run?.messages.get('m1')).toMatchObject({ closed: true, endedAtMs: 30 });
+  });
+
+  it('classifies a LangGraph server behind a proxy path by its first metadata frame (L4)', () => {
+    const builder = createRunBuilder();
+    builder.addRequest('c1', 'POST', 'http://localhost:3000/api/agent', { stream_mode: ['values'] });
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1', thread_id: 't-9' }));
+    builder.addRecord(lgRecord(2, 'values', { __interrupt__: [{ value: 'ok?' }] }));
+    builder.closeConnection('c1', 30);
+    const [run] = builder.runs();
+    expect(run).toMatchObject({ runId: 'r-1', threadId: 't-9', dialect: 'langgraph', outcome: 'interrupted', endedAtMs: 30 });
+    expect(builder.allIssues()).toEqual([]);
+  });
+
   it('leaves an AG-UI connection exactly as it was: no dialect, AG-UI types counted', () => {
     const builder = createRunBuilder();
     const record = (seq: number, event: AguiEvent): CaptureRecord => ({
