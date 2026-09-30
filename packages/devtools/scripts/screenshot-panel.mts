@@ -1900,6 +1900,197 @@ async function checkExportInExtension(): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Phase 2e — a LangGraph Platform capture reads as one (spec L14, L15, L11)   */
+/* -------------------------------------------------------------------------- */
+
+interface TimelineRowShot {
+  seq: number;
+  type: string;
+}
+
+/**
+ * Every Timeline row, by walking the virtual list a viewport at a time. Only ~30 rows are ever in
+ * the DOM, so a single query would count the window, not the capture.
+ */
+async function allTimelineRows(page: Page): Promise<TimelineRowShot[]> {
+  const bySeq = new Map<number, string>();
+  const total = await page.$eval('.agui-timeline .agui-vlist', (el) => el.scrollHeight);
+  const step = await page.$eval('.agui-timeline .agui-vlist', (el) => Math.max(el.clientHeight - 44, 22));
+  for (let top = 0; ; top += step) {
+    await page.$eval('.agui-timeline .agui-vlist', (el, y) => {
+      el.scrollTop = y;
+      el.dispatchEvent(new Event('scroll'));
+    }, top);
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done(null))));
+    const rows = await page.$$eval('.agui-event-row', (els) =>
+      els.map((el) => ({
+        seq: Number(el.getAttribute('data-seq') ?? '-1'),
+        type: (el.querySelector('.agui-event-row__type')?.textContent ?? '').trim(),
+      })),
+    );
+    for (const row of rows) bySeq.set(row.seq, row.type);
+    if (top >= total) break;
+  }
+  await page.$eval('.agui-timeline .agui-vlist', (el) => {
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event('scroll'));
+  });
+  return [...bySeq.entries()].sort(([a], [b]) => a - b).map(([seq, type]) => ({ seq, type }));
+}
+
+/** Scroll the Timeline's virtual list to a seq's row (rows are in seq order from 1) and click it. */
+async function clickTimelineSeq(page: Page, seq: number): Promise<void> {
+  await page.$eval('.agui-timeline .agui-vlist', (el, y) => {
+    el.scrollTop = y;
+    el.dispatchEvent(new Event('scroll'));
+  }, (seq - 1) * 22);
+  await page.click(`.agui-event-row[data-seq="${String(seq)}"]`);
+  await page.waitForSelector('.agui-detail__title');
+}
+
+/** The first `messages` frame of a capture that carries answer text — its Derived must hold CONTENT. */
+function firstTextFrameSeq(fixture: string): number {
+  for (const line of readFileSync(join(fixtureDir, fixture), 'utf8').split('\n')) {
+    if (line.trim() === '') continue;
+    const parsed = JSON.parse(line) as { kind: string; seq?: number; sseEvent?: string; event?: unknown };
+    if (parsed.kind !== 'event' || parsed.sseEvent !== 'messages' || !Array.isArray(parsed.event)) continue;
+    const content = (parsed.event[0] as { content?: unknown } | undefined)?.content;
+    const hasText = Array.isArray(content)
+      ? content.some((part) => (part as { type?: unknown; text?: unknown }).type === 'text' && (part as { text?: unknown }).text !== '')
+      : typeof content === 'string' && content !== '';
+    if (hasText && parsed.seq !== undefined) return parsed.seq;
+  }
+  return -1;
+}
+
+/**
+ * The recorded LangGraph capture, through every tab, and a subgraph capture through Runs.
+ *
+ * The unit tests assert the model and the markup. What only this gate can say is that a real
+ * 1,213-frame recording, imported through the panel's own file input, is drawn as a LangGraph
+ * capture everywhere a reader looks: rows named by their wire event, a Derived section saying what
+ * each frame was read as (L14), the answer and its collapsed reasoning in Messages, one finished
+ * run, and a Session that names the protocol (L15).
+ */
+async function checkLangGraph(browser: Browser, origin: string): Promise<void> {
+  /* --- lg-reasoning: Timeline, Messages, Runs, Session -------------------- */
+  {
+    const session = await openPanel(browser, origin, { scheme: 'dark' });
+    const { page } = session;
+    await importFixture(page, join(fixtureDir, 'lg-reasoning.agui.jsonl'));
+
+    const rows = await allTimelineRows(page);
+    if (rows.length !== 1213) {
+      fail(`lg-reasoning rendered ${String(rows.length)} Timeline rows, expected 1213.`);
+    }
+    const types = new Set(rows.map((row) => row.type));
+    for (const wanted of ['metadata', 'messages', 'values']) {
+      if (!types.has(wanted)) fail(`no lg-reasoning Timeline row is labelled ${wanted}.`);
+    }
+    if (types.has('unparsed')) {
+      fail('an lg-reasoning Timeline row is labelled "unparsed"; every frame names its wire event.');
+    }
+    const badge = (await page.textContent('.agui-issue-badge__count'))?.trim();
+    if (badge !== '0 issues') {
+      fail(`lg-reasoning issue badge reads ${JSON.stringify(badge)}, expected "0 issues".`);
+    }
+
+    const textSeq = firstTextFrameSeq('lg-reasoning.agui.jsonl');
+    if (textSeq < 0) {
+      fail('lg-reasoning has no messages frame carrying answer text — the fixture changed.');
+    } else {
+      await clickTimelineSeq(page, textSeq);
+      const derived = page.locator('section[aria-label="Derived"]');
+      if (!(await derived.isVisible())) {
+        fail(`selecting lg-reasoning seq ${String(textSeq)} shows no Derived section (L14).`);
+      } else {
+        const listed = await derived.innerText();
+        if (!listed.includes('TEXT_MESSAGE_CONTENT')) {
+          fail(`the Derived section of seq ${String(textSeq)} reads ${JSON.stringify(listed)}; it lists no TEXT_MESSAGE_CONTENT.`);
+        }
+      }
+      const payload = (await page.locator('section[aria-label="Payload"]').innerText()).trim();
+      const fault = FAULT_WORDS.exec(payload);
+      if (fault !== null) {
+        fail(`the Payload of a LangGraph messages frame says "${fault[0]}": ${JSON.stringify(payload.slice(0, 200))}.`);
+      }
+      if (!payload.includes('AIMessageChunk')) {
+        fail(`the Payload of a LangGraph messages frame does not show its decoded JSON: ${JSON.stringify(payload.slice(0, 200))}.`);
+      }
+    }
+    await page.screenshot({ path: join(outDir, 'langgraph-timeline.png'), fullPage: true });
+
+    await openMessages(page);
+    const collapsed = await page.$eval('.agui-messages', (el) => (el as HTMLElement).innerText);
+    if (!collapsed.includes('Step-by-step reasoning')) {
+      fail('the lg-reasoning answer ("Step-by-step reasoning…") is not visible in Messages.');
+    }
+    const disclosure = page.locator('button[aria-label^="Reasoning "]');
+    if ((await disclosure.count()) !== 1) {
+      fail(`Messages drew ${String(await disclosure.count())} reasoning disclosures for lg-reasoning, expected 1.`);
+    } else {
+      // M3: the reasoning body is not merely hidden, it is not built.
+      if (collapsed.includes('Solving apple')) {
+        fail('the lg-reasoning reasoning body is rendered before it is asked for (M3).');
+      }
+      await disclosure.click();
+      const expanded = await page.$eval('.agui-messages', (el) => (el as HTMLElement).innerText);
+      if (!expanded.includes('Solving apple')) {
+        fail('expanding the lg-reasoning reasoning did not reveal its content.');
+      }
+      await disclosure.click();
+    }
+    await page.screenshot({ path: join(outDir, 'langgraph-messages.png'), fullPage: true });
+
+    await openRuns(page);
+    const runs = await runTable(page);
+    const events = cellOf(runs[0], 'events')?.text.replace(/[^0-9]/g, '');
+    if (runs.length !== 1 || runs[0]?.outcome !== 'finished' || events !== '1213') {
+      fail(
+        `lg-reasoning's Runs tab reads ${JSON.stringify(runs.map((row) => [row.runId, row.outcome, cellOf(row, 'events')?.text]))}; ` +
+          'expected one finished run of 1213 events.',
+      );
+    }
+    await page.screenshot({ path: join(outDir, 'langgraph-runs.png'), fullPage: true });
+
+    await openSession(page);
+    const protocol = await sessionRow(page, 'Protocol');
+    if (protocol !== 'LangGraph Platform') {
+      fail(`Session's Protocol row reads ${JSON.stringify(protocol)} for lg-reasoning, expected "LangGraph Platform" (L15).`);
+    }
+    await page.screenshot({ path: join(outDir, 'langgraph-session.png'), fullPage: true });
+
+    if (session.errors.length > 0) {
+      fail(`the lg-reasoning capture logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+
+  /* --- lg-subgraph: the subgraph is its own run, under its parent (L11) --- */
+  {
+    const session = await openPanel(browser, origin, { scheme: 'light' });
+    await importFixture(session.page, join(fixtureDir, 'lg-subgraph.agui.jsonl'));
+    await openRuns(session.page);
+    const runs = await runTable(session.page);
+    if (
+      runs.length !== 2 ||
+      !(runs[1]?.runId.endsWith('/research:t1') ?? false) ||
+      runs.some((row) => row.outcome !== 'finished')
+    ) {
+      fail(
+        `lg-subgraph's Runs tab reads ${JSON.stringify(runs.map((row) => [row.runId, row.outcome]))}; ` +
+          'expected two finished runs, the second ending /research:t1.',
+      );
+    }
+    await session.page.screenshot({ path: join(outDir, 'langgraph-subgraph-runs.png'), fullPage: true });
+    if (session.errors.length > 0) {
+      fail(`the lg-subgraph capture logged errors: ${session.errors.join(' | ')}`);
+    }
+    await session.close();
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 
 function report(): never {
   console.error(`FAIL: ${String(failures.length)} visual invariant(s) violated:\n`);
@@ -1934,6 +2125,7 @@ async function main(): Promise<void> {
     if (failures.length === 0) await checkMessages(browser, server.origin);
     if (failures.length === 0) await checkState(browser, server.origin);
     if (failures.length === 0) await checkRuns(browser, server.origin);
+    if (failures.length === 0) await checkLangGraph(browser, server.origin);
     if (failures.length === 0) await checkExport(browser, server.origin);
   } finally {
     await browser.close();
@@ -2018,6 +2210,20 @@ async function main(): Promise<void> {
   console.log(
     `  redacted: every row marked, no run gains an issue, every measurement survives — ` +
       `${outDir}/runs-redacted.png`,
+  );
+  console.log('a LangGraph Platform capture reads as one (L11, L14, L15):');
+  console.log(
+    `  lg-reasoning: 1213 rows named metadata/messages/values, none unparsed, badge "0 issues"; a ` +
+      `text frame's Derived lists TEXT_MESSAGE_CONTENT and its Payload shows its JSON with no fault ` +
+      `wording — ${outDir}/langgraph-timeline.png`,
+  );
+  console.log(
+    `  Messages: the answer shows, the reasoning is collapsed until asked for — ${outDir}/langgraph-messages.png`,
+  );
+  console.log(`  Runs: one finished run of 1213 events — ${outDir}/langgraph-runs.png`);
+  console.log(`  Session: Protocol reads "LangGraph Platform" — ${outDir}/langgraph-session.png`);
+  console.log(
+    `  lg-subgraph: two finished runs, the child ending /research:t1 — ${outDir}/langgraph-subgraph-runs.png`,
   );
   console.log('the post-grant Reload control is styled (.agui-app__note-action).');
   console.log(

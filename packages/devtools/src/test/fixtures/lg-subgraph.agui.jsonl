@@ -1,0 +1,11 @@
+{"kind":"header","schemaVersion":1,"tool":"ag-ui-devtools@test","capturedAt":"2026-09-30T12:00:00.000Z","url":"http://localhost:2024","transport":"sse","redacted":[]}
+{"kind":"request","connId":"c1","tMs":0,"method":"POST","url":"http://localhost:2024/threads/t-1/runs/stream","input":{"assistant_id":"agent","input":{"messages":[{"type":"human","content":"hi"}]},"stream_mode":["values","messages-tuple","updates","custom"]}}
+{"kind":"event","connId":"c1","seq":1,"tMs":10,"sseEvent":"metadata","event":{"run_id":"r-1"}}
+{"kind":"event","connId":"c1","seq":2,"tMs":20,"sseEvent":"values","event":{"messages":[{"type":"human","content":"hi"}]}}
+{"kind":"event","connId":"c1","seq":3,"tMs":30,"sseEvent":"messages|research:t1","event":[{"type":"AIMessageChunk","id":"s1","content":[{"type":"text","text":"Looking"}],"tool_call_chunks":[]},{"langgraph_node":"agent"}]}
+{"kind":"event","connId":"c1","seq":4,"tMs":40,"sseEvent":"messages|research:t1","event":[{"type":"AIMessageChunk","id":"s1","content":[],"tool_call_chunks":[],"chunk_position":"last"},{"langgraph_node":"agent"}]}
+{"kind":"event","connId":"c1","seq":5,"tMs":50,"sseEvent":"updates|research:t1","event":{"search":{"notes":"x"}}}
+{"kind":"event","connId":"c1","seq":6,"tMs":60,"sseEvent":"values|research:t1","event":{"notes":"x"}}
+{"kind":"event","connId":"c1","seq":7,"tMs":70,"sseEvent":"updates","event":{"research":{"notes":"x"}}}
+{"kind":"event","connId":"c1","seq":8,"tMs":80,"sseEvent":"messages","event":[{"type":"AIMessageChunk","id":"m1","content":"Answer","tool_call_chunks":[],"chunk_position":"last"},{"langgraph_node":"agent"}]}
+{"kind":"event","connId":"c1","seq":9,"tMs":90,"sseEvent":"values","event":{"messages":[]}}
