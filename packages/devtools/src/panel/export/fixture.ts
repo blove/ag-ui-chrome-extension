@@ -9,11 +9,42 @@
  * Pure: `JsonlLine[]` in, TypeScript text out. The lines are the ones `build.ts` already produced,
  * so a redacted export produces a redacted fixture with no second policy path.
  */
-import type { JsonlHeader, JsonlLine } from '../../core/jsonl/codec';
+import type { JsonlEvent, JsonlHeader, JsonlLine } from '../../core/jsonl/codec';
+import { dialectOf, type Dialect } from '../../core/normalizer/dialect';
 
 function headerOf(lines: readonly JsonlLine[]): JsonlHeader | null {
   const first = lines[0];
   return first !== undefined && first.kind === 'header' ? first : null;
+}
+
+/**
+ * Each connection's dialect, by the one rule the run builder uses (L5): its request line, and its
+ * first event line. A header or keepalive decides nothing.
+ */
+function dialectsOf(lines: readonly JsonlLine[]): Map<string, Dialect> {
+  const requests = new Map<string, { method: string; url: string }>();
+  const firstEvents = new Map<string, JsonlEvent>();
+  for (const line of lines) {
+    if (line.kind === 'request' && !requests.has(line.connId)) {
+      requests.set(line.connId, { method: line.method, url: line.url });
+    } else if (line.kind === 'event' && !firstEvents.has(line.connId)) {
+      firstEvents.set(line.connId, line);
+    }
+  }
+  const dialects = new Map<string, Dialect>();
+  for (const connId of new Set([...requests.keys(), ...firstEvents.keys()])) {
+    const first = firstEvents.get(connId);
+    dialects.set(
+      connId,
+      dialectOf(
+        requests.get(connId),
+        first === undefined
+          ? undefined
+          : { ...(first.sseEvent !== undefined ? { sseEvent: first.sseEvent } : {}), payload: first.event },
+      ),
+    );
+  }
+  return dialects;
 }
 
 /**
@@ -46,7 +77,31 @@ export function toFixtureModule(lines: readonly JsonlLine[], filename: string): 
    * payload never parsed is kept as whatever it was: dropping it would make the fixture's length
    * disagree with the capture it was taken from, which is the one thing a replay counts on.
    */
-  const events = lines.flatMap((line) => (line.kind === 'event' ? [line.event] : []));
+  const dialects = dialectsOf(lines);
+  const eventLines = lines.flatMap((line) => (line.kind === 'event' ? [line] : []));
+  const events = eventLines.filter((line) => dialects.get(line.connId) !== 'langgraph').map((line) => line.event);
+  /*
+   * L18: a LangGraph frame's type is its SSE event name, not a field of its payload, so a bare
+   * payload array is not replayable by anything. These are written as the named frames they were.
+   * §14.2 grows this into a `MockAgentTransport` module; this is the minimum that stays true.
+   */
+  const langGraphFrames = eventLines
+    .filter((line) => dialects.get(line.connId) === 'langgraph')
+    .map((line) => ({ event: line.sseEvent ?? 'message', data: line.event }));
+  const langGraphBlock =
+    langGraphFrames.length === 0
+      ? ''
+      : `
+/** LangGraph Platform frames: \`event\` is the SSE event name, \`data\` its payload. */
+export type LangGraphFrame = { event: string; data: unknown };
+
+export const langGraphEvents: LangGraphFrame[] = ${JSON.stringify(langGraphFrames, null, 2)};
+`;
+  const langGraphNote =
+    langGraphFrames.length === 0
+      ? ''
+      : ' *\n * LangGraph frames are exported as named frames (`langGraphEvents`); §14.2 will generate a\n * `MockAgentTransport` replay for them.\n';
+  const defaultExport = events.length === 0 && langGraphFrames.length > 0 ? 'langGraphEvents' : 'events';
 
   return `/**
  * AG-UI protocol capture, exported as a test fixture by AG-UI DevTools.
@@ -70,13 +125,13 @@ export function toFixtureModule(lines: readonly JsonlLine[], filename: string): 
  *       });
  *     }
  *   }
- */
+${langGraphNote} */
 
 /** The loose event shape this capture holds. An unknown \`type\` is data, not an error. */
 export type AguiEvent = { type: string; [key: string]: unknown };
 
 export const events: AguiEvent[] = ${JSON.stringify(events, null, 2)} as AguiEvent[];
-
-export default events;
+${langGraphBlock}
+export default ${defaultExport};
 `;
 }
