@@ -896,3 +896,74 @@ describe('redactLine — a named line whose SSE event name matches its own paylo
     expect((out.event as Record<string, unknown>).type).toBe('«redacted: 20 chars»');
   });
 });
+
+describe('redactLine — a LangGraph Platform request body fails closed', () => {
+  /*
+   * A LangGraph Platform run's POST body is not a `RunAgentInput`: the user's prompt sits at
+   * `input.messages[].content`, next to `command` (resume values), `config` and `metadata`.
+   * `redactInput` reads only top-level `messages`/`state`/`context`/`forwardedProps`, so every
+   * one of those shipped verbatim with every group selected. Until field-level LangGraph rules
+   * land (spec L16), everything but the run's settings is redacted whenever any group is chosen.
+   */
+  const PROMPT = 'please summarise the confidential acquisition memo for me';
+  const body = {
+    assistant_id: 'agent',
+    input: { messages: [{ type: 'human', content: PROMPT }] },
+    command: { resume: 'approve the secret plan' },
+    config: { configurable: { user_token: 'sk-secret-123' } },
+    metadata: { note: 'private' },
+    stream_mode: ['values', 'messages-tuple'],
+    stream_subgraphs: true,
+  };
+  const line: JsonlRequest = {
+    kind: 'request',
+    connId: 'c1',
+    tMs: 0,
+    method: 'POST',
+    url: 'http://localhost:2024/threads/t1/runs/stream',
+    input: body,
+  };
+
+  it('redacts the prompt, command, config and metadata with only `text` selected', () => {
+    const out = redactLine(deepFreeze(structuredClone(line)), ['text'], 'langgraph') as JsonlRequest;
+    const text = JSON.stringify(out);
+    for (const secret of [PROMPT, 'approve the secret plan', 'sk-secret-123', 'private']) {
+      expect(text).not.toContain(secret);
+    }
+    const input = out.input as Record<string, unknown>;
+    expect(input.assistant_id).toBe('agent');
+    expect(input.stream_mode).toEqual(['values', 'messages-tuple']);
+    expect(input.stream_subgraphs).toBe(true);
+    // Structure survives, content does not.
+    expect(input.input).toEqual({ messages: [{ type: '«redacted: 5 chars»', content: `«redacted: ${PROMPT.length} chars»` }] });
+  });
+
+  it('redacts every unknown key too — anything unclassified is content', () => {
+    const out = redactLine({ ...line, input: { ...body, surprise: { x: 'mystery value' } } }, ['state'], 'langgraph');
+    expect(JSON.stringify(out)).not.toContain('mystery value');
+  });
+
+  it('keeps a __proto__ key as data', () => {
+    const input = JSON.parse('{"assistant_id":"agent","__proto__":{"leak":"prototype secret"}}') as unknown;
+    const out = redactLine({ ...line, input }, ['text'], 'langgraph') as JsonlRequest;
+    const redacted = out.input as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(redacted, '__proto__')).toBe(true);
+    expect(JSON.stringify(out)).not.toContain('prototype secret');
+    expect(Object.getPrototypeOf(redacted)).toBe(Object.prototype);
+  });
+
+  it('redacts a non-object body wholesale', () => {
+    const out = redactLine({ ...line, input: 'a raw body string' }, ['text'], 'langgraph') as JsonlRequest;
+    expect(out.input).toBe('«redacted: 17 chars»');
+  });
+
+  it('returns the line unchanged when no group is selected', () => {
+    expect(redactLine(line, [], 'langgraph')).toBe(line);
+  });
+
+  it('leaves an AG-UI request on the RunAgentInput path', () => {
+    const agui: JsonlRequest = { ...line, input: { threadId: 't', messages: [{ role: 'user', content: 'hello there' }], metadata: { keep: 'me' } } };
+    const out = redactLine(agui, ['text'], 'agui') as JsonlRequest;
+    expect(out.input).toEqual({ threadId: 't', messages: [{ role: 'user', content: '«redacted: 11 chars»' }], metadata: { keep: 'me' } });
+  });
+});

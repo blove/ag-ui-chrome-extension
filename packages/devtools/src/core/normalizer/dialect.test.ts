@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { dialectOf } from './dialect';
+import { dialectOf, dialectsOfLines } from './dialect';
 
 const LG_URL = 'http://localhost:2024/threads/t-1/runs/stream';
 const CK_URL = 'http://localhost:3000/api/copilotkit/agent/default/run';
@@ -41,5 +41,20 @@ describe('dialectOf (L4)', () => {
 
   it('is agui with nothing to go on', () => {
     expect(dialectOf(undefined, undefined)).toBe('agui');
+  });
+});
+
+describe('dialectsOfLines (L5, per connection)', () => {
+  it('decides each connection from its request line and first event, ignoring headers and keepalives', () => {
+    const dialects = dialectsOfLines([
+      { kind: 'header', schemaVersion: 1, tool: 't', capturedAt: '2026-09-30T00:00:00.000Z', url: 'http://h', transport: 'sse', redacted: [] },
+      { kind: 'request', connId: 'lg', tMs: 0, method: 'POST', url: 'http://h/threads/t/runs/stream', input: {} },
+      { kind: 'request', connId: 'ag', tMs: 0, method: 'POST', url: 'http://h/agent', input: {} },
+      { kind: 'keepalive', connId: 'px', seq: 1, tMs: 1, comment: '' },
+      { kind: 'event', connId: 'px', seq: 2, tMs: 2, sseEvent: 'metadata', event: { run_id: 'r-1' } },
+      { kind: 'event', connId: 'ag', seq: 3, tMs: 3, event: { type: 'RUN_STARTED' } },
+      { kind: 'event', connId: 'px', seq: 4, tMs: 4, event: { type: 'RUN_STARTED' } },
+    ]);
+    expect(Object.fromEntries(dialects)).toEqual({ lg: 'langgraph', ag: 'agui', px: 'langgraph' });
   });
 });

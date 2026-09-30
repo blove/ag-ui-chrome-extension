@@ -16,6 +16,7 @@ import type { RuntimeInfo } from '../../core/detect/info';
 import type { JsonlHeader, JsonlLine } from '../../core/jsonl/codec';
 import { redactLine, type RedactionGroup } from '../../core/jsonl/redact';
 import type { CaptureRecord, Run } from '../../core/model/types';
+import { dialectsOfLines } from '../../core/normalizer/dialect';
 import type { RequestLine } from '../../sw/protocol';
 import type { BinaryTransport, PanelSource, RunScope } from '../model/panel-types';
 import { buildHeader } from './header';
@@ -165,10 +166,22 @@ export function buildExport(source: ExportSource, options: ExportOptions): Expor
     ...[...records].sort((a, b) => a.seq - b.seq).map((record) => toLine(record)),
   ];
 
+  /*
+   * Each line is redacted knowing its connection's dialect, decided over the UNREDACTED lines by
+   * the same rule the run builder and the fixture export use: a LangGraph Platform request body
+   * is not a `RunAgentInput`, and redacting it as one shipped the user's prompt verbatim.
+   */
+  const dialects = dialectsOfLines(body);
+
   return {
     // The header is never redacted — `redactLine` returns it untouched by design, and its
     // `redacted` field is the one thing in the file that must state the truth about the rest.
-    lines: [header, ...body.map((line) => redactLine(line, options.groups))],
+    lines: [
+      header,
+      ...body.map((line) =>
+        redactLine(line, options.groups, line.kind === 'header' ? undefined : dialects.get(line.connId)),
+      ),
+    ],
     header,
     counts: {
       events: records.filter((record) => record.kind === 'event').length,

@@ -27,7 +27,10 @@ const LANGGRAPH_JSONL = [
     tMs: 0,
     method: 'POST',
     url: 'http://localhost:2024/threads/t1/runs/stream',
-    input: { assistant_id: 'agent', input: { messages: [{ type: 'human', content: 'hi' }] } },
+    input: {
+      assistant_id: 'agent',
+      input: { messages: [{ type: 'human', content: 'tell me about the zanzibar quarterly forecast' }] },
+    },
   },
   { kind: 'event', connId: 'c1', seq: 1, tMs: 5, sseEvent: 'metadata', event: { run_id: 'r1', attempt: 1 } },
   {
@@ -123,6 +126,8 @@ describe('the SSE event name in .agui.jsonl (L2)', () => {
     const file = encodeJsonl(lines);
 
     expect(file).not.toContain('Hello from the model');
+    // The user's own prompt lives in the request body, not in any event.
+    expect(file).not.toContain('zanzibar quarterly forecast');
     expect(namesOf(lines)).toEqual(['metadata', 'messages', 'values']);
   });
 });
