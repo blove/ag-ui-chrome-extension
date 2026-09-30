@@ -71,8 +71,8 @@ function isStackKind(value: unknown): value is StackKind {
   return value === 'agui' || value === 'langgraph';
 }
 
-function firstFrameOf(record: CaptureRecord | undefined): DialectFirstFrame | undefined {
-  if (record?.kind !== 'event') return undefined;
+function firstFrameOf(record: CaptureRecord): DialectFirstFrame | undefined {
+  if (record.kind !== 'event') return undefined;
   return {
     ...(record.sseEvent !== undefined ? { sseEvent: record.sseEvent } : {}),
     payload: record.raw,
@@ -86,8 +86,14 @@ function firstFrameOf(record: CaptureRecord | undefined): DialectFirstFrame | un
  * for a tab where nothing happened.
  */
 export function createStackTracker(seed: readonly StackDecision[] = []): StackTracker {
-  const requests = new Map<string, StackRequest>();
-  const firstEvents = new Map<string, CaptureRecord>();
+  /*
+   * What `dialectOf` needs, and no more. `dialectOf(request, first)` is LangGraph exactly when its
+   * route arm or its first-frame arm is, so each half is decided once, on arrival, and kept as a
+   * boolean. Holding the request line or the first record itself would pin one record per
+   * connection past the buffer's eviction — a large first `STATE_SNAPSHOT` included — until Clear.
+   */
+  const routeSaysLangGraph = new Map<string, boolean>();
+  const firstSaysLangGraph = new Map<string, boolean>();
   const decided = new Map<string, StackKind>();
   for (const decision of seed) {
     if (typeof decision.connId === 'string' && isStackKind(decision.kind)) {
@@ -95,24 +101,29 @@ export function createStackTracker(seed: readonly StackDecision[] = []): StackTr
     }
   }
 
-  const dialect = (connId: string): StackKind =>
-    dialectOf(requests.get(connId), firstFrameOf(firstEvents.get(connId)));
+  const isLangGraph = (connId: string): boolean =>
+    routeSaysLangGraph.get(connId) === true || firstSaysLangGraph.get(connId) === true;
 
   return {
     request(line) {
-      if (requests.has(line.connId)) return false;
-      requests.set(line.connId, line);
+      if (routeSaysLangGraph.has(line.connId)) return false;
+      routeSaysLangGraph.set(line.connId, dialectOf(line, undefined) === 'langgraph');
       // A route alone decides LangGraph; it can never decide AG-UI, which needs an event.
-      if (dialect(line.connId) !== 'langgraph') return false;
+      if (!isLangGraph(line.connId)) return false;
       if (decided.get(line.connId) === 'langgraph') return false;
       decided.set(line.connId, 'langgraph');
       return true;
     },
     record(record) {
       if (record.kind !== 'event') return false;
-      if (!firstEvents.has(record.connId)) firstEvents.set(record.connId, record);
+      if (!firstSaysLangGraph.has(record.connId)) {
+        firstSaysLangGraph.set(
+          record.connId,
+          dialectOf(undefined, firstFrameOf(record)) === 'langgraph',
+        );
+      }
       if (decided.has(record.connId)) return false;
-      if (dialect(record.connId) === 'langgraph') {
+      if (isLangGraph(record.connId)) {
         decided.set(record.connId, 'langgraph');
         return true;
       }
@@ -171,9 +182,34 @@ function plural(count: number, noun: string): string {
   return `${String(count)} ${noun}${count === 1 ? '' : 's'}`;
 }
 
+/** Longest runtime version the title carries, in code points. Real ones are `1.52.1`-sized. */
+export const BADGE_VERSION_MAX = 32;
+
+/**
+ * The runtime version as the title may show it, or `null` when nothing printable is left.
+ *
+ * The version is whatever the page's `/info` answered, so it is page-authored text going into
+ * browser chrome. Controls become spaces, bidi and other invisible formatting characters are
+ * dropped (a U+202E could make the tooltip read backwards), whitespace collapses, and the result is
+ * capped: a 10,000-character "version" must not become a 10,000-character tooltip.
+ */
+function printableVersion(version: string): string | null {
+  const cleaned = version
+    .replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ')
+    .replace(/\p{Cf}/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (cleaned === '') return null;
+  const points = Array.from(cleaned);
+  return points.length > BADGE_VERSION_MAX
+    ? `${points.slice(0, BADGE_VERSION_MAX).join('')}…`
+    : cleaned;
+}
+
 function runtimeLabel(runtime: RuntimeInfo): string {
   // A missing version is left out rather than filled in: the runtime did not report one.
-  const version = runtime.version === null ? '' : ` ${runtime.version}`;
+  const printable = runtime.version === null ? null : printableVersion(runtime.version);
+  const version = printable === null ? '' : ` ${printable}`;
   return `CopilotKit runtime${version} (${runtime.mode})`;
 }
 

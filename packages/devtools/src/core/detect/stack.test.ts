@@ -168,6 +168,30 @@ describe('detectStack', () => {
     });
   });
 
+  it('keeps a hostile runtime version short and printable in the title', () => {
+    // The version is whatever the page's `/info` answered. A 10,000-character string, control
+    // characters, or a bidi override would otherwise reach the toolbar tooltip verbatim.
+    const hostile = `1.0\u0000\n\u202Egnp.exe\u2066${'9'.repeat(10_000)}`;
+    const { title } = badgeFor({
+      agui: 1,
+      langGraph: 0,
+      runtime: { version: hostile, mode: 'multi-route', agents: [] },
+    });
+    expect(title).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+    expect(title.length).toBeLessThan(200);
+    expect(title).toContain('CopilotKit runtime 1.0 gnp.exe99');
+    expect(title).toContain('… (multi-route)');
+  });
+
+  it('leaves a version out when nothing printable is left of it', () => {
+    const { title } = badgeFor({
+      agui: 0,
+      langGraph: 0,
+      runtime: { version: '\u202E\u0000 ', mode: 'single-route', agents: null },
+    });
+    expect(title).toBe('AG-UI DevTools — CopilotKit runtime (single-route) — open DevTools → AG-UI');
+  });
+
   it('names a runtime with no reported version without inventing one', () => {
     const stack = detectStack(
       input({ runtime: { version: null, mode: 'single-route', agents: null } }),

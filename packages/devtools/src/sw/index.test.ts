@@ -2146,6 +2146,42 @@ describe('service worker — the toolbar badge', () => {
     );
   });
 
+  it('re-applies the badge when the tab loads a new document, because Chrome reset it', () => {
+    // Measured in the e2e harness: Chrome clears a tab's action state on every cross-document
+    // navigation. With the panel closed nothing clears the buffer, so the worker still holds 'AG'
+    // as last applied — and skipping the write as "unchanged" left the badge dark for good, even
+    // after the new page spoke AG-UI.
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, loadedReport);
+    send(relay, runStarted('c1'));
+    expect(actionsFor(stub, 7, 'setBadgeText').at(-1)?.details.text).toBe('AG');
+    const texts = actionsFor(stub, 7, 'setBadgeText').length;
+
+    const next = relayPort(7);
+    stub.connect(next);
+    send(next, loadedReport);
+
+    expect(actionsFor(stub, 7, 'setBadgeText').length).toBe(texts + 1);
+    expect(actionsFor(stub, 7, 'setBadgeText').at(-1)?.details.text).toBe('AG');
+    expect(actionsFor(stub, 7, 'setBadgeBackgroundColor').length).toBe(2);
+    expect(actionsFor(stub, 7, 'setTitle').at(-1)?.details.title).toBe(
+      'AG-UI DevTools — AG-UI · 1 connection — open DevTools → AG-UI',
+    );
+  });
+
+  it('leaves the badge alone when only a subframe loads, which Chrome does not reset for', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, runStarted('c1'));
+    const before = stub.actions.length;
+
+    const sub = relayPort(7, 3);
+    stub.connect(sub);
+    send(sub, loadedReport);
+    expect(stub.actions.length).toBe(before);
+  });
+
   it('does not light while recording is paused, because nothing is captured', () => {
     const panel = panelPort();
     stub.connect(panel);

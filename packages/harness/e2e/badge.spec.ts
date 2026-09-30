@@ -96,6 +96,30 @@ test('an AG-UI run lights its tab AG, and a second tab on the same origin stays 
   await quiet.close();
 });
 
+test('a tab that navigates and speaks AG-UI again is lit again', async () => {
+  // Chrome resets a tab's badge on every cross-document navigation, and with no panel open nothing
+  // clears the worker's buffer — so a worker that trusted its last-applied badge skipped the next
+  // write as unchanged and left this tab dark (measured: '' with a '2 connections' title).
+  const page = await drive('', true);
+  await readSettledCapture(ctx);
+  expect((await readSettledBadge(ctx, page)).text).toBe('AG');
+
+  await page.goto(`${pageServer.url}quiet.html`);
+  await page.goto(pageServer.url);
+  await page.waitForFunction(() => document.getElementById('status')?.textContent === 'ready');
+  await page.click('#run');
+  await page.waitForFunction(() => document.getElementById('status')?.textContent === 'done', undefined, {
+    timeout: 30_000,
+  });
+  await readSettledCapture(ctx, { connections: 2 });
+
+  expect(await readSettledBadge(ctx, page)).toEqual({
+    text: 'AG',
+    title: titleFor('AG-UI · 2 connections'),
+  });
+  await page.close();
+});
+
 test('a LangGraph Platform run lights its tab LG', async () => {
   const page = await drive('langgraph.html?scenario=lg-reasoning', true);
   await readSettledCapture(ctx);

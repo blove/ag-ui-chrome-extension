@@ -696,6 +696,17 @@ function handleRelayMessage(
    */
   if (message.kind === 'capture-loaded') {
     markLoaded(state, source.frameId, source.port);
+    /*
+     * A new top-level document, and Chrome has just reset this tab's action state: it clears a
+     * tab's badge, colour and title on every cross-document navigation (measured in the e2e
+     * harness). Nothing here clears the buffer on a navigation unless a panel asks, so the last
+     * applied badge would still read as current and every later write would be skipped as
+     * "unchanged" — a tab that went on speaking AG-UI would stay dark. Re-derive from state.
+     */
+    if (source.frameId === MAIN_FRAME_ID) {
+      state.badge = null;
+      applyBadge(tabId, state);
+    }
     broadcast(tabId, { kind: 'capture-loaded' });
     scheduleMirror(tabId);
     return;
