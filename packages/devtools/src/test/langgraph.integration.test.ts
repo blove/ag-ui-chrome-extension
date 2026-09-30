@@ -4,6 +4,8 @@
 import { describe, expect, it } from 'vitest';
 
 import happyJsonl from './fixtures/happy-run.agui.jsonl?raw';
+import lgReasoningJsonl from './fixtures/lg-reasoning.agui.jsonl?raw';
+import lgReasoningCanonical from './fixtures/lg-reasoning.canonical.txt?raw';
 import { encodeJsonl } from '../core/jsonl/codec';
 import type { Run } from '../core/model/types';
 import { buildExport } from '../panel/export/build';
@@ -281,5 +283,33 @@ describe('LangGraph: export, clear, re-import — the tabs are identical', () =>
     );
     const again = loadJsonl(encodeJsonl(exported.lines));
     expect(again.runs.map(project)).toEqual(first.runs.map(project));
+  });
+});
+
+describe('LangGraph golden: a real Python-server recording (gpt-5, reasoning then text)', () => {
+  const loaded = loadJsonl(lgReasoningJsonl);
+
+  it('reconstructs the streamed answer byte for byte', () => {
+    const run = only(loaded);
+    const text = [...run.messages.values()].filter((message) => message.kind === 'text');
+    expect(text).toHaveLength(1);
+    expect(text[0]?.content).toBe(lgReasoningCanonical);
+  });
+
+  it('has one reasoning message, streamed before the text, and nothing under the resp_ id', () => {
+    const run = only(loaded);
+    const reasoning = [...run.messages.values()].filter((message) => message.kind === 'reasoning');
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0]?.content.length).toBeGreaterThan(0);
+    expect([...run.messages.keys()].some((id) => id.startsWith('resp_'))).toBe(false);
+    expect(run.metrics.ttfrtMs).toBeLessThan(run.metrics.ttftMs ?? 0);
+  });
+
+  it('finishes cleanly, with the wire counts of the recording', () => {
+    const run = only(loaded);
+    expect(run.runId).toBe('019e0a0b-6976-7c72-8d57-479ba0c859f6');
+    expect(run.outcome).toBe('finished');
+    expect(run.issues).toEqual([]);
+    expect(run.metrics.eventCountByType).toEqual({ metadata: 1, messages: 1210, values: 2 });
   });
 });
