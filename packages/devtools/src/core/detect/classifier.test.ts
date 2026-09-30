@@ -317,3 +317,61 @@ describe('routeHint: the single-route info envelope', () => {
     expect(routeHint('/api/copilotkit/info', 'POST')).toBeUndefined();
   });
 });
+
+describe('routeHint: LangGraph Platform streams (L3)', () => {
+  it('recognizes POST {base}/threads/:threadId/runs/stream', () => {
+    expect(routeHint('http://localhost:2024/threads/t-1/runs/stream', 'POST')).toEqual({
+      kind: 'langgraph-run',
+      basePath: '',
+      threadId: 't-1',
+    });
+  });
+
+  it('keeps a base path in front of the route', () => {
+    expect(routeHint('https://app.example.com/api/langgraph/threads/t-1/runs/stream', 'POST')).toEqual({
+      kind: 'langgraph-run',
+      basePath: '/api/langgraph',
+      threadId: 't-1',
+    });
+  });
+
+  it('recognizes the threadless POST {base}/runs/stream', () => {
+    expect(routeHint('http://localhost:2024/runs/stream', 'POST')).toEqual({
+      kind: 'langgraph-run',
+      basePath: '',
+    });
+  });
+
+  it('recognizes the join stream GET {base}/threads/:threadId/runs/:runId/stream', () => {
+    expect(routeHint('http://localhost:2024/threads/t-1/runs/r-9/stream', 'GET')).toEqual({
+      kind: 'langgraph-run',
+      basePath: '',
+      threadId: 't-1',
+      runId: 'r-9',
+    });
+  });
+
+  it('recognizes the threadless join stream GET {base}/runs/:runId/stream', () => {
+    expect(routeHint('http://localhost:2024/runs/r-9/stream?stream_mode=values', 'GET')).toEqual({
+      kind: 'langgraph-run',
+      basePath: '',
+      runId: 'r-9',
+    });
+  });
+
+  it('does not match the wrong verb, or a near miss', () => {
+    expect(routeHint('http://localhost:2024/threads/t-1/runs/stream', 'GET')).toBeUndefined();
+    expect(routeHint('http://localhost:2024/threads/t-1/runs/r-9/stream', 'POST')).toBeUndefined();
+    expect(routeHint('http://localhost:2024/threads/t-1/runs', 'POST')).toBeUndefined();
+    expect(routeHint('http://localhost:2024/threads/t-1/runs/stream/extra', 'POST')).toBeUndefined();
+    expect(routeHint('http://localhost:2024/threads//runs/stream', 'POST')).toBeUndefined();
+  });
+
+  it('leaves the CopilotKit routes exactly as they were', () => {
+    expect(routeHint('/api/copilotkit/agent/my-agent/run', 'POST')).toEqual({
+      kind: 'copilotkit-run',
+      basePath: '/api/copilotkit',
+      agentId: 'my-agent',
+    });
+  });
+});

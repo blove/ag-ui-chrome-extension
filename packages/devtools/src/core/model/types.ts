@@ -155,6 +155,12 @@ export type CaptureRecord =
        * is still surfaced and flagged rather than dropped.
        */
       readonly event: AguiEvent | null;
+      /**
+       * The frame's SSE `event:` name, when it had a real one (spec L1/L2). Absent for every
+       * AG-UI frame, which carries its type inside the payload. LangGraph Platform carries its
+       * type HERE — `metadata`, `values`, `messages|research:9f1c…` — and the payload has none.
+       */
+      readonly sseEvent?: string;
     })
   | (CaptureRecordBase & {
       readonly kind: 'keepalive';

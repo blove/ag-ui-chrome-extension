@@ -572,3 +572,327 @@ describe('redactLine — passthrough cases', () => {
     expect(Object.keys(out as Record<string, unknown>)).toEqual(['type', 'threadId', 'runId']);
   });
 });
+
+describe('redactLine — fails closed on payloads it does not recognise', () => {
+  /*
+   * These pin the bug found against a LangGraph Platform capture: a payload this module cannot
+   * classify into one of the five groups was exported verbatim even with every group selected,
+   * which makes PRIVACY.md's claim about a fully-redacted export false for any non-AG-UI stream.
+   */
+
+  it('redacts a LangGraph metadata object wholesale, keeping sseEvent', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 1,
+      tMs: 10,
+      sseEvent: 'metadata',
+      event: { run_id: 'r1', attempt: 1 },
+    };
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out).toEqual({
+      kind: 'event',
+      connId: 'c1',
+      seq: 1,
+      tMs: 10,
+      sseEvent: 'metadata',
+      event: { run_id: '«redacted: 2 chars»', attempt: '«redacted: 1 chars»' },
+    });
+  });
+
+  it('leaves the LangGraph metadata object untouched when no group is selected', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 1,
+      tMs: 10,
+      sseEvent: 'metadata',
+      event: { run_id: 'r1', attempt: 1 },
+    };
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('redacts a messages tuple array wholesale, keeping shape and keys', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 2,
+      tMs: 20,
+      sseEvent: 'messages',
+      event: [
+        { type: 'AIMessageChunk', id: 'm1', content: 'Hello secret' },
+        { langgraph_node: 'agent' },
+      ],
+    };
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out).toEqual({
+      kind: 'event',
+      connId: 'c1',
+      seq: 2,
+      tMs: 20,
+      sseEvent: 'messages',
+      event: [
+        {
+          type: '«redacted: 14 chars»',
+          id: '«redacted: 2 chars»',
+          content: '«redacted: 12 chars»',
+        },
+        { langgraph_node: '«redacted: 5 chars»' },
+      ],
+    });
+    expect(JSON.stringify(out)).not.toContain('Hello secret');
+  });
+
+  it('leaves the messages tuple array untouched when no group is selected', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 2,
+      tMs: 20,
+      sseEvent: 'messages',
+      event: [
+        { type: 'AIMessageChunk', id: 'm1', content: 'Hello secret' },
+        { langgraph_node: 'agent' },
+      ],
+    };
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('redacts an unparseable raw string payload to its character count', () => {
+    const raw = 'data that did not parse';
+    const line: JsonlEvent = { kind: 'event', connId: 'c1', seq: 3, tMs: 30, event: raw };
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out.event).toBe(`«redacted: ${raw.length} chars»`);
+  });
+
+  it('leaves an unparseable raw string payload untouched when no group is selected', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 3,
+      tMs: 30,
+      event: 'data that did not parse',
+    };
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('redacts an object with an unknown type wholesale, but keeps the type — types are structure', () => {
+    const line = ev({ type: 'FUTURE_EVENT', text: 'secret' });
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out.event).toEqual({ type: 'FUTURE_EVENT', text: '«redacted: 6 chars»' });
+  });
+
+  it('leaves an object with an unknown type untouched when no group is selected', () => {
+    const line = ev({ type: 'FUTURE_EVENT', text: 'secret' });
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('does not keep a top-level type that is not AG-UI-shaped (UPPER_SNAKE)', () => {
+    // "keeps a future AG-UI type's Timeline label" only makes sense for a type that could BE
+    // an AG-UI type. Free-form app data that happens to have a `type` field — e.g. an order
+    // number a non-AG-UI protocol calls `type` — is not that, and must not be special-cased.
+    const raw = 'my secret order #123';
+    const line = ev({ type: raw });
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out.event).toEqual({ type: `«redacted: ${raw.length} chars»` });
+  });
+
+  it('nulls a non-string top-level type rather than redacting it as a leaf — validator parity', () => {
+    // A redacted STRING here (e.g. `«redacted: 2 chars»`) would still look like a `type` value
+    // to the validator, turning what should read as `shape-invalid` into a fabricated
+    // `unknown-event-type`. `null` is honest: this payload's `type` was never a usable one.
+    const line = ev({ type: 42, note: 'secret' });
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out.event).toEqual({ type: null, note: '«redacted: 6 chars»' });
+  });
+
+  it('redacts an object with no type wholesale', () => {
+    const line = ev({ foo: 'secret' });
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out.event).toEqual({ foo: '«redacted: 6 chars»' });
+  });
+
+  it('leaves an object with no type untouched when no group is selected', () => {
+    const line = ev({ foo: 'secret' });
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('leaves a known AG-UI event untouched when the selected group does not own it', () => {
+    const line = ev({ type: 'TOOL_CALL_ARGS', toolCallId: 't1', delta: '{"a":1}' });
+
+    expect(redactLine(line, ['text'])).toEqual(line);
+  });
+
+  it('leaves a known AG-UI event untouched when no group is selected', () => {
+    const line = ev({ type: 'TOOL_CALL_ARGS', toolCallId: 't1', delta: '{"a":1}' });
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('leaves a null payload as null', () => {
+    const line = ev(null as unknown as Record<string, unknown>);
+
+    expect(redactLine(line, ['text'])).toEqual(line);
+  });
+
+  it('leaves a null payload as null when no group is selected', () => {
+    const line = ev(null as unknown as Record<string, unknown>);
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('leaves an empty string payload as empty', () => {
+    const line: JsonlEvent = { kind: 'event', connId: 'c1', seq: 4, tMs: 40, event: '' };
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out.event).toBe('');
+  });
+
+  it('leaves an empty string payload as empty when no group is selected', () => {
+    const line: JsonlEvent = { kind: 'event', connId: 'c1', seq: 4, tMs: 40, event: '' };
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+});
+
+describe('redactLine — a named SSE event is never an AG-UI frame', () => {
+  /*
+   * Spec L1/L16: the capture and loader paths normalize the default SSE event name (`message`,
+   * or none at all) away, so `sseEvent` being present on a line at all means this line came off
+   * a non-AG-UI protocol — LangGraph Platform, today. Its payload dispatching into the AG-UI
+   * `SINGLE_FIELD`/`STATE_*`/`RUN_STARTED` table by coincidence of a shared `type` string (e.g.
+   * a LangGraph `CUSTOM`-shaped frame) would be exactly the kind of misclassification this
+   * module exists to avoid — it has no idea what that protocol's `CUSTOM` actually carries.
+   * L16's field-level LangGraph rules will hang off this same branch, replacing wholesale
+   * redaction with precise per-field rules once that PR lands.
+   */
+  it('redacts wholesale, ignoring an AG-UI-shaped type, when the line names an SSE event', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 5,
+      tMs: 50,
+      sseEvent: 'values',
+      event: { type: 'CUSTOM', messages: [{ content: 'SECRET' }] },
+    };
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(JSON.stringify(out)).not.toContain('SECRET');
+    // The payload's own `type` is app data on a named line, not an AG-UI event type, so it is
+    // redacted like any other field rather than kept.
+    expect((out.event as Record<string, unknown>).type).toBe('«redacted: 6 chars»');
+  });
+
+  it('leaves it untouched when no group is selected, named line included', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 5,
+      tMs: 50,
+      sseEvent: 'values',
+      event: { type: 'CUSTOM', messages: [{ content: 'SECRET' }] },
+    };
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('keeps sseEvent itself — it is on the line, not the payload', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 5,
+      tMs: 50,
+      sseEvent: 'values',
+      event: { type: 'CUSTOM', messages: [{ content: 'SECRET' }] },
+    };
+
+    const out = redactLine(line, [...ALL_REDACTION_GROUPS]) as JsonlEvent;
+
+    expect(out.sseEvent).toBe('values');
+  });
+});
+
+describe('redactLine — a named line whose SSE event name matches its own payload type IS AG-UI', () => {
+  /*
+   * An AG-UI server that names its SSE frames after the event type (e.g. Hono's
+   * `writeSSE({ event, data })`) produces lines where `sseEvent === event.type`. That equality
+   * is exactly the signal LangGraph Platform's frames can never produce by coincidence:
+   * LangGraph's own names (`metadata`, `values`, `messages|<ns>`) are lowercase and/or
+   * namespaced, so they can never equal an AG-UI `UPPER_SNAKE` `type`. Treat a match as
+   * confirmation this is an AG-UI frame and redact it exactly as an unnamed line would; treat a
+   * mismatch — or any non-AG-UI shape — as before: wholesale, erring safe.
+   */
+
+  it('redacts a matching named TEXT_MESSAGE_CONTENT exactly as the unnamed line would', () => {
+    const named = ev({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'secret' });
+    named.sseEvent = 'TEXT_MESSAGE_CONTENT';
+    const unnamed = ev({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'secret' }, 1);
+
+    const out = redactLine(named, ['text']) as JsonlEvent;
+    const expected = redactLine(unnamed, ['text']) as JsonlEvent;
+
+    expect(out.event).toEqual(expected.event);
+    expect(out.event).toEqual({
+      type: 'TEXT_MESSAGE_CONTENT',
+      messageId: 'm1',
+      delta: '«redacted: 6 chars»',
+    });
+    expect(out.sseEvent).toBe('TEXT_MESSAGE_CONTENT');
+  });
+
+  it('leaves a matching named TEXT_MESSAGE_CONTENT untouched when the selected group does not own it', () => {
+    const line = ev({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'secret' });
+    line.sseEvent = 'TEXT_MESSAGE_CONTENT';
+
+    const out = redactLine(line, ['toolArgs']) as JsonlEvent;
+
+    expect(out.event).toEqual({
+      type: 'TEXT_MESSAGE_CONTENT',
+      messageId: 'm1',
+      delta: 'secret',
+    });
+  });
+
+  it('still redacts wholesale when the named event does not match the payload type', () => {
+    const line = ev({ type: 'CUSTOM', value: 'SECRET' });
+    line.sseEvent = 'values';
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(JSON.stringify(out)).not.toContain('SECRET');
+    expect((out.event as Record<string, unknown>).type).toBe('«redacted: 6 chars»');
+  });
+
+  it('redacts wholesale when the named event does not match a known AG-UI type at all', () => {
+    const line = ev({ type: 'TEXT_MESSAGE_CONTENT', delta: 'secret' });
+    line.sseEvent = 'something-else';
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(JSON.stringify(out)).not.toContain('secret');
+    // Wholesale, not the AG-UI single-field path: `type` is dropped like any other unattributed
+    // field, since `keepAguiType` is false on this branch.
+    expect((out.event as Record<string, unknown>).type).toBe('«redacted: 20 chars»');
+  });
+});

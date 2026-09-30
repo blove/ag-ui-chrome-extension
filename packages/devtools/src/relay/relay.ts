@@ -21,7 +21,13 @@
  * loaded in this document. That report goes up the `chrome.runtime` port and never near the page.
  */
 import { cloneRuntimeInfo } from '../core/detect/info';
-import { isInjectMessage, PROTOCOL_VERSION, type InjectMessage } from '../inject/protocol';
+import { normalizeEventName } from '../core/sse/event-name';
+import {
+  isInjectMessage,
+  PROTOCOL_VERSION,
+  type InjectMessage,
+  type WireFrame,
+} from '../inject/protocol';
 import { RELAY_PORT_NAME, type RelayMessage } from '../sw/protocol';
 
 let port: chrome.runtime.Port | null = null;
@@ -114,11 +120,21 @@ function toRelayMessage(message: InjectMessage): RelayMessage {
         v: PROTOCOL_VERSION,
         kind: 'frames',
         connId: message.connId,
-        frames: message.frames.map((frame) =>
-          frame.kind === 'keepalive'
-            ? { kind: 'keepalive', tMs: frame.tMs, raw: frame.raw, comment: frame.comment }
-            : { kind: 'event', tMs: frame.tMs, raw: frame.raw },
-        ),
+        frames: message.frames.map((frame): WireFrame => {
+          if (frame.kind === 'keepalive') {
+            return { kind: 'keepalive', tMs: frame.tMs, raw: frame.raw, comment: frame.comment };
+          }
+          // Named explicitly, like every other field (L1): this rebuild is what strips anything
+          // the contract does not name, so a field left out here is silently lost. Normalized
+          // again because the page, not our patch, is the sender this code has to assume.
+          const eventName = normalizeEventName(frame.eventName);
+          return {
+            kind: 'event',
+            tMs: frame.tMs,
+            raw: frame.raw,
+            ...(eventName !== undefined ? { eventName } : {}),
+          };
+        }),
       };
     case 'conn-close':
       return {

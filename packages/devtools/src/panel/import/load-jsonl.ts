@@ -7,6 +7,7 @@ import {
 import { cloneRuntimeInfo, isRuntimeInfo, type RuntimeInfo } from '../../core/detect/info';
 import { createRunBuilder } from '../../core/normalizer/run-builder';
 import type { AguiEvent, CaptureRecord, Issue, Run } from '../../core/model/types';
+import { normalizeEventName } from '../../core/sse/event-name';
 import type { RequestLine } from '../../sw/protocol';
 
 export interface LoadedCapture {
@@ -57,8 +58,15 @@ function asAguiEvent(value: unknown): AguiEvent | null {
     : null;
 }
 
-/** A19: `CaptureRecord` is a union on `kind`, so an event record must say so explicitly. */
+/**
+ * A19: `CaptureRecord` is a union on `kind`, so an event record must say so explicitly.
+ *
+ * `sseEvent` is a field of an untrusted file, so it goes through the same rule the capture path
+ * applies (L1) rather than being copied: a non-string or a `message` name is dropped, and the
+ * event itself is kept.
+ */
 function toEventRecord(line: JsonlEvent): CaptureRecord {
+  const sseEvent = normalizeEventName(line.sseEvent);
   return {
     kind: 'event',
     seq: line.seq,
@@ -66,6 +74,7 @@ function toEventRecord(line: JsonlEvent): CaptureRecord {
     connId: line.connId,
     raw: line.event,
     event: asAguiEvent(line.event),
+    ...(sseEvent !== undefined ? { sseEvent } : {}),
     issues: [],
   };
 }

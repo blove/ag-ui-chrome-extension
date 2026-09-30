@@ -124,6 +124,22 @@ const WIDE_JSONL = [
     { type: 'STATE_DELTA', delta: [{ op: 'replace', path: '/counter', value: 9 }] },
     { type: 'STATE_SNAPSHOT', snapshot: { counter: 9, who: 'Ada' } },
     { type: 'STATE_DELTA', delta: [{ op: 'add', path: '/gone/child', value: 1 }] },
+    // Task 6b follow-up: `redact.ts` now fails closed on payloads it cannot classify as AG-UI
+    // events. These three run that wholesale-redaction path through the SAME validator-parity
+    // sweep as every known-type rule above, so a rule that IS live over this fixture — e.g.
+    // `deprecated-event`, `run-never-terminated` — is checked to invent or withdraw nothing over
+    // them either, the same guarantee the rest of this file gives for known-type events.
+    //
+    // They do NOT exercise `checkShape` (the module that would raise `shape-invalid` or
+    // `unknown-event-type` for an unrecognised or malformed `type`): it has no caller outside
+    // its own unit tests, so nothing in the live import/run-builder pipeline raises those codes
+    // today, redacted or not — "the authored wide capture really does exercise the other rule
+    // families" below confirms neither code appears in the set this fixture actually produces.
+    // Placed before `RUN_FINISHED`, not after: an event after the terminal event raises its own
+    // `event-after-terminal` issue instead, which would exercise nothing new here.
+    { type: 'FUTURE_EVENT', secret: 'unknown-type-event-payload' },
+    { type: 42, note: 'numeric-type-event-payload' },
+    'raw unparsed frame that never became JSON',
     { type: 'RUN_FINISHED', threadId: 't_wide', runId: 'r_wide' },
   ].map((event, index) => ({
     kind: 'event',

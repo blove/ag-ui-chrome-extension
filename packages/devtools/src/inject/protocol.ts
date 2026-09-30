@@ -21,9 +21,11 @@ export const PROTOCOL_VERSION = 1;
  *  - `kind: 'event'` — `raw` is the frame's `data` payload and nothing else: data lines joined
  *    with `\n`, one leading space after each colon stripped, which is what the SSE grammar says
  *    the payload is. It is the string a consumer hands straight to `JSON.parse`. It is NOT the
- *    frame text: no `data:` prefixes, and no `event:` / `id:` / `retry:` lines. Those fields are
- *    parsed by `core/sse/parser` and dropped here; anything downstream that needs one needs a
- *    field of its own on this type, not a different encoding of `raw`.
+ *    frame text: no `data:` prefixes, and no `event:` / `id:` / `retry:` lines directly encoded.
+ *    `id:` and `retry:` are parsed by `core/sse/parser` and dropped here. `event:` is the one
+ *    that needed a field of its own, and has one: `eventName`, present only when the frame had
+ *    a real name as `core/sse/event-name` defines it (spec L1). LangGraph Platform puts its
+ *    event type there; `raw` stays the payload and nothing else.
  *  - `kind: 'keepalive'` — `raw` is the reconstructed comment frame, `:${comment}\n\n`, matching
  *    what `panel/import/load-jsonl.ts` already puts in `CaptureRecord.raw` for an imported
  *    keepalive. `comment` carries the same text without the syntax.
@@ -32,7 +34,7 @@ export const PROTOCOL_VERSION = 1;
  * not surface them.
  */
 export type WireFrame =
-  | { kind: 'event'; tMs: number; raw: string }
+  | { kind: 'event'; tMs: number; raw: string; eventName?: string }
   | { kind: 'keepalive'; tMs: number; raw: string; comment: string };
 
 /**
@@ -136,7 +138,11 @@ function isWireFrame(value: unknown): value is WireFrame {
   if (!hasOwn(value, 'tMs') || !isTime(value.tMs)) return false;
   if (!hasOwn(value, 'raw') || typeof value.raw !== 'string') return false;
   if (!hasOwn(value, 'kind')) return false;
-  if (value.kind === 'event') return true;
+  if (value.kind === 'event') {
+    // Own property only: an inherited `eventName` is not part of the message, and the relay's
+    // field-by-field rebuild never reads one.
+    return !hasOwn(value, 'eventName') || typeof value.eventName === 'string';
+  }
   if (value.kind === 'keepalive') return hasOwn(value, 'comment') && typeof value.comment === 'string';
   return false;
 }

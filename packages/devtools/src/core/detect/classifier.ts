@@ -21,7 +21,14 @@ export type RouteHint =
   | { kind: 'copilotkit-run'; basePath: string; agentId: string }
   | { kind: 'copilotkit-connect'; basePath: string; agentId: string }
   | { kind: 'copilotkit-stop'; basePath: string; agentId: string; threadId: string }
-  | { kind: 'copilotkit-inspector-metadata'; basePath: string };
+  | { kind: 'copilotkit-inspector-metadata'; basePath: string }
+  /**
+   * A LangGraph Platform run stream (spec L3) — not AG-UI on the wire: the event type is in the
+   * SSE `event:` field. `threadId` is absent on the threadless routes; `runId` is present only
+   * on a join stream, whose URL names the run it rejoins. A new run's id arrives in its first
+   * `metadata` event instead.
+   */
+  | { kind: 'langgraph-run'; basePath: string; threadId?: string; runId?: string };
 
 const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set<string>(EVENT_TYPES);
 
@@ -83,6 +90,14 @@ const RUN_RE = /^(.*)\/agent\/([^/]+)\/run$/;
 const CONNECT_RE = /^(.*)\/agent\/([^/]+)\/connect$/;
 const STOP_RE = /^(.*)\/agent\/([^/]+)\/stop\/([^/]+)$/;
 
+// LangGraph Platform (spec L3). Ids are one non-empty path segment; the SDK URL-encodes them.
+// The threadless forms require a base path that does not end in `/`, so a malformed
+// `/threads//runs/stream` is not read as a threadless run under the base `/threads/`.
+const LG_THREAD_RUN_RE = /^(.*)\/threads\/([^/]+)\/runs\/stream$/;
+const LG_RUN_RE = /^((?:.*[^/])?)\/runs\/stream$/;
+const LG_THREAD_JOIN_RE = /^(.*)\/threads\/([^/]+)\/runs\/([^/]+)\/stream$/;
+const LG_JOIN_RE = /^((?:.*[^/])?)\/runs\/([^/]+)\/stream$/;
+
 function pathOf(url: string): string {
   try {
     return new URL(url).pathname;
@@ -127,8 +142,12 @@ function isSingleRouteInfoEnvelope(body: unknown): boolean {
  * in its pattern — a successful `exec` always filled it — so the default is unreachable. It
  * is also the only safe default to write: `''` is precisely what `(.*)` captures for a
  * root-mounted route, and the `([^/]+)` groups cannot match fewer than one character. That
- * keeps `RouteHint`'s `basePath` / `agentId` / `threadId` as plain `string`, so consumers
- * never have to narrow a value the route grammar already guarantees.
+ * keeps `basePath` / `agentId` / the CopilotKit-route `threadId` as plain `string` wherever the
+ * grammar guarantees them, so consumers never have to narrow those values themselves.
+ * `langgraph-run`'s `threadId` / `runId` are the exception: they are genuinely optional on that
+ * kind (a threadless join route has no `threadId`; a plain run-creation route has neither), so
+ * `RouteHint` types them `string | undefined` rather than defaulting them to `''` here — an
+ * absent LangGraph id is a fact worth keeping, not noise to paper over.
  *
  * `body` is the DECODED request body when one is available and `undefined` otherwise, so every
  * existing two-argument call keeps its meaning exactly. It matters for one arm only — the
@@ -148,6 +167,18 @@ export function routeHint(url: string, method: string, body?: unknown): RouteHin
     if (meta) {
       const [, basePath = ''] = meta;
       return { kind: 'copilotkit-inspector-metadata', basePath };
+    }
+    // The thread form first: its path also ends `/runs/:id/stream`, and the threadless grammar
+    // would otherwise claim it with `/threads/:id` folded into the base path.
+    const threadJoin = LG_THREAD_JOIN_RE.exec(path);
+    if (threadJoin) {
+      const [, basePath = '', threadId = '', runId = ''] = threadJoin;
+      return { kind: 'langgraph-run', basePath, threadId, runId };
+    }
+    const join = LG_JOIN_RE.exec(path);
+    if (join) {
+      const [, basePath = '', runId = ''] = join;
+      return { kind: 'langgraph-run', basePath, runId };
     }
     return undefined;
   }
@@ -171,6 +202,22 @@ export function routeHint(url: string, method: string, body?: unknown): RouteHin
       const [, basePath = '', agentId = '', threadId = ''] = stop;
       return { kind: 'copilotkit-stop', basePath, agentId, threadId };
     }
+    // Same ordering argument as the GET branch: thread form first.
+    const threadRun = LG_THREAD_RUN_RE.exec(path);
+    if (threadRun) {
+      const [, basePath = '', threadId = ''] = threadRun;
+      return { kind: 'langgraph-run', basePath, threadId };
+    }
+    const lgRun = LG_RUN_RE.exec(path);
+    if (lgRun) {
+      const [, basePath = ''] = lgRun;
+      return { kind: 'langgraph-run', basePath };
+    }
+    // The LangGraph URL checks run before the single-route info envelope deliberately, not just
+    // because they are more specific: a CopilotKit single-route runtime mounted at a path that
+    // happens to end `/runs/stream` is implausible, while a LangGraph run body must never be
+    // misread as a single-route `{method:'info'}` request merely for having some other key
+    // collide with `method`. Keep this order.
     // `basePath` is the whole path: in single-route mode the runtime URL IS the endpoint, so
     // there is no suffix to strip and no sub-path to report.
     if (isSingleRouteInfoEnvelope(body)) {

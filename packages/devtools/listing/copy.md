@@ -54,8 +54,9 @@ This tool sits where prompts and completions flow, so its posture is not a matte
 - **Headers are never captured** except `content-type`. Authorization headers and cookies are
   never read, never stored, never exported.
 - **Redaction on export** for bug-report bundles: text, reasoning, tool arguments, tool results and
-  state values are replaced, while structure, types, ordering, sizes and timings survive — which is
-  what a protocol bug report actually needs.
+  state values are replaced in the streaming events that carry them — see the privacy policy for
+  the exceptions — while structure, types, ordering, sizes and timings survive, which is what a
+  protocol bug report actually needs.
 
 Every claim above is checkable by reading the built `manifest.json`, and the repository's build
 verification asserts them on every commit.
