@@ -390,3 +390,32 @@ describe('isInjectMessage — the info arm', () => {
     expect(isInjectMessage(hostile)).toBe(false);
   });
 });
+
+describe('isInjectMessage — the event name on a frame (L1)', () => {
+  function framesWith(frame: unknown): unknown {
+    return { source: AGUI_DT_SOURCE, v: PROTOCOL_VERSION, kind: 'frames', connId: 'c1', frames: [frame] };
+  }
+
+  it('accepts an event frame carrying a string eventName', () => {
+    const named: WireFrame = { kind: 'event', tMs: 1, raw: '{"run_id":"r1"}', eventName: 'metadata' };
+    expect(isInjectMessage(framesWith(named))).toBe(true);
+  });
+
+  it('accepts an event frame with no eventName, as every AG-UI frame is', () => {
+    expect(isInjectMessage(framesWith({ kind: 'event', tMs: 1, raw: '{}' }))).toBe(true);
+  });
+
+  it('rejects an eventName that is not a string', () => {
+    for (const eventName of [1, null, {}, ['values'], true]) {
+      expect(isInjectMessage(framesWith({ kind: 'event', tMs: 1, raw: '{}', eventName }))).toBe(false);
+    }
+  });
+
+  it('ignores an inherited eventName rather than trusting it', () => {
+    const frame = Object.create({ eventName: 42 }) as Record<string, unknown>;
+    frame.kind = 'event';
+    frame.tMs = 1;
+    frame.raw = '{}';
+    expect(isInjectMessage(framesWith(frame))).toBe(true);
+  });
+});
