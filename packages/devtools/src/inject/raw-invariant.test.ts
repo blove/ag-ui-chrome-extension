@@ -173,6 +173,49 @@ function captureViaEventSource(payload: string): InjectMessage[] {
 
 /* -------------------------------------------------------------------------- */
 
+/** A LangGraph-shaped stream: named events, one pretty-printed across several `data:` lines. */
+const NAMED_WIRE =
+  'event: metadata\ndata: {"run_id":"r1","attempt":1}\n\n' +
+  'event: values\ndata: {\ndata:   "messages": []\ndata: }\n\n';
+
+function eventNamesOf(posted: InjectMessage[]): (string | undefined)[] {
+  return framesOf(posted)
+    .filter((frame) => frame.kind === 'event')
+    .map((frame) => (frame.kind === 'event' ? frame.eventName : undefined));
+}
+
+describe('WireFrame.eventName is identical across transports (L1)', () => {
+  it('fetch and XHR both carry a real event name, frame for frame', async () => {
+    const viaFetch = eventNamesOf(await captureViaFetch(NAMED_WIRE));
+    const viaXhr = eventNamesOf(captureViaXhr(NAMED_WIRE));
+
+    expect(viaFetch).toEqual(['metadata', 'values']);
+    expect(viaXhr).toEqual(viaFetch);
+  });
+
+  it('fetch and XHR agree on raw for a named, multi-line payload', async () => {
+    const viaFetch = rawOf(await captureViaFetch(NAMED_WIRE), 'event');
+    expect(viaFetch).toEqual(['{"run_id":"r1","attempt":1}', '{\n  "messages": []\n}']);
+    expect(rawOf(captureViaXhr(NAMED_WIRE), 'event')).toEqual(viaFetch);
+  });
+
+  it('no transport reports a name for "event: message", because EventSource cannot', async () => {
+    // MULTILINE_WIRE opens with `event: message`.
+    const viaFetch = framesOf(await captureViaFetch(MULTILINE_WIRE));
+    const viaXhr = framesOf(captureViaXhr(MULTILINE_WIRE));
+    const viaEventSource = framesOf(captureViaEventSource(MULTILINE_PAYLOAD));
+
+    for (const frame of [...viaFetch, ...viaXhr, ...viaEventSource]) {
+      expect(Object.keys(frame)).not.toContain('eventName');
+    }
+  });
+
+  it('an unnamed frame has no eventName key at all, not an undefined one', async () => {
+    const [frame] = framesOf(await captureViaFetch(`data: ${EVENT_PAYLOAD}\n\n`));
+    expect(Object.keys(frame ?? {}).sort()).toEqual(['kind', 'raw', 'tMs']);
+  });
+});
+
 describe('WireFrame.raw is identical across fetch, XHR and EventSource', () => {
   it('agrees byte for byte on an event frame', async () => {
     const viaFetch = rawOf(await captureViaFetch(WIRE), 'event');

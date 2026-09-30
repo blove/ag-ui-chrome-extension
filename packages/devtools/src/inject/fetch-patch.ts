@@ -21,6 +21,7 @@ import {
   type RouteHint,
 } from '../core/detect/classifier';
 import { parseInfoBody, type RuntimeMode } from '../core/detect/info';
+import { normalizeEventName } from '../core/sse/event-name';
 import { createSseParser, type SseFrame } from '../core/sse/parser';
 import {
   AGUI_DT_SOURCE,
@@ -447,7 +448,15 @@ export function installFetchPatch(host: FetchHost, options: FetchPatchOptions): 
       const tMs = i === 0 ? startMs : chunkMs;
       if (frame.kind === 'event') {
         conn.observe(frame.data);
-        conn.frame({ kind: 'event', tMs, raw: frame.data });
+        // The name rides in a field of its own (L1), normalized by the same rule the XHR path
+        // applies in `wire-frame.ts` — `raw-invariant.test.ts` holds the two to it.
+        const eventName = normalizeEventName(frame.eventName);
+        conn.frame({
+          kind: 'event',
+          tMs,
+          raw: frame.data,
+          ...(eventName !== undefined ? { eventName } : {}),
+        });
       } else {
         conn.frame({
           kind: 'keepalive',
