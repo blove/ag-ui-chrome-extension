@@ -124,6 +124,15 @@ const WIDE_JSONL = [
     { type: 'STATE_DELTA', delta: [{ op: 'replace', path: '/counter', value: 9 }] },
     { type: 'STATE_SNAPSHOT', snapshot: { counter: 9, who: 'Ada' } },
     { type: 'STATE_DELTA', delta: [{ op: 'add', path: '/gone/child', value: 1 }] },
+    // Task 6b follow-up: `redact.ts` now fails closed on payloads it cannot classify as AG-UI
+    // events. These three exercise that path through the SAME validator-parity sweep as every
+    // known-type rule above, since a wholesale-redacted payload must not invent or withdraw an
+    // issue any more than a per-field one does. Placed before `RUN_FINISHED`, not after: an
+    // event after the terminal event raises its own `event-after-terminal` issue instead of
+    // reaching `checkShape` at all, which would exercise nothing new.
+    { type: 'FUTURE_EVENT', secret: 'unknown-type-event-payload' }, // unknown `type` -> unknown-event-type
+    { type: 42, note: 'numeric-type-event-payload' }, // non-string `type` -> shape-invalid
+    'raw unparsed frame that never became JSON', // not an object at all -> shape-invalid
     { type: 'RUN_FINISHED', threadId: 't_wide', runId: 'r_wide' },
   ].map((event, index) => ({
     kind: 'event',

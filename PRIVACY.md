@@ -75,21 +75,30 @@ came from.
 
 Selecting every category does not make the file empty of everything, and it is better to say so
 here than to let you find out from a diff. Structure survives by design, and so does anything the
-**developer** wrote rather than anything the **user** typed: event types, message and tool-call ids,
-JSON Pointer paths, tool names and their schemas, and — on a page backed by a CopilotKit runtime —
-the runtime version and the agent ids, names and descriptions its `/info` response reported. On a
-stream whose events carry a name in the SSE `event:` field — LangGraph Platform, for one — that
-name survives too, including subgraph namespaces such as `messages|research:<task id>`, which name
-nodes in the developer's own graph. None of the five categories covers that material, because
-removing it would cost a bug report most of what makes it legible while protecting nothing anyone
-typed. If an agent id or description is itself sensitive in your deployment, a capture is not the
-place to find that out — check the file before you share it.
+**developer** wrote rather than anything the **user** typed: in AG-UI events, event types, message
+and tool-call ids, JSON Pointer paths, tool names and their schemas, and — on a page backed by a
+CopilotKit runtime — the runtime version and the agent ids, names and descriptions its `/info`
+response reported. On a stream whose events carry a name in the SSE `event:` field — LangGraph
+Platform, for one — that name survives too, including subgraph namespaces such as
+`messages|research:<task id>`, which name nodes in the developer's own graph. None of the five
+categories covers that material, because removing it would cost a bug report most of what makes it
+legible while protecting nothing anyone typed. If an agent id or description is itself sensitive in
+your deployment, a capture is not the place to find that out — check the file before you share it.
 
 Payloads the extension does not recognise as AG-UI events — any other streaming protocol,
 including LangGraph Platform, and frames that failed to parse at all — are redacted in full as
 soon as any category is selected. The extension cannot tell which category their content belongs
-to, so it does not guess; it keeps only their shape, keys, and event type, and removes everything
-else.
+to, so it does not guess; it keeps only their shape, their keys, the SSE event name when the frame
+had one, and, for a payload with no event name, a `type` field that follows AG-UI's own naming
+convention. Keeping keys has a real edge to it: if an app keys a state map, or any other object, by
+text a user typed — a note keyed by its own title, say — that text is exported as a key, and no
+category redacts a key.
+
+This is not yet complete for AG-UI itself. With every category selected, the payloads of some
+AG-UI event types that no category yet owns are still exported as captured —
+`MESSAGES_SNAPSHOT`, `CUSTOM`, `RAW`, `ACTIVITY_SNAPSHOT`, `ACTIVITY_DELTA`,
+`THINKING_TEXT_MESSAGE_CONTENT`, and `RUN_ERROR`'s message — so check the file before sharing a
+capture that contains one of them.
 
 ## Remote code
 
