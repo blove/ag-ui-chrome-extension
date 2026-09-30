@@ -4,6 +4,7 @@ import type { JsonlLine } from '../../core/jsonl/codec';
 import { loadJsonl } from '../import/load-jsonl';
 import { buildExport } from './build';
 import { toFixtureModule } from './fixture';
+import { langGraphJsonl, aiChunk } from '../../test/langgraph-capture';
 
 function linesOf(text = happyJsonl): JsonlLine[] {
   const loaded = loadJsonl(text);
@@ -119,5 +120,32 @@ describe('the emitted module is importable TypeScript', () => {
   test('the replay snippet imports the module by its own name, extension dropped', () => {
     const module = toFixtureModule(linesOf(), 'agui-localhost-3000.fixture.ts');
     expect(module).toContain("from './agui-localhost-3000.fixture'");
+  });
+});
+
+describe('toFixtureModule — LangGraph connections (L18)', () => {
+  const lgText = langGraphJsonl([
+    { event: 'metadata', data: { run_id: 'r-1' } },
+    aiChunk('m1', 'Hi'),
+    { event: 'values', data: { messages: [] } },
+  ]);
+
+  test('writes LangGraph frames as {event, data} pairs, named, in order', () => {
+    const module = toFixtureModule(linesOf(lgText), 'lg.fixture.ts');
+    expect(module).toContain('export const langGraphEvents: LangGraphFrame[] = [');
+    const names = [...module.matchAll(/"event": "([a-z/|:]+)"/g)].map((match) => match[1]);
+    expect(names).toEqual(['metadata', 'messages', 'values']);
+  });
+
+  test('a LangGraph-only capture has an empty AG-UI array and defaults to its LangGraph frames', () => {
+    const module = toFixtureModule(linesOf(lgText), 'lg.fixture.ts');
+    expect(module).toContain('export const events: AguiEvent[] = [] as AguiEvent[];');
+    expect(module).toContain('export default langGraphEvents;');
+  });
+
+  test('an AG-UI capture has no LangGraph block at all', () => {
+    const module = toFixtureModule(linesOf(), 'f.fixture.ts');
+    expect(module).not.toContain('langGraphEvents');
+    expect(module).toContain('export default events;');
   });
 });

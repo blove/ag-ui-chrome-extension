@@ -4,7 +4,7 @@ import { render, screen, fireEvent } from '@testing-library/preact';
 // `?raw` rather than `readFileSync(new URL(...))`: under the jsdom project `import.meta.url` is
 // not a filesystem URL, so the node-style read resolves to the wrong path.
 import malformedJsonl from '../../../test/fixtures/malformed.agui.jsonl?raw';
-import { makeIssue, type CaptureRecord } from '../../../core/model/types';
+import { makeIssue, type AguiEvent, type CaptureRecord } from '../../../core/model/types';
 import { loadJsonl } from '../../import/load-jsonl';
 import { initialPanelState, type PanelState } from '../../model/panel-types';
 import { createPanelStore } from '../../model/store';
@@ -120,6 +120,66 @@ describe('EventList', () => {
 
     expect(screen.getByRole('option', { name: /keepalive/ })).toBeTruthy();
     expect(screen.getByRole('option', { name: /unparsed/ })).toBeTruthy();
+  });
+
+  describe('type label', () => {
+    function labelsOf(records: CaptureRecord[]): string[] {
+      const store = createPanelStore({ ...initialPanelState(), records });
+      render(<EventList store={store} />);
+      return screen
+        .getAllByRole('option')
+        .map((row) => row.querySelector('.agui-event-row__type')?.textContent ?? '');
+    }
+
+    it('labels a LangGraph array frame by its SSE event name', () => {
+      expect(
+        labelsOf([
+          {
+            kind: 'event',
+            seq: 1,
+            tMs: 0,
+            connId: 'c1',
+            raw: [{ id: 'm1' }, { langgraph_node: 'n' }],
+            event: null,
+            sseEvent: 'messages',
+            issues: [],
+          },
+        ]),
+      ).toEqual(['messages']);
+    });
+
+    it('labels a LangGraph object frame with no type by its SSE event name', () => {
+      expect(
+        labelsOf([
+          {
+            kind: 'event',
+            seq: 1,
+            tMs: 0,
+            connId: 'c1',
+            raw: { messages: [] },
+            event: { messages: [] } as unknown as AguiEvent,
+            sseEvent: 'values',
+            issues: [],
+          },
+        ]),
+      ).toEqual(['values']);
+    });
+
+    it('keeps the AG-UI type for an AG-UI frame', () => {
+      const store = createPanelStore(malformedState());
+      render(<EventList store={store} />);
+      expect(
+        screen.getAllByRole('option')[0]?.querySelector('.agui-event-row__type')?.textContent,
+      ).toBe('RUN_STARTED');
+    });
+
+    it("says 'unparsed' when there is neither a type nor an SSE event name", () => {
+      expect(
+        labelsOf([
+          { kind: 'event', seq: 1, tMs: 0, connId: 'c1', raw: '{oops', event: null, issues: [] },
+        ]),
+      ).toEqual(['unparsed']);
+    });
   });
 });
 

@@ -17,6 +17,8 @@ import { createStateTimeline, type StateTimeline } from '../state/timeline';
 import { runRules, finalizeRules, type RunValidationState } from '../validator';
 import { computeMetrics } from '../metrics/run-metrics';
 import { createChunkExpanderState, expandChunk, type ChunkExpanderState } from './chunk-expander';
+import { dialectOf, type Dialect } from './dialect';
+import { createLangGraphExpander, type LangGraphExpander } from './langgraph/expander';
 
 /**
  * The `event` arm of the `CaptureRecord` union — the only arm the fold decodes. Naming it
@@ -81,6 +83,10 @@ interface ConnEntry {
   chunkState: ChunkExpanderState;
   /** Arrival time of the last keepalive on this connection; gaps are measured against it. */
   lastKeepaliveMs?: number;
+  /** Decided once, at the connection's first event record (L4). */
+  dialect?: Dialect;
+  /** Present exactly when `dialect` is `'langgraph'`. */
+  langGraph?: LangGraphExpander;
 }
 
 function str(value: unknown): string | undefined {
@@ -539,8 +545,11 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     event: AguiEvent,
     record: EventRecord,
     countBytes: boolean,
+    validate = true,
   ): void {
-    const issues = runRules(event, record, entry.validation);
+    // L12: a synthetic event from the LangGraph expander is correct by construction. An AG-UI
+    // issue raised against one would be our translation bug reported as the user's.
+    const issues = validate ? runRules(event, record, entry.validation) : [];
     applyTransition(entry, event, record);
     noteRecord(entry, record, event, countBytes);
     attachIssues(entry, issues);
@@ -578,6 +587,80 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     }
   }
 
+  function dialectFor(conn: ConnEntry, record: EventRecord): Dialect {
+    conn.dialect ??= dialectOf(
+      conn.method !== undefined && conn.url !== undefined
+        ? { method: conn.method, url: conn.url }
+        : undefined,
+      { ...(record.sseEvent !== undefined ? { sseEvent: record.sseEvent } : {}), payload: record.raw },
+    );
+    return conn.dialect;
+  }
+
+  /** Fold synthetic events onto the runs they resolve to, stamped with the source frame (L10). */
+  function foldSynthetic(
+    conn: ConnEntry,
+    events: readonly AguiEvent[],
+    record: EventRecord,
+  ): RunEntry | undefined {
+    let first: RunEntry | undefined;
+    events.forEach((event, i) => {
+      const entry = resolveRun(conn, event, record);
+      entry.run.dialect = 'langgraph';
+      first ??= entry;
+      // Only the first carries the frame's bytes, so a frame is counted once (L13).
+      foldEvent(entry, event, record, i === 0, false);
+    });
+    return first;
+  }
+
+  /**
+   * A LangGraph frame. Read `raw`, not `event`: `event` is null for any non-object payload, and
+   * the `messages` tuple is a JSON array. A frame that produces no synthetic event — a namespaced
+   * event, `messages/metadata`, a `debug` frame — is still recorded on its run, raw.
+   */
+  function foldLangGraph(conn: ConnEntry, record: EventRecord): void {
+    conn.langGraph ??= createLangGraphExpander(conn.connId, {
+      ...(conn.method !== undefined ? { method: conn.method } : {}),
+      ...(conn.url !== undefined ? { url: conn.url } : {}),
+      input: conn.input,
+    });
+    const expansion = conn.langGraph.push({
+      seq: record.seq,
+      ...(record.sseEvent !== undefined ? { sseEvent: record.sseEvent } : {}),
+      payload: record.raw,
+    });
+    const first = foldSynthetic(conn, expansion.events, record);
+    const openEntry = conn.openRunId === undefined ? undefined : entries.get(conn.openRunId);
+    const target = first ?? openEntry ?? ensureOrphanEntry(conn.connId, record.tMs);
+    if (expansion.events.length === 0) noteRecord(target, record, null, true);
+    attachIssues(target, expansion.issues);
+    attachIssues(target, record.issues);
+  }
+
+  /** The expander's end of stream: close what is open and settle the outcome (L6, L9). */
+  function finishLangGraph(conn: ConnEntry, tMs: number): void {
+    if (conn.langGraph === undefined || conn.openRunId === undefined) return;
+    const entry = entries.get(conn.openRunId);
+    if (entry === undefined) return;
+    const seq = entry.run.recordSeqs.at(-1) ?? 0;
+    const finish = conn.langGraph.finish(seq);
+    // Nothing was on the wire for these: `raw: undefined` keeps them out of the byte count and
+    // the wire-name count, and they anchor to the run's last real seq, like the chunk flush.
+    const record: EventRecord = {
+      kind: 'event',
+      seq,
+      tMs,
+      connId: conn.connId,
+      raw: undefined,
+      event: null,
+      issues: [],
+    };
+    for (const event of finish.events) foldEvent(entry, event, { ...record, event }, false, false);
+    attachIssues(entry, finish.issues.map((raised) => ({ ...raised, tMs })));
+    if (finish.interrupted) entry.run.outcome = 'interrupted';
+  }
+
   function addRecord(record: CaptureRecord): void {
     const conn = ensureConn(record.connId);
 
@@ -585,6 +668,13 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     //    here is also what makes every `record.event` access below legal.
     if (record.kind === 'keepalive') {
       foldKeepalive(conn, record);
+      return;
+    }
+
+    // 1b. A LangGraph connection folds through its expander (L4). Decided before the null check:
+    //     a LangGraph `messages` tuple is an array, so its `event` is null by construction.
+    if (dialectFor(conn, record) === 'langgraph') {
+      foldLangGraph(conn, record);
       return;
     }
 
@@ -670,6 +760,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
       // A run that never terminated got no flush from `addRecord`, so it happens here —
       // and BEFORE `finalizeRules`, which reads the very sets the synthesized ENDs clear.
       flushChunkStateOntoCurrentRun(conn, tMs);
+      finishLangGraph(conn, tMs);
       for (const runId of conn.runIds) {
         const entry = entries.get(runId);
         if (entry === undefined) continue;
@@ -677,7 +768,9 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
         // `run-never-terminated`. It derives `seq` from `run.recordSeqs` itself.
         // The builder must not emit that issue a second time here — doing so
         // double-counts it and breaks the Task 16 "exactly three issues" test.
-        attachIssues(entry, finalizeRules(entry.validation, tMs));
+        // L12: the run-end rules are AG-UI rules. A LangGraph run's end is settled by the
+        // expander's `finish`, which closes what is open and raises its own issues.
+        if (conn.dialect !== 'langgraph') attachIssues(entry, finalizeRules(entry.validation, tMs));
         if (entry.run.outcome === 'running') {
           entry.run.outcome = 'aborted';
           entry.run.endedAtMs = tMs;

@@ -65,6 +65,18 @@ export function computeMetrics(
     // eventCountByType — requirements §5.4 requires it be recorded but excluded from the
     // event count.
     if (record.kind !== 'event') continue;
+    /*
+     * L13: a LangGraph run counts WIRE event names — `metadata`, `messages`,
+     * `messages|research:…` — one per frame, because its AG-UI events are synthetic and a count
+     * of them would describe our translation, not the stream. `raw !== undefined` is "this
+     * record carries a real frame": only the first synthetic event of a frame carries its bytes,
+     * and the end-of-stream events carry none. A frame with no `event:` name was dispatched by
+     * SSE as `message`, so it is counted under that name.
+     */
+    if (run.dialect === 'langgraph' && record.raw !== undefined) {
+      const name = record.sseEvent ?? 'message';
+      eventCountByType[name] = (eventCountByType[name] ?? 0) + 1;
+    }
     const event = record.event;
     if (event === null) continue;
 
@@ -76,7 +88,9 @@ export function computeMetrics(
     // correctly stays put for every synthesized event because those records carry
     // `raw: undefined`. The two numbers answer different questions; do not reconcile one to
     // the other. Both halves are pinned by tests in `run-builder.test.ts`.
-    eventCountByType[event.type] = (eventCountByType[event.type] ?? 0) + 1;
+    if (run.dialect !== 'langgraph') {
+      eventCountByType[event.type] = (eventCountByType[event.type] ?? 0) + 1;
+    }
     const messageId = typeof event.messageId === 'string' ? event.messageId : undefined;
     const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : undefined;
 

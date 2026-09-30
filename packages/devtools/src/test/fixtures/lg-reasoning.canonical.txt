@@ -1,0 +1,15 @@
+Step-by-step reasoning
+
+1) Let the three shares be distinct primes that sum to 14.
+
+2) Since 14 is even and every prime except 2 is odd, exactly one of the three must be 2. So write 2 + p + q = 14, which gives p + q = 12 with p and q odd primes.
+
+3) The only pair of distinct odd primes summing to 12 is 5 and 7. So the only triple of distinct primes summing to 14 is {2, 5, 7}.
+
+4) Check the “twice” condition: in {2, 5, 7} no number is twice another.
+
+5) More generally, if one prime is exactly twice another prime, say x = 2y, then x is even, so x must be 2. That forces y = 1, but 1 is not prime under the standard definition.
+
+Conclusion
+- Under the usual (modern) definition of prime numbers, there is no solution.
+- If you (nonstandardly) allow 1 to be prime, then the shares are 1, 2, and 11 (since 1 + 2 + 11 = 14 and 2 is twice 1).

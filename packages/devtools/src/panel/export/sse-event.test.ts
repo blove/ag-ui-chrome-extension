@@ -1,4 +1,3 @@
-// packages/devtools/src/panel/export/sse-event.test.ts
 /**
  * Spec L2: the SSE event name survives export, import, re-export and redaction — and an older
  * file, which has no name anywhere, is untouched by the new field.

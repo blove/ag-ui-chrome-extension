@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createRunBuilder } from './run-builder';
+import { createRunBuilder, type RunBuilder } from './run-builder';
 import type { RedactionGroup } from '../jsonl/redact';
 import { ORPHANED_RUN_ID } from '../model/types';
 import type { AguiEvent, CaptureRecord } from '../model/types';
@@ -876,5 +876,161 @@ describe('createRunBuilder — what the capture says was redacted out of it', ()
     const call = aware.getRun('r1')!.toolCalls.get('tc1')!;
     expect(call.argsText).toBe(ARGS_DELTA);
     expect(call.argsParseError).toBeDefined();
+  });
+});
+
+describe('run builder — LangGraph connections (L4, L10, L13)', () => {
+  function lgRecord(seq: number, sseEvent: string, raw: unknown): CaptureRecord {
+    return {
+      kind: 'event',
+      seq,
+      tMs: seq * 10,
+      connId: 'c1',
+      raw,
+      event: typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as AguiEvent) : null,
+      sseEvent,
+      issues: [],
+    };
+  }
+
+  function lgBuilder(): RunBuilder {
+    const builder = createRunBuilder();
+    builder.addRequest('c1', 'POST', 'http://localhost:2024/threads/t-1/runs/stream', {
+      assistant_id: 'agent',
+      stream_mode: ['values', 'messages-tuple'],
+    });
+    return builder;
+  }
+
+  const chunk = (id: string, content: unknown, extra: Record<string, unknown> = {}): unknown => [
+    { type: 'AIMessageChunk', id, content, tool_call_chunks: [], ...extra },
+    { langgraph_node: 'agent' },
+  ];
+
+  it('folds a LangGraph stream into a run, stamping synthetic events with the frame seq and time', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1', attempt: 1 }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hel')));
+    builder.addRecord(lgRecord(3, 'messages', chunk('m1', 'lo', { chunk_position: 'last' })));
+    builder.addRecord(lgRecord(4, 'values', { messages: [] }));
+    builder.closeConnection('c1', 50);
+
+    const [run] = builder.runs();
+    expect(run?.runId).toBe('r-1');
+    expect(run?.threadId).toBe('t-1');
+    expect(run?.dialect).toBe('langgraph');
+    expect(run?.outcome).toBe('finished');
+    expect(run?.input).toEqual({ assistant_id: 'agent', stream_mode: ['values', 'messages-tuple'] });
+    expect(run?.messages.get('m1')).toMatchObject({ content: 'Hello', closed: true, contentSeqs: [2, 3] });
+    expect(run?.recordSeqs).toEqual([1, 2, 3, 4]);
+    expect(run?.issues).toEqual([]);
+    expect(run?.metrics.ttftMs).toBe(10);
+  });
+
+  it('counts wire event names, one per frame, not synthetic event types (L13)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hi')));
+    builder.addRecord(lgRecord(3, 'messages', chunk('m1', '!')));
+    builder.addRecord(lgRecord(4, 'values', { messages: [] }));
+    builder.closeConnection('c1', 50);
+    expect(builder.runs()[0]?.metrics.eventCountByType).toEqual({ metadata: 1, messages: 2, values: 1 });
+  });
+
+  it('runs no AG-UI rule on a LangGraph run — no run-started-without-input, no unclosed-message', () => {
+    // No request at all: the dialect comes from the first frame, and there is no input for
+    // `run-started-without-input` to miss. No body also says nothing about `stream_mode`, so the
+    // expander does not expect a final values event.
+    const builder = createRunBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hi')));
+    builder.closeConnection('c1', 30);
+    expect(builder.allIssues()).toEqual([]);
+    expect(builder.runs()[0]?.outcome).toBe('finished');
+  });
+
+  it('settles the end with the expander, not finalizeRules — no run-never-terminated (L12)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hi')));
+    builder.closeConnection('c1', 30);
+    const codes = builder.allIssues().map((issue) => issue.code);
+    expect(codes).toEqual(['lg-no-final-values']);
+    expect(builder.runs()[0]?.outcome).toBe('aborted');
+  });
+
+  it('records the interrupted outcome (L9)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'values', { __interrupt__: [{ value: 'ok?' }] }));
+    builder.closeConnection('c1', 30);
+    expect(builder.runs()[0]?.outcome).toBe('interrupted');
+  });
+
+  it('records every frame exactly once — no-event frames, multi-event frames, frames after an error (L13)', () => {
+    const builder = lgBuilder();
+    const frames = [
+      lgRecord(1, 'metadata', { run_id: 'r-1' }),
+      lgRecord(2, 'debug', { step: 1 }), // no synthetic event
+      lgRecord(3, 'messages|sub:1', chunk('s1', 'sub')), // namespaced: no synthetic event yet
+      lgRecord(4, 'messages', chunk('m1', 'Hi')), // several synthetic events
+      lgRecord(5, 'metadata', { run_id: 'r-1' }), // a repeated metadata: no synthetic event
+      lgRecord(6, 'error', { error: 'E', message: 'boom' }),
+      lgRecord(7, 'values', { messages: [] }), // after the error: recorded, folds nothing
+    ];
+    for (const frame of frames) builder.addRecord(frame);
+    builder.closeConnection('c1', 100);
+
+    const [run] = builder.runs();
+    expect(builder.runs()).toHaveLength(1);
+    expect(run?.outcome).toBe('error');
+    expect(run?.recordSeqs).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(run?.metrics.eventCountByType).toEqual({
+      metadata: 2,
+      debug: 1,
+      'messages|sub:1': 1,
+      messages: 1,
+      error: 1,
+      values: 1,
+    });
+    const bytes = frames.reduce((sum, frame) => sum + new TextEncoder().encode(JSON.stringify(frame.raw)).length, 0);
+    expect(run?.metrics.totalStreamBytes).toBe(bytes);
+    expect(run?.issues).toEqual([]);
+  });
+
+  it('closes once: a second close raises nothing and settles nothing again', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hi')));
+    builder.closeConnection('c1', 30);
+    builder.closeConnection('c1', 90);
+    const [run] = builder.runs();
+    expect(run?.issues.map((issue) => [issue.code, issue.seq, issue.tMs])).toEqual([['lg-no-final-values', 2, 30]]);
+    expect(run?.endedAtMs).toBe(30);
+    expect(run?.messages.get('m1')).toMatchObject({ closed: true, endedAtMs: 30 });
+  });
+
+  it('classifies a LangGraph server behind a proxy path by its first metadata frame (L4)', () => {
+    const builder = createRunBuilder();
+    builder.addRequest('c1', 'POST', 'http://localhost:3000/api/agent', { stream_mode: ['values'] });
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1', thread_id: 't-9' }));
+    builder.addRecord(lgRecord(2, 'values', { __interrupt__: [{ value: 'ok?' }] }));
+    builder.closeConnection('c1', 30);
+    const [run] = builder.runs();
+    expect(run).toMatchObject({ runId: 'r-1', threadId: 't-9', dialect: 'langgraph', outcome: 'interrupted', endedAtMs: 30 });
+    expect(builder.allIssues()).toEqual([]);
+  });
+
+  it('leaves an AG-UI connection exactly as it was: no dialect, AG-UI types counted', () => {
+    const builder = createRunBuilder();
+    const record = (seq: number, event: AguiEvent): CaptureRecord => ({
+      kind: 'event', seq, tMs: seq, connId: 'a1', raw: event, event, issues: [],
+    });
+    builder.addRecord(record(1, { type: 'RUN_STARTED', runId: 'r', threadId: 't' }));
+    builder.addRecord(record(2, { type: 'RUN_FINISHED', runId: 'r', threadId: 't' }));
+    builder.closeConnection('a1', 3);
+    const [run] = builder.runs();
+    expect(run?.dialect).toBeUndefined();
+    expect(run?.metrics.eventCountByType).toEqual({ RUN_STARTED: 1, RUN_FINISHED: 1 });
   });
 });
