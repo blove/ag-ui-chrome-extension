@@ -801,7 +801,7 @@ describe('redactLine — a named SSE event is never an AG-UI frame', () => {
     expect(JSON.stringify(out)).not.toContain('SECRET');
     // The payload's own `type` is app data on a named line, not an AG-UI event type, so it is
     // redacted like any other field rather than kept.
-    expect((out.event as Record<string, unknown>).type).not.toBe('CUSTOM');
+    expect((out.event as Record<string, unknown>).type).toBe('«redacted: 6 chars»');
   });
 
   it('leaves it untouched when no group is selected, named line included', () => {

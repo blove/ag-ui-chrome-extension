@@ -95,10 +95,12 @@ text a user typed — a note keyed by its own title, say — that text is export
 category redacts a key.
 
 This is not yet complete for AG-UI itself. With every category selected, the payloads of some
-AG-UI event types that no category yet owns are still exported as captured —
-`MESSAGES_SNAPSHOT`, `CUSTOM`, `RAW`, `ACTIVITY_SNAPSHOT`, `ACTIVITY_DELTA`,
-`THINKING_TEXT_MESSAGE_CONTENT`, and `RUN_ERROR`'s message — so check the file before sharing a
-capture that contains one of them.
+AG-UI event types — `MESSAGES_SNAPSHOT`, `CUSTOM`, `RAW`, `ACTIVITY_SNAPSHOT`, `ACTIVITY_DELTA`,
+`THINKING_TEXT_MESSAGE_CONTENT`, and `RUN_ERROR`'s message — plus `RUN_FINISHED`'s `result` and
+the optional `rawEvent` field any AG-UI event may carry (a server that echoes the underlying
+provider's own chunk there, on any event type, including one a category otherwise redacts, such as
+`TEXT_MESSAGE_CONTENT`), are still exported as captured, so check the file before sharing a capture
+that contains one of them.
 
 ## Remote code
 

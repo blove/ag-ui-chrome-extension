@@ -95,13 +95,13 @@ function redactPatchOp(op: unknown): unknown {
  *
  * An export that PRIVACY.md says keeps only structure must not, in fact, keep content it merely
  * failed to recognise — that is the same class of gap #38 corrected for empty-string deltas: a
- * redacted file that quietly isn't. So anything that is not a plain object with a `type` in
- * `KNOWN_EVENT_TYPES` (the generated AG-UI event table), AND is not dispatching on a line that
- * names its own SSE event (see `redactLine`), is redacted wholesale with `redactDeep` as soon as
- * ANY group is selected — deliberately group-agnostic, because an unrecognised payload cannot be
- * attributed to text vs. reasoning vs. tool args vs. state; the extension has no way to know
- * which of the five groups its content belongs to, and guessing wrong is worse than redacting
- * more than asked.
+ * redacted file that quietly isn't. So: an UNRECOGNISED payload — one that is not a plain object
+ * with a `type` in `KNOWN_EVENT_TYPES` (the generated AG-UI event table) — OR ANY payload on a
+ * line that names its own SSE event (see `redactLine`; a named line is never AG-UI, whatever its
+ * `type` looks like) is redacted wholesale with `redactDeep` as soon as ANY group is selected —
+ * deliberately group-agnostic, because an unrecognised payload cannot be attributed to text vs.
+ * reasoning vs. tool args vs. state; the extension has no way to know which of the five groups
+ * its content belongs to, and guessing wrong is worse than redacting more than asked.
  *
  * `type` survives only on an UNNAMED payload (no `sseEvent`), and only when it is a string
  * matching AG-UI's own `UPPER_SNAKE` naming convention (`AGUI_TYPE_RE`): §11 promises event
@@ -112,6 +112,9 @@ function redactPatchOp(op: unknown): unknown {
  * number) is set to `null` rather than redacted as a leaf: a redacted string still reads to the
  * validator as SOME `type` value and would turn a `shape-invalid` issue into a fabricated
  * `unknown-event-type` — the same "don't invent a claim" rule `redactPatchOp` follows for paths.
+ * That parity reasoning is forward-looking, not currently observable: `checkShape`, the module
+ * that raises `shape-invalid`/`unknown-event-type`, has no caller outside its own unit tests
+ * today, so nothing in the live import/run-builder pipeline actually produces either code yet.
  *
  * Field-level LangGraph rules (spec decision L16) will replace this wholesale fallback for
  * LangGraph captures specifically, redacting message content, tool args and state precisely the
@@ -264,6 +267,11 @@ export function redactLine(line: JsonlLine, groups: RedactionGroup[]): JsonlLine
      * payload, `type` included, as opaque app data. Spec L16's field-level LangGraph rules will
      * replace this wholesale fallback for LangGraph specifically; until then this is the only
      * honest behaviour.
+     *
+     * This errs safe, not precise: an AG-UI server that also happened to send its own `event:
+     * <TYPE>` name on every frame would have those lines over-redacted here — their `type` label
+     * dropped along with everything else `redactWholesale` cannot attribute to a group — never
+     * under-redacted. Treating a named line as AG-UI by mistake is the direction that would leak.
      */
     if (line.sseEvent !== undefined) {
       return { ...line, event: redactWholesale(line.event, { keepAguiType: false }) };
