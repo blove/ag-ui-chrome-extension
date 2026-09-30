@@ -219,13 +219,170 @@ function eventPayload(event: unknown, out: string[]): void {
   }
 }
 
+/*
+ * LangGraph Platform, restated (spec L16). Not imported from `redact.ts` for the same reason as
+ * everything above: a LangGraph frame is a `[chunk, meta]` tuple, a state snapshot or a node
+ * write, dispatched on the mode its SSE event name carries, and this file says independently
+ * which of its strings each §11 group owns.
+ *
+ * Each string is listed with its OWNERS — the groups any one of which must remove it. Content no
+ * single group owns (`additional_kwargs`, a meta key LangGraph did not write, a `custom` payload,
+ * request `config`) is owned by every group: selecting any one removes it.
+ */
+type Owned = readonly [string, readonly RedactionGroup[]];
+const ANY: readonly RedactionGroup[] = ALL_REDACTION_GROUPS;
+
+function owns(value: unknown, owners: readonly RedactionGroup[], out: Owned[]): void {
+  const leaves: string[] = [];
+  stringLeaves(value, leaves);
+  for (const text of leaves) out.push([text, owners]);
+}
+
+/** `extra` adds owners: a message inside graph state is the state's as well as its own group's. */
+function lcMessageOwners(message: unknown, extra: readonly RedactionGroup[], out: Owned[]): void {
+  if (!isObject(message)) {
+    owns(message, ANY, out);
+    return;
+  }
+  const kind = typeof message.type === 'string' ? message.type : '';
+  const textGroup: RedactionGroup = kind === 'tool' || kind === 'ToolMessage' || kind === 'ToolMessageChunk' ? 'toolResults' : 'text';
+  const plus = (group: RedactionGroup): RedactionGroup[] => [group, ...extra];
+  if (typeof message.content === 'string') owns(message.content, plus(textGroup), out);
+  if (Array.isArray(message.content)) {
+    for (const block of message.content) {
+      if (!isObject(block)) continue;
+      if (block.type === 'text') owns(block.text, plus(textGroup), out);
+      else if (block.type === 'reasoning') {
+        if (Array.isArray(block.summary)) for (const part of block.summary) if (isObject(part)) owns(part.text, plus('reasoning'), out);
+        owns(block.reasoning, plus('reasoning'), out);
+      } else if (block.type === 'thinking') owns(block.thinking, plus('reasoning'), out);
+      else owns(block, ANY, out);
+    }
+  }
+  for (const key of ['tool_call_chunks', 'tool_calls', 'invalid_tool_calls']) {
+    const calls = message[key];
+    if (Array.isArray(calls)) for (const call of calls) if (isObject(call)) owns(call.args, plus('toolArgs'), out);
+  }
+  owns(message.artifact, plus('toolResults'), out);
+  owns(message.additional_kwargs, ANY, out);
+}
+
+/** Graph state: every value is the state's; the messages in it are also their own groups'. */
+function stateOwners(state: unknown, out: Owned[]): void {
+  if (!isObject(state)) {
+    owns(state, ['state'], out);
+    return;
+  }
+  for (const [key, value] of Object.entries(state)) {
+    if (key === 'messages' && Array.isArray(value)) {
+      for (const message of value) lcMessageOwners(message, ['state'], out);
+    } else {
+      owns(value, ['state'], out);
+    }
+  }
+}
+
+/** The meta keys LangGraph itself writes; anything else came from the run's config. */
+function lgMetaOwners(meta: unknown, out: Owned[]): void {
+  if (!isObject(meta)) return;
+  const own = new Set(['run_id', 'thread_id', 'graph_id', 'assistant_id', 'checkpoint_ns', 'created_by']);
+  for (const [key, value] of Object.entries(meta)) {
+    if (!key.startsWith('langgraph_') && !key.startsWith('ls_') && !own.has(key)) owns(value, ANY, out);
+  }
+}
+
+/** The strings one LangGraph export line carries, each with its owners. */
+function lgOwners(line: JsonlLine): Owned[] {
+  const out: Owned[] = [];
+  if (line.kind === 'request') {
+    const body = line.input;
+    if (!isObject(body)) return out;
+    if (isObject(body.input)) {
+      stateOwners(Object.fromEntries(Object.entries(body.input).filter(([key]) => key !== 'messages')), out);
+      if (Array.isArray(body.input.messages)) for (const message of body.input.messages) lcMessageOwners(message, [], out);
+    }
+    if (isObject(body.command)) {
+      owns(body.command.resume, ['text'], out);
+      owns(body.command.update, ['state'], out);
+    }
+    for (const key of ['config', 'context', 'metadata', 'checkpoint', 'webhook']) owns(body[key], ANY, out);
+    return out;
+  }
+  if (line.kind !== 'event') return out;
+  const payload = line.event;
+  const mode = (line.sseEvent ?? '').split('|')[0];
+  switch (mode) {
+    case 'metadata':
+      break;
+    case 'messages':
+      if (Array.isArray(payload)) {
+        lcMessageOwners(payload[0], [], out);
+        lgMetaOwners(payload[1], out);
+      }
+      break;
+    case 'messages/partial':
+    case 'messages/complete':
+      if (Array.isArray(payload)) for (const message of payload) lcMessageOwners(message, [], out);
+      break;
+    case 'values':
+      stateOwners(payload, out);
+      break;
+    case 'updates':
+      if (isObject(payload)) {
+        for (const [node, write] of Object.entries(payload)) {
+          if (node === '__interrupt__') owns(write, ['state'], out);
+          else stateOwners(write, out);
+        }
+      }
+      break;
+    case 'error':
+      if (isObject(payload)) owns(payload.message, ANY, out);
+      break;
+    default:
+      // `custom`, `debug`, `tasks`, anything unclassified: every group removes it.
+      owns(payload, ANY, out);
+  }
+  return out;
+}
+
+/**
+ * The owners of each string across `lines`. A string at two places is removed by a group only if
+ * that group removes it at both, so its owners are the intersection.
+ */
+function ownersAcross(lines: readonly JsonlLine[]): Map<string, readonly RedactionGroup[]> {
+  const owners = new Map<string, readonly RedactionGroup[]>();
+  for (const line of lines) {
+    for (const [text, groups] of lgOwners(line)) {
+      if (text.trim().length < 3) continue;
+      const before = owners.get(text);
+      owners.set(text, before === undefined ? groups : before.filter((group) => groups.includes(group)));
+    }
+  }
+  return owners;
+}
+
 /** Every payload string one export line carries, before redaction. */
 function payloadStrings(line: JsonlLine): string[] {
   const out: string[] = [];
-  if (line.kind === 'event') eventPayload(line.event, out);
+  // A named line is a LangGraph Platform frame (no AG-UI line in these captures is named).
+  if (line.kind === 'event' && line.sseEvent !== undefined) {
+    out.push(...lgOwners(line).map(([text]) => text));
+  } else if (line.kind === 'event') {
+    eventPayload(line.event, out);
+  }
   // The request line is half of what a bug report leaks: the user's own message is in the POST
   // body and in no event at all.
-  if (line.kind === 'request') inputPayload(line.input, out);
+  if (line.kind === 'request') {
+    // A LangGraph Platform body's `input` and `command` are LangChain-shaped, with structure of
+    // their own (a message's `type` and `id`), so `lgOwners` restates them rather than the
+    // `RunAgentInput` walk, which would count that structure as payload. Every other key goes
+    // through both walks.
+    const body = isObject(line.input)
+      ? Object.fromEntries(Object.entries(line.input).filter(([key]) => key !== 'input' && key !== 'command'))
+      : line.input;
+    inputPayload(body, out);
+    out.push(...lgOwners(line).map(([text]) => text));
+  }
   // Two characters cannot identify anyone and a stream is full of them; a short delta's LENGTH
   // survives redaction by design anyway, so the placeholder itself would match.
   return out.filter((text) => text.trim().length >= 3);
@@ -584,17 +741,15 @@ describe('E6: a fully redacted export leaks nothing', () => {
 
   test('a LangGraph request body leaks nothing: prompt, command, config, metadata', () => {
     const raw = exportWith(LANGGRAPH, []);
-    // The restatement must see the payload first, or the next assertion is vacuous. `r-lg` is the
-    // `metadata` frame's run id and `human` a LangChain message's `type`: this walk fails closed,
-    // so neither is structure to it, and the redactor removes both.
+    // The restatement must see the payload first, or the next assertion is vacuous. The
+    // `metadata` frame's run id `r-lg` and the message's `type` `human` are not in this list: since
+    // L16 they are LangGraph structure, and survive.
     expect(leakedValues(raw, raw).sort()).toEqual(
       [
         'approve the secret plan',
         'private notes about the user',
         'sk-secret-123',
         'what are the terms of the confidential merger',
-        'human',
-        'r-lg',
       ].sort(),
     );
     const redacted = exportWith(LANGGRAPH, [...ALL_REDACTION_GROUPS]);
@@ -605,7 +760,18 @@ describe('E6: a fully redacted export leaks nothing', () => {
     const raw = exportWith(lgReasoningJsonl, []);
     expect(leakedValues(raw, raw).length).toBeGreaterThan(0);
     const redacted = exportWith(lgReasoningJsonl, [...ALL_REDACTION_GROUPS]);
-    expect(leakedValues(raw, redacted)).toEqual([]);
+    /*
+     * Since L16 structure survives on a LangGraph capture, and two payload strings of this real
+     * capture are substrings of it: the reasoning fragment "ing" of the content block type
+     * `reasoning`, and the app state's `model: "gpt-5"` of the kept
+     * `response_metadata.model_name` "gpt-5-2025-08-07". Neither leaf itself survives: no string
+     * in the redacted file EQUALS either.
+     */
+    const leaks = leakedValues(raw, redacted);
+    expect(leaks.sort()).toEqual(['gpt-5', 'ing']);
+    const leaves: string[] = [];
+    stringLeaves(redacted, leaves);
+    for (const leak of leaks) expect(leaves).not.toContain(leak);
   });
 
   test('a run-scoped redacted export leaks nothing either', () => {
@@ -774,5 +940,137 @@ describe('E6: what must NOT be redacted, or the file stops being a bug report', 
         line.kind === 'event' && (line.event as { type: string }).type === 'TEXT_MESSAGE_CONTENT',
     );
     expect((content as { event: { delta: string } }).event.delta).toBe('«redacted: 35 chars»');
+  });
+});
+
+describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns, and only that', () => {
+  /** A distinct secret per group, each where LangGraph actually puts it. */
+  const SECRETS: Record<RedactionGroup, string[]> = {
+    text: ['what is the Zanzibar merger price', 'the answer names Contoso', 'the subgraph researched Fabrikam'],
+    reasoning: ['weighing the Contoso numbers privately'],
+    toolArgs: ['{"account":"ACME-7731"}'],
+    toolResults: ['revenue was 4.2M for ACME', 'artifact row with ACME ledger'],
+    state: ['state note about the Zurich account', 'approve the transfer to Zurich?'],
+  };
+  const EVERY: string[] = ['meta note the client sent', 'custom progress for ACME'];
+
+  const CAPTURE = langGraphJsonl(
+    [
+      { event: 'metadata', data: { run_id: 'r-lg', attempt: 1 } },
+      {
+        event: 'messages',
+        data: [
+          {
+            type: 'AIMessageChunk',
+            id: 'm1',
+            content: [{ type: 'reasoning', summary: [{ type: 'summary_text', text: 'weighing the Contoso numbers privately' }] }],
+            tool_call_chunks: [],
+          },
+          { langgraph_node: 'agent', langgraph_step: 1, user_note: 'meta note the client sent' },
+        ],
+      },
+      aiChunk('m1', [{ type: 'text', text: 'the answer names Contoso' }], { chunk_position: 'last' }),
+      {
+        event: 'messages|research:t1',
+        data: [{ type: 'AIMessageChunk', id: 'm-sub', content: 'the subgraph researched Fabrikam', tool_call_chunks: [], chunk_position: 'last' }, { langgraph_node: 'researcher' }],
+      },
+      aiChunk('m2', [], {
+        tool_call_chunks: [{ index: 0, id: 'call_1', name: 'lookup_revenue', args: '{"account":"ACME-7731"}' }],
+        chunk_position: 'last',
+      }),
+      {
+        event: 'messages',
+        data: [
+          {
+            type: 'tool',
+            id: 't1',
+            name: 'lookup_revenue',
+            tool_call_id: 'call_1',
+            content: 'revenue was 4.2M for ACME',
+            artifact: { rows: ['artifact row with ACME ledger'] },
+          },
+          { langgraph_node: 'tools' },
+        ],
+      },
+      { event: 'custom', data: { progress: 'custom progress for ACME' } },
+      {
+        event: 'values',
+        data: {
+          messages: [{ type: 'human', id: 'h1', content: 'what is the Zanzibar merger price' }],
+          account_note: 'state note about the Zurich account',
+        },
+      },
+      { event: 'updates', data: { __interrupt__: [{ value: { question: 'approve the transfer to Zurich?' }, id: 'int-1' }] } },
+    ],
+    {
+      body: {
+        assistant_id: 'agent',
+        input: { messages: [{ type: 'human', id: 'h1', content: 'what is the Zanzibar merger price' }] },
+        stream_mode: ['values', 'messages-tuple', 'updates', 'custom'],
+        stream_subgraphs: true,
+      },
+    },
+  );
+
+  const survivors = (lines: readonly JsonlLine[]): string[] => {
+    const out: string[] = [];
+    stringLeaves(lines, out);
+    return out;
+  };
+  const present = (lines: readonly JsonlLine[], secret: string): boolean =>
+    survivors(lines).some((survivor) => survivor.includes(secret));
+
+  test('the restatement sees every secret, with the owners this file says it has', () => {
+    const owners = ownersAcross(exportWith(CAPTURE, []));
+    for (const group of ALL_REDACTION_GROUPS) {
+      for (const secret of SECRETS[group]) expect([secret, owners.get(secret)]).toEqual([secret, [group]]);
+    }
+    for (const secret of EVERY) expect([secret, owners.get(secret)]).toEqual([secret, ANY]);
+  });
+
+  for (const group of ALL_REDACTION_GROUPS) {
+    test(`selecting only \`${group}\` removes its secrets and no other group's`, () => {
+      const raw = exportWith(CAPTURE, []);
+      const redacted = exportWith(CAPTURE, [group]);
+      for (const [secret, owners] of ownersAcross(raw)) {
+        expect([secret, present(redacted, secret)]).toEqual([secret, !owners.includes(group)]);
+      }
+      // The hand-written list too, so a secret the restatement lost cannot pass silently.
+      for (const secret of SECRETS[group]) expect([secret, present(redacted, secret)]).toEqual([secret, false]);
+      for (const other of ALL_REDACTION_GROUPS.filter((each) => each !== group)) {
+        for (const secret of SECRETS[other]) expect([secret, present(redacted, secret)]).toEqual([secret, true]);
+      }
+      for (const secret of EVERY) expect([secret, present(redacted, secret)]).toEqual([secret, false]);
+    });
+  }
+
+  test('every group together removes every secret', () => {
+    const raw = exportWith(CAPTURE, []);
+    const redacted = exportWith(CAPTURE, [...ALL_REDACTION_GROUPS]);
+    expect(leakedValues(raw, redacted)).toEqual([]);
+    for (const secret of [...Object.values(SECRETS).flat(), ...EVERY]) expect(present(redacted, secret)).toBe(false);
+  });
+
+  test('structure survives every group: event names, node names, ids, tool names, settings', () => {
+    const redacted = exportWith(CAPTURE, [...ALL_REDACTION_GROUPS]);
+    expect(redacted.flatMap((line) => (line.kind === 'event' ? [line.sseEvent] : []))).toEqual([
+      'metadata',
+      'messages',
+      'messages',
+      'messages|research:t1',
+      'messages',
+      'messages',
+      'custom',
+      'values',
+      'updates',
+    ]);
+    const leaves = survivors(redacted);
+    for (const kept of ['r-lg', 'agent', 'researcher', 'tools', 'm1', 'm2', 'm-sub', 'h1', 'call_1', 'lookup_revenue', 'AIMessageChunk', 'values', 'messages-tuple']) {
+      expect([kept, leaves.includes(kept)]).toEqual([kept, true]);
+    }
+    const file = JSON.stringify(redacted);
+    for (const key of ['"langgraph_node"', '"assistant_id"', '"stream_mode"', '"__interrupt__"', '"account_note"']) {
+      expect(file).toContain(key);
+    }
   });
 });

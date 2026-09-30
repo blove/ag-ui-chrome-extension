@@ -118,10 +118,9 @@ describe('the SSE event name in .agui.jsonl (L2)', () => {
   });
 
   test('redacting a LangGraph capture with every group removes its content but keeps sseEvent', () => {
-    // Task 6b: redact.ts fails closed on payloads it does not recognise as AG-UI events. This
-    // pins that a fully-redacted LangGraph export — the case PRIVACY.md's "redaction" section
-    // describes — does not leak the model's message content into the exported file, while the
-    // SSE event name (structure, not content) survives on every event line.
+    // A fully-redacted LangGraph export — the case PRIVACY.md's "redaction" section describes —
+    // does not leak the model's message content into the exported file, while the SSE event name
+    // (structure, not content) survives on every event line.
     const lines = reExport(LANGGRAPH_JSONL, [...ALL_REDACTION_GROUPS]);
     const file = encodeJsonl(lines);
 
@@ -129,5 +128,13 @@ describe('the SSE event name in .agui.jsonl (L2)', () => {
     // The user's own prompt lives in the request body, not in any event.
     expect(file).not.toContain('zanzibar quarterly forecast');
     expect(namesOf(lines)).toEqual(['metadata', 'messages', 'values']);
+    // Since L16 the payloads are redacted by field, not wholesale: the run id, the message's id and
+    // type and the node that produced it are structure, and survive too.
+    const [metadata, messages] = lines.filter((line) => line.kind === 'event').map((line) => line.event);
+    expect(metadata).toEqual({ run_id: 'r1', attempt: 1 });
+    expect(messages).toEqual([
+      { type: 'AIMessageChunk', id: 'm1', content: '«redacted: 20 chars»' },
+      { langgraph_node: 'agent' },
+    ]);
   });
 });

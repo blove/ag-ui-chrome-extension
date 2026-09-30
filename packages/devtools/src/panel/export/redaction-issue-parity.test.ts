@@ -27,6 +27,7 @@ import chunkedJsonl from '../../test/fixtures/chunked-run.agui.jsonl?raw';
 import messagesEdgeJsonl from '../../test/fixtures/messages-edge.agui.jsonl?raw';
 import stateEdgeJsonl from '../../test/fixtures/state-edge.agui.jsonl?raw';
 import lgReasoningJsonl from '../../test/fixtures/lg-reasoning.agui.jsonl?raw';
+import { aiChunk, langGraphJsonl } from '../../test/langgraph-capture';
 import { encodeJsonl } from '../../core/jsonl/codec';
 import { ALL_REDACTION_GROUPS, type RedactionGroup } from '../../core/jsonl/redact';
 import { applyLoaded } from '../import/apply-loaded';
@@ -194,6 +195,91 @@ const WIDE_JSONL = [
   .map((line) => JSON.stringify(line))
   .join('\n');
 
+/**
+ * A LangGraph Platform capture with something for every group: reasoning and text chunks, a tool
+ * call's streamed args and its result with an artifact, cumulative partials and a complete, state
+ * with an interrupt, a `custom` frame and an `error`-free close. Field-level redaction (L16) puts
+ * placeholders exactly where the expander reads — tool args, partial text — so this is where a
+ * claim redaction destroyed the evidence for would show up (L17).
+ */
+const LG_EVERY_GROUP = langGraphJsonl(
+  [
+    { event: 'metadata', data: { run_id: 'r-lg', attempt: 1 } },
+    aiChunk('m1', [{ type: 'reasoning', summary: [{ type: 'summary_text', text: 'thinking it over' }] }], {
+      usage_metadata: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+    }),
+    aiChunk('m1', [{ type: 'text', text: 'Looking it up.' }]),
+    aiChunk('m1', [], { tool_call_chunks: [{ index: 0, id: 'call_1', name: 'lookup', args: '{"account":' }] }),
+    aiChunk('m1', [], { tool_call_chunks: [{ index: 0, args: '"ACME"}' }], chunk_position: 'last' }),
+    {
+      event: 'messages',
+      data: [
+        { type: 'tool', id: 't1', name: 'lookup', tool_call_id: 'call_1', content: 'revenue 4.2M', artifact: { rows: [1, 2] } },
+        { langgraph_node: 'tools' },
+      ],
+    },
+    { event: 'messages/partial', data: [{ type: 'ai', id: 'm2', content: 'The rev' }] },
+    { event: 'messages/partial', data: [{ type: 'ai', id: 'm2', content: 'The revenue is 4.2M.' }] },
+    { event: 'messages/complete', data: [{ type: 'ai', id: 'm2', content: 'The revenue is 4.2M.' }] },
+    { event: 'custom', data: { progress: 'half way' } },
+    { event: 'updates', data: { agent: { messages: [{ type: 'ai', id: 'm2', content: 'The revenue is 4.2M.' }] } } },
+    {
+      event: 'values',
+      data: {
+        messages: [
+          { type: 'human', id: 'h1', content: 'what is the revenue' },
+          { type: 'tool', id: 't1', tool_call_id: 'call_1', content: 'revenue 4.2M' },
+        ],
+        note: 'a state value',
+      },
+    },
+    { event: 'updates', data: { __interrupt__: [{ value: { question: 'approve?' }, id: 'int-1' }] } },
+  ],
+  {
+    body: {
+      assistant_id: 'agent',
+      input: { messages: [{ type: 'human', id: 'h1', content: 'what is the revenue' }] },
+      command: { resume: 'yes', update: { note: 'x' } },
+      config: { configurable: { user: 'u' } },
+      stream_mode: ['values', 'messages-tuple', 'updates', 'custom'],
+    },
+  },
+);
+
+/** A subgraph run (L11): its frames are namespaced and fold into a child run. */
+const LG_SUBGRAPH = langGraphJsonl(
+  [
+    { event: 'metadata', data: { run_id: 'r-sub', attempt: 1 } },
+    { event: 'values', data: { messages: [{ type: 'human', id: 'h1', content: 'research this' }] } },
+    {
+      event: 'messages|research:t1',
+      data: [{ type: 'AIMessageChunk', id: 's1', content: 'Sub', tool_call_chunks: [] }, { langgraph_node: 'researcher' }],
+    },
+    {
+      event: 'messages|research:t1',
+      data: [
+        { type: 'AIMessageChunk', id: 's1', content: 'graph findings', tool_call_chunks: [], chunk_position: 'last' },
+        { langgraph_node: 'researcher' },
+      ],
+    },
+    { event: 'updates|research:t1', data: { researcher: { messages: [{ type: 'ai', id: 's1', content: 'Subgraph findings' }] } } },
+    { event: 'values|research:t1', data: { messages: [{ type: 'ai', id: 's1', content: 'Subgraph findings' }], topic: 'x' } },
+    { event: 'updates', data: { research: { findings: 'Subgraph findings' } } },
+    aiChunk('m1', 'Summary of the findings', { chunk_position: 'last' }),
+    {
+      event: 'values',
+      data: {
+        messages: [
+          { type: 'human', id: 'h1', content: 'research this' },
+          { type: 'ai', id: 'm1', content: 'Summary of the findings' },
+        ],
+        findings: 'Subgraph findings',
+      },
+    },
+  ],
+  { body: { assistant_id: 'agent', input: { messages: [{ type: 'human', content: 'research this' }] }, stream_mode: ['values', 'messages-tuple', 'updates'], stream_subgraphs: true } },
+);
+
 const CAPTURES: Array<readonly [string, string]> = [
   ['happy-run', happyJsonl],
   ['malformed', malformedJsonl],
@@ -204,6 +290,10 @@ const CAPTURES: Array<readonly [string, string]> = [
   // A real LangGraph Platform capture: its request body is redacted fail-closed, and that must
   // still invent or withdraw nothing — the dialect comes from the URL, which survives.
   ['lg-reasoning', lgReasoningJsonl],
+  // Field-level redaction (L16) leaves placeholders where the expander reads; it must decline
+  // what they destroyed (L17) rather than invent an issue.
+  ['lg every group (authored here)', LG_EVERY_GROUP],
+  ['lg subgraph (authored here)', LG_SUBGRAPH],
 ];
 
 /** Every single group, plus the "Redact everything" button's set. */
