@@ -304,9 +304,21 @@ describe('loadJsonl: runtime metadata in the header', () => {
     expect(loaded.runtime?.agents).toEqual([{ id: 'a', name: null, description: null }]);
   });
 
-  it('does not treat an unreadable runtime as a decode error', () => {
-    // The line decoded fine; one of its optional fields did not. Reporting "this capture is
-    // incomplete" over a field the reader never asked about would be a false alarm.
-    expect(loadJsonl(withHeader('nonsense')).decodeErrors).toEqual([]);
+  it('reports an unreadable runtime it dropped, like every other dropped value', () => {
+    // The Session tab would otherwise show "no agent metadata" for a capture that had some, and
+    // the reader could not tell that apart from a capture whose discovery never ran.
+    const loaded = loadJsonl(withHeader('nonsense'));
+    expect(loaded.decodeErrors).toEqual([
+      'line 1: header: runtime "nonsense" is not agent metadata this build can read; dropped',
+    ]);
+    expect(loaded.header).not.toHaveProperty('runtime');
+  });
+
+  it('keeps a dropped runtime out of the header too, so re-export cannot trip on it', () => {
+    for (const bad of [5, {}, [], true]) {
+      const loaded = loadJsonl(withHeader(bad));
+      expect(loaded.header).not.toHaveProperty('runtime');
+      expect(loaded.decodeErrors).toHaveLength(1);
+    }
   });
 });
