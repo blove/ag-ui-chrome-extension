@@ -25,12 +25,15 @@ const RUN_RE = /^\/threads\/([^/]+)\/runs\/stream$/;
 const JOIN_RE = /^\/threads\/([^/]+)\/runs\/([^/]+)\/stream$/;
 
 /**
- * Frames written between yields to the event loop. Without a yield Node coalesces the whole
- * 900 KB recording into a few socket writes; with one every few frames the page reads it in
- * hundreds of chunks, so frames — and their multi-line `data:` — straddle read boundaries the
- * way a real network delivers them.
+ * The stream is written in pieces of this many characters, with a yield to the event loop between
+ * each, and cut WITHOUT regard to frame or line boundaries. Written a frame at a time, Node
+ * delivers every read ending exactly on a blank line (measured: 137 reads, none mid-frame), which
+ * would leave the capture layer's buffering across reads — a frame's `event:` in one read and its
+ * last `data:` line three reads later — untested. Cut blind, a real network's worst case is the
+ * ordinary case: measured with a Node reader, `lg-reasoning` arrives in 3485 reads, 3482 of them
+ * ending mid-frame, in ~170 ms; even the 890-byte `lg-interrupt` arrives in three.
  */
-const FRAMES_PER_YIELD = 8;
+const PIECE_CHARS = 256;
 
 function readJson(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve) => {
@@ -58,12 +61,11 @@ async function writeFrames(res: ServerResponse, frames: readonly LangGraphFrame[
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
   });
-  let written = 0;
-  for (const frame of frames) {
+  const text = frames.map(encodeLangGraphFrame).join('');
+  for (let at = 0; at < text.length; at += PIECE_CHARS) {
     if (res.writableEnded || res.socket?.destroyed === true) return;
-    res.write(encodeLangGraphFrame(frame));
-    written += 1;
-    if (written % FRAMES_PER_YIELD === 0) await new Promise((done) => setImmediate(done));
+    res.write(text.slice(at, at + PIECE_CHARS));
+    await new Promise((done) => setImmediate(done));
   }
   res.end();
 }
