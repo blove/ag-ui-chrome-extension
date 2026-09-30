@@ -48,17 +48,18 @@ The tool sits on the wire where prompts and completions flow, so its posture is 
   you export.
 - **Headers are never captured** except `content-type`. `Authorization` and cookies are never read,
   never stored, never exported.
-- **Redaction on export is opt-in, and off by default.** Text deltas, reasoning content, tool
+- **Redaction on export is opt-in, and off by default.** Message text, reasoning content, tool
   arguments, tool results, and state values can each be replaced with `«redacted: 412 chars»`;
   structure, types, ordering, sizes, and timings survive, which is what a protocol bug report
   actually needs, and the export header records exactly what was redacted. Until you select a
   group the control reads **Export (unredacted)** and the file carries the real content of the
   streams you captured — so treat a capture you are about to share the way you would treat the
   conversation it came from. Selecting every group still leaves what the *developer* wrote rather
-  than what the *user* typed: ids, paths, tool names and schemas, any `/info` agent metadata, and —
-  on a stream whose frames carry their own SSE `event:` name, including LangGraph Platform's
-  subgraph namespaces — that name. Some AG-UI event types aren't covered by the five groups yet;
-  [PRIVACY.md](PRIVACY.md) says exactly what survives and which types those are.
+  than what the *user* typed: ids, paths, tool names and schemas, LangGraph node names and run
+  settings, any `/info` agent metadata, and — on a stream whose frames carry their own SSE
+  `event:` name, including LangGraph Platform's subgraph namespaces — that name. Content no one
+  group owns, such as a custom event's value or a run's error message, is redacted as soon as any
+  group is selected; [PRIVACY.md](PRIVACY.md) says exactly what survives.
 - **Bounded memory.** The capture buffer caps at a configurable default of 5k events / 8 MB, oldest
   dropped.
 

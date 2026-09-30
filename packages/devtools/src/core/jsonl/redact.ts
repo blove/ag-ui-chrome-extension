@@ -1,5 +1,7 @@
 import { EVENT_TABLE, EVENT_TYPES } from '../events/event-table.generated';
 import type { Dialect } from '../normalizer/dialect';
+import { roleOf } from '../normalizer/langgraph/messages';
+import { parseEventName } from '../normalizer/langgraph/names';
 import type { JsonlLine } from './codec';
 
 const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set<string>(EVENT_TYPES);
@@ -254,10 +256,10 @@ const FIELD_RULES: Record<string, Record<string, FieldRule>> = {
  * that raises `shape-invalid`/`unknown-event-type`, has no caller outside its own unit tests
  * today, so nothing in the live import/run-builder pipeline actually produces either code yet.
  *
- * Field-level LangGraph rules (spec decision L16) will replace this wholesale fallback for
- * LangGraph captures specifically, redacting message content, tool args and state precisely the
- * way AG-UI events do. Until that ships, this is the only honest behaviour for anything it
- * covers.
+ * A LangGraph Platform connection's frames no longer come here as a class: spec L16's
+ * field-level rules (`redactLangGraphEvent`) classify them by mode. This rule survives exactly for
+ * what those rules still cannot classify — `custom`, `debug` and unknown modes, a payload of the
+ * wrong shape for its mode — and for named frames on a connection not known to be LangGraph.
  */
 function redactWholesale(event: unknown, opts: { keepAguiType: boolean }): unknown {
   if (event === null || event === undefined) return event;
@@ -384,9 +386,16 @@ function redactMessage(message: unknown, groups: ReadonlySet<RedactionGroup>): u
  * `forwardedProps` are app-supplied payloads, all of which can carry anything the page had in
  * scope. A `resume` entry is the user's answer to an interrupt: it keeps `interruptId` and
  * `status`, and its `payload` goes under any group.
+ *
+ * Any OTHER top-level key is redacted in full as soon as any group is selected. A body that is
+ * not really a `RunAgentInput` — a LangGraph Platform server behind a proxy path, which dialect
+ * detection cannot tell from AG-UI when its first event is not `metadata` — carries the user's
+ * prompt at `input.messages` and resume values at `command`; kept, both would ship verbatim. What
+ * this module has not classified is content (fail closed).
  */
 function redactInput(input: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
-  if (!isPlainObject(input)) return input;
+  // A body that is not an object at all (raw text that failed to parse, say) is unclassified too.
+  if (!isPlainObject(input)) return redactDeep(input);
   const out = ownRecord();
   for (const [key, child] of Object.entries(input)) {
     if (['threadId', 'runId', 'parentRunId', 'tools'].includes(key)) out[key] = child;
@@ -399,6 +408,322 @@ function redactInput(input: unknown, groups: ReadonlySet<RedactionGroup>): unkno
     } else out[key] = redactDeep(child);
   }
   return { ...out };
+}
+
+/*
+ * LangGraph Platform, field by field (spec L16). The rule tables are in
+ * docs/superpowers/plans/2026-09-30-langgraph-pr4b-redaction.md; in short: each §11 group
+ * replaces the content it owns — message text, reasoning, tool arguments, tool results and
+ * artifacts, graph state — and what is developer-authored structure (event names, ids, node
+ * names, tool names, run settings) survives. What cannot be attributed to one group keeps the
+ * interim rule exactly: it is redacted in full as soon as ANY group is selected, because
+ * guessing its owner wrong is a leak and over-redacting is not.
+ *
+ * Every copy is built with `Object.fromEntries` over own entries, so a `__proto__` key parsed
+ * from JSON stays an own data property — redacted like any other unknown key — rather than
+ * becoming the copy's prototype.
+ */
+
+/** Maps an object's own entries, keeping every key as data. */
+function mapEntries(
+  value: Record<string, unknown>,
+  fn: (key: string, child: unknown) => unknown,
+): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, fn(key, child)]));
+}
+
+/**
+ * A structure slot's value — an id, a name, a type, an index, a status. Kept only while it is a
+ * scalar: an object or list in a slot that should hold a name is not known to be structure, so it
+ * is redacted in full (fail closed).
+ */
+function scalar(value: unknown): unknown {
+  return value === null || ['string', 'number', 'boolean'].includes(typeof value) ? value : redactDeep(value);
+}
+
+/** A structure slot that may also hold a list of scalars (`stream_mode`, `interrupt_before`, `next`). */
+function scalars(value: unknown): unknown {
+  return Array.isArray(value) ? value.map((item) => scalar(item)) : scalar(value);
+}
+
+/** Every group: what a message inside graph state is redacted with once `state` is selected. */
+const ALL_GROUPS: ReadonlySet<RedactionGroup> = new Set(ALL_REDACTION_GROUPS);
+
+/**
+ * `response_metadata` keys that name the model and why it stopped. The rest of that object is
+ * provider-specific and can carry content — OpenAI's `logprobs` hold the generated tokens — so
+ * it is redacted in full under any group (fail closed).
+ */
+const RESPONSE_METADATA_KEPT: ReadonlySet<string> = new Set([
+  'finish_reason',
+  'stop_reason',
+  'model_name',
+  'model',
+  'model_provider',
+  'system_fingerprint',
+  'service_tier',
+  'id',
+]);
+
+/**
+ * Token counts: sizes, which §11 promises survive. Numbers, booleans and nulls are kept; any
+ * string that turns up is not a count and is redacted (fail closed).
+ */
+function keepCounts(value: unknown): unknown {
+  if (typeof value === 'string') return redactString(value);
+  if (Array.isArray(value)) return value.map((item) => keepCounts(item));
+  if (isPlainObject(value)) return mapEntries(value, (_, child) => keepCounts(child));
+  return value;
+}
+
+/** Keys of a content block, reasoning summary entry or tool call that are structure. */
+const BLOCK_STRUCTURE: ReadonlySet<string> = new Set(['type', 'index', 'id']);
+
+/** A block's own keys: `fields` by their owner, structure kept, anything else in full. */
+function redactBlock(
+  block: Record<string, unknown>,
+  fields: Readonly<Record<string, (child: unknown) => unknown>>,
+): Record<string, unknown> {
+  return mapEntries(block, (key, child) => {
+    const field = Object.prototype.hasOwnProperty.call(fields, key) ? fields[key] : undefined;
+    if (field !== undefined) return field(child);
+    return BLOCK_STRUCTURE.has(key) ? scalar(child) : redactDeep(child);
+  });
+}
+
+/**
+ * One element of a LangChain `content` list. `textGroup` owns text: `toolResults` on a tool
+ * message, `text` otherwise. A bare string element is text, as LangChain reads it.
+ */
+function redactContentBlock(block: unknown, textGroup: RedactionGroup, set: ReadonlySet<RedactionGroup>): unknown {
+  if (typeof block === 'string') return owned(block, textGroup, set);
+  if (!isPlainObject(block)) return redactDeep(block);
+  const reasoning = (child: unknown): unknown => owned(child, 'reasoning', set);
+  switch (block.type) {
+    case 'text':
+      return redactBlock(block, { text: (child) => owned(child, textGroup, set) });
+    case 'reasoning':
+      return redactBlock(block, {
+        reasoning,
+        summary: (summary) =>
+          Array.isArray(summary)
+            ? summary.map((part) => (isPlainObject(part) ? redactBlock(part, { text: reasoning }) : redactDeep(part)))
+            : redactDeep(summary),
+      });
+    case 'thinking':
+      return redactBlock(block, { thinking: reasoning });
+    default:
+      // Images, files, tool-use blocks, Anthropic `redacted_thinking`: no one group owns them.
+      return redactDeep(block);
+  }
+}
+
+/** `tool_calls`, `tool_call_chunks`, `invalid_tool_calls`: `args` is `toolArgs`'; name and ids are kept. */
+function redactToolCalls(calls: unknown, set: ReadonlySet<RedactionGroup>): unknown {
+  if (!Array.isArray(calls)) return redactDeep(calls);
+  return calls.map((call) =>
+    isPlainObject(call)
+      ? mapEntries(call, (key, child) => {
+          if (key === 'args') return owned(child, 'toolArgs', set);
+          return key === 'name' || BLOCK_STRUCTURE.has(key) ? scalar(child) : redactDeep(child);
+        })
+      : redactDeep(call),
+  );
+}
+
+/**
+ * Message keys that are structure or developer-authored, kept under every group while scalar —
+ * except a human message's `name`, which is the user's own handle in a multi-user chat and is
+ * `text`'s.
+ */
+const LC_MESSAGE_KEPT: ReadonlySet<string> = new Set(['type', 'role', 'id', 'name', 'tool_call_id', 'status', 'chunk_position']);
+
+/**
+ * `role` values of an OpenAI-format message dict (`{role, content}`), which LangGraph accepts as
+ * input and a node may return as-is in its update.
+ */
+const MESSAGE_ROLES: ReadonlySet<string> = new Set(['user', 'assistant', 'system', 'developer', 'tool', 'function', 'human', 'ai']);
+
+/**
+ * Whether a message's `content` is a tool's output: a tool message, or the legacy
+ * `FunctionMessage` (`type: 'function'`), whose content is the function's result just the same.
+ */
+function isToolResultMessage(message: Record<string, unknown>): boolean {
+  return (
+    roleOf(message.type) === 'tool' ||
+    /^function(Message(Chunk)?)?$/i.test(typeof message.type === 'string' ? message.type : '') ||
+    message.role === 'tool' ||
+    message.role === 'function'
+  );
+}
+
+/**
+ * One LangChain message, as LangGraph Platform serializes it (a `messages` chunk, a cumulative
+ * partial, a message in state or in the request body). `set` is never empty here.
+ *
+ * `content` is text except on a tool message, where it is a tool result — so `toolResults` owns
+ * it there and `text` must not reach it, the same split `redactMessage` makes for AG-UI.
+ * `additional_kwargs` holds provider-specific reasoning and function-call arguments, and any key
+ * not listed here is unknown, so both are redacted in full under any group.
+ */
+function redactLcMessage(message: unknown, set: ReadonlySet<RedactionGroup>): unknown {
+  if (!isPlainObject(message)) return redactDeep(message);
+  const tool = isToolResultMessage(message);
+  const human = roleOf(message.type) === 'human' || message.role === 'user' || message.role === 'human';
+  const textGroup: RedactionGroup = tool ? 'toolResults' : 'text';
+  return mapEntries(message, (key, child) => {
+    if (key === 'name' && human) return owned(scalar(child), 'text', set);
+    if (LC_MESSAGE_KEPT.has(key)) return scalar(child);
+    switch (key) {
+      case 'content':
+        if (typeof child === 'string') return owned(child, textGroup, set);
+        if (Array.isArray(child)) return child.map((block) => redactContentBlock(block, textGroup, set));
+        return redactDeep(child);
+      case 'tool_calls':
+      case 'tool_call_chunks':
+      case 'invalid_tool_calls':
+        return redactToolCalls(child, set);
+      case 'artifact':
+        return tool ? owned(child, 'toolResults', set) : redactDeep(child);
+      case 'response_metadata':
+        return isPlainObject(child)
+          ? mapEntries(child, (metaKey, value) => (RESPONSE_METADATA_KEPT.has(metaKey) ? scalar(value) : redactDeep(value)))
+          : redactDeep(child);
+      case 'usage_metadata':
+        return keepCounts(child);
+      default:
+        return redactDeep(child);
+    }
+  });
+}
+
+/**
+ * Whether `value` is a message: a `content` beside a `type` naming a LangChain message role in
+ * either serialization, or beside an OpenAI-format `role`. Found wherever it sits in state, so
+ * `text` reaches message text in any state key, not only `messages`.
+ */
+function isLcMessage(value: Record<string, unknown>): boolean {
+  if (!('content' in value)) return false;
+  if (typeof value.role === 'string' && MESSAGE_ROLES.has(value.role)) return true;
+  if (typeof value.type !== 'string') return false;
+  return roleOf(value.type) !== 'other' || /^(chat|generic|function|remove)$|Message(Chunk)?$/.test(value.type);
+}
+
+/**
+ * Graph state — a `values` snapshot, an `updates` node write, `command.update`, the request's
+ * `input`. With `state` selected every leaf is redacted (keys survive: spec L16 notes state keys
+ * are structure), and the messages in it lose every content field while keeping their ids and
+ * types. Without `state`, the state is kept and only the messages in it are redacted, by field.
+ * An `__interrupt__`'s value — the question put to the user — is graph state like any other.
+ */
+function redactState(value: unknown, set: ReadonlySet<RedactionGroup>): unknown {
+  if (Array.isArray(value)) return value.map((item) => redactState(item, set));
+  if (isPlainObject(value)) {
+    if (isLcMessage(value)) return redactLcMessage(value, set.has('state') ? ALL_GROUPS : set);
+    return mapEntries(value, (key, child) => (key === 'messages' ? redactMessagesKey(child, set) : redactState(child, set)));
+  }
+  return set.has('state') ? redactLeaf(value) : value;
+}
+
+/**
+ * A state's `messages` key: whatever sits there is messages, in any form `add_messages` accepts —
+ * a message object, a `[role, text]` tuple, a bare string. An element the shape test cannot read
+ * is still a message, so it is redacted in full under any group rather than kept as state.
+ */
+function redactMessagesKey(value: unknown, set: ReadonlySet<RedactionGroup>): unknown {
+  const each = (message: unknown): unknown =>
+    isPlainObject(message) ? redactLcMessage(message, set.has('state') ? ALL_GROUPS : set) : redactDeep(message);
+  if (Array.isArray(value)) return value.map(each);
+  if (value === null || value === undefined) return value;
+  return each(value);
+}
+
+/** `messages` meta keys that are LangGraph's own bookkeeping, not config the client sent. */
+const LG_META_KEPT: ReadonlySet<string> = new Set([
+  'run_id',
+  'thread_id',
+  'graph_id',
+  'assistant_id',
+  'checkpoint_ns',
+  'created_by',
+  'ls_provider',
+  'ls_model_name',
+  'ls_model_type',
+  'ls_temperature',
+  'ls_integration',
+]);
+
+/**
+ * A `messages` tuple's metadata. It merges the run's config metadata, which can carry whatever
+ * the client sent, so only LangGraph's own keys survive. Not `langgraph_auth_*`: LangGraph
+ * Platform puts the authenticated user in the run's `configurable`
+ * (`langgraph_auth_user_id`, `langgraph_auth_user`), and LangGraph copies configurable values into
+ * this metadata — that is who the user is, not how the graph ran.
+ */
+function redactLgMeta(meta: unknown): unknown {
+  if (!isPlainObject(meta)) return redactDeep(meta);
+  return mapEntries(meta, (key, child) =>
+    (key.startsWith('langgraph_') && !key.startsWith('langgraph_auth')) || LG_META_KEPT.has(key)
+      ? child
+      : redactDeep(child),
+  );
+}
+
+/** A `metadata` event's keys: the run's identity. */
+const LG_RUN_METADATA_KEPT: ReadonlySet<string> = new Set(['run_id', 'attempt', 'thread_id', 'assistant_id']);
+
+/** A `checkpoints` payload: its `values` are state, `next` names nodes; config, metadata and tasks in full. */
+function redactCheckpoint(payload: Record<string, unknown>, set: ReadonlySet<RedactionGroup>): unknown {
+  return mapEntries(payload, (key, child) => {
+    if (key === 'values') return redactState(child, set);
+    if (key === 'next') return scalars(child);
+    return redactDeep(child);
+  });
+}
+
+/**
+ * One LangGraph Platform event payload, by its mode (the part of `sseEvent` before any `|`
+ * namespace). A payload of the wrong shape for its mode is redacted in full.
+ */
+function redactLangGraphEvent(mode: string, payload: unknown, set: ReadonlySet<RedactionGroup>): unknown {
+  switch (mode) {
+    case 'metadata':
+      // `{run_id, attempt}`: the run's identity, nothing anyone typed. Only those keys: a key a
+      // later server adds is one this module has never classified (fail closed).
+      if (!isPlainObject(payload)) break;
+      return mapEntries(payload, (key, child) => (LG_RUN_METADATA_KEPT.has(key) ? scalar(child) : redactDeep(child)));
+    case 'messages':
+      if (!Array.isArray(payload)) break;
+      return payload.map((item, i) => (i === 0 ? redactLcMessage(item, set) : i === 1 ? redactLgMeta(item) : redactDeep(item)));
+    case 'messages/partial':
+    case 'messages/complete':
+      if (!Array.isArray(payload)) break;
+      return payload.map((message) => redactLcMessage(message, set));
+    case 'messages/metadata':
+      if (!isPlainObject(payload)) break;
+      return mapEntries(payload, (_, entry) =>
+        isPlainObject(entry)
+          ? mapEntries(entry, (key, child) => (key === 'metadata' ? redactLgMeta(child) : redactDeep(child)))
+          : redactDeep(entry),
+      );
+    case 'values':
+    case 'updates':
+      if (!isPlainObject(payload)) break;
+      return redactState(payload, set);
+    case 'checkpoints':
+      if (!isPlainObject(payload)) break;
+      return redactCheckpoint(payload, set);
+    case 'error':
+      // The exception class name is the developer's; its message can echo the input. An `error`
+      // that is not a class name (an object, say) is not known to be structure.
+      if (!isPlainObject(payload)) break;
+      return mapEntries(payload, (key, child) => (key === 'error' && typeof child === 'string' ? child : redactDeep(child)));
+    default:
+      // `custom` (anything the graph wrote), `debug`, `tasks`, `events`, `tools`, `feedback`,
+      // and any mode this module has never seen: no one group owns them.
+      break;
+  }
+  return redactWholesale(payload, { keepAguiType: false });
 }
 
 /**
@@ -425,32 +750,60 @@ const LANGGRAPH_SETTINGS_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * A LangGraph Platform run request body, redacted fail-closed.
- *
- * Such a body is not a `RunAgentInput`: the user's prompt sits at `input.messages[].content` (the
- * LangChain message shape), beside `command` (interrupt resume values), `config`, `context`,
- * `metadata`, `checkpoint` and `webhook`. `redactInput` reads only top-level `messages`, `state`,
- * `context` and `forwardedProps`, so with every group selected all of that used to ship verbatim.
- *
- * Every key except the settings in `LANGGRAPH_SETTINGS_KEYS` — including any key this module has
- * never seen — is redacted deep as soon as ANY group is selected. That is deliberately
- * group-agnostic, the same interim rule `redactWholesale` applies to named LangGraph frames: a
- * redacted export is a file handed to other people, and content this module cannot yet attribute
- * to one of the five §11 groups must not ship in it. Field-level LangGraph rules (spec L16, PR 4)
- * will replace this with per-group precision; until then over-redacting is the only honest
- * behaviour. A body that is not a plain object is redacted wholesale.
- *
- * `Object.fromEntries` builds the copy so a `__proto__` key parsed from JSON stays an own data
- * property — and gets redacted like any other key — rather than becoming the copy's prototype.
+ * `command.goto`: a node name, a `Send` (`{node, input}` — the node and the state it is sent), or
+ * a list of either. Node names are kept; a `Send`'s input is graph state like `command.update`.
  */
-function redactLangGraphBody(input: unknown): unknown {
+function redactGoto(goto: unknown, set: ReadonlySet<RedactionGroup>): unknown {
+  if (typeof goto === 'string') return goto;
+  if (Array.isArray(goto)) return goto.map((each) => redactGoto(each, set));
+  if (!isPlainObject(goto)) return redactDeep(goto);
+  return mapEntries(goto, (key, child) => {
+    if (key === 'node' && typeof child === 'string') return child;
+    if (key === 'input' || key === 'arg') return redactState(child, set);
+    return redactDeep(child);
+  });
+}
+
+/** A run's `command`: `resume` is the user's answer to an interrupt, `update` is state, `goto` names nodes. */
+function redactCommand(command: unknown, set: ReadonlySet<RedactionGroup>): unknown {
+  if (!isPlainObject(command)) return redactDeep(command);
+  return mapEntries(command, (key, child) => {
+    if (key === 'resume') return owned(child, 'text', set);
+    if (key === 'update') return redactState(child, set);
+    if (key === 'goto') return redactGoto(child, set);
+    return redactDeep(child);
+  });
+}
+
+/**
+ * A LangGraph Platform run request body (spec L16). Not a `RunAgentInput`: the user's prompt sits
+ * at `input.messages[]`, the LangChain message shape, beside `command`, `config`, `context`,
+ * `metadata`, `checkpoint` and `webhook`.
+ *
+ * Settings survive; `input.messages[]` go by message field and the rest of `input` is state;
+ * `command` by `redactCommand`. `config`, `context`, `metadata`, `checkpoint`, `webhook` and any
+ * key this module has never seen can carry anything the client had in scope and no one group owns
+ * them, so they are redacted in full under any group. A body that is not a plain object is redacted
+ * wholesale.
+ */
+function redactLangGraphBody(input: unknown, set: ReadonlySet<RedactionGroup>): unknown {
   if (!isPlainObject(input)) return redactWholesale(input, { keepAguiType: false });
-  return Object.fromEntries(
-    Object.entries(input).map(([key, value]) => [
-      key,
-      LANGGRAPH_SETTINGS_KEYS.has(key) ? value : redactDeep(value),
-    ]),
-  );
+  return mapEntries(input, (key, value) => {
+    if (LANGGRAPH_SETTINGS_KEYS.has(key)) return scalars(value);
+    if (key === 'input') {
+      if (!isPlainObject(value)) return redactDeep(value);
+      // `input.messages` is the prompt in any form `add_messages` accepts: a list, one message, or
+      // a bare string — a non-list is still a message, never state. Every other input key is the
+      // graph's input schema, which is state AND, as often as not, the user's own words (a RAG
+      // graph's `question`): owned by `text` and `state` both.
+      return mapEntries(value, (inputKey, child) => {
+        if (inputKey !== 'messages') return set.has('text') ? redactDeep(child) : redactState(child, set);
+        return Array.isArray(child) ? child.map((message) => redactLcMessage(message, set)) : redactLcMessage(child, set);
+      });
+    }
+    if (key === 'command') return redactCommand(value, set);
+    return redactDeep(value);
+  });
 }
 
 /**
@@ -467,16 +820,20 @@ function redactLangGraphBody(input: unknown): unknown {
  * which fields are safe. Lines no group owns, and only those, are returned as-is, by reference:
  * a `header` or `keepalive` line, or an event/request line when `groups` is empty.
  *
- * `dialect` is the line's CONNECTION dialect (`dialectsOfLines`). It only changes a `request`
- * line: a LangGraph Platform body goes through `redactLangGraphBody`, which fails closed. Absent
- * or `'agui'`, a request body is a `RunAgentInput` and is redacted per field as before. Event
- * lines ignore it — a named LangGraph frame is already caught by its `sseEvent`.
+ * `dialect` is the line's CONNECTION dialect (`dialectsOfLines`). `'langgraph'` selects spec L16's
+ * field-level LangGraph rules: an event is redacted by the mode its `sseEvent` names
+ * (`redactLangGraphEvent`), a request body by `redactLangGraphBody`. Absent or `'agui'`, a
+ * request body is a `RunAgentInput` and an event goes through the AG-UI rules below, unchanged.
  */
 export function redactLine(line: JsonlLine, groups: RedactionGroup[], dialect?: Dialect): JsonlLine {
   if (groups.length === 0) return line;
   const set = new Set(groups);
 
   if (line.kind === 'event') {
+    // A LangGraph Platform connection: every frame is dispatched on its mode (spec L16).
+    if (dialect === 'langgraph') {
+      return { ...line, event: redactLangGraphEvent(parseEventName(line.sseEvent).mode, line.event, set) };
+    }
     /*
      * A line's `sseEvent` key means the frame carried an explicit `event:` name on the wire
      * (spec L1/L2). The capture and loader paths normalize the default name away — a bare
@@ -493,9 +850,10 @@ export function redactLine(line: JsonlLine, groups: RedactionGroup[], dialect?: 
      * Any OTHER named line — `sseEvent` present but not equal to the payload's `type` (including
      * every payload with no `type`, or a non-object payload) — still goes through
      * `redactWholesale` with `keepAguiType: false`: this module has no idea what that other
-     * protocol's fields mean, so `type` is treated as opaque app data rather than kept. Spec
-     * L16's field-level LangGraph rules will replace this wholesale fallback for LangGraph
-     * specifically; until then this is the only honest behaviour for anything it covers.
+     * protocol's fields mean, so `type` is treated as opaque app data rather than kept. A
+     * LangGraph Platform connection never reaches here — its dialect sends it to spec L16's
+     * field-level rules above — so this covers a named frame from a connection not known to be
+     * LangGraph, where wholesale is still the only honest behaviour.
      *
      * This still errs safe, not precise: a named AG-UI server whose `event:` names do NOT match
      * their own payload's `type` is over-redacted here — never under-redacted. Treating a named,
@@ -517,7 +875,7 @@ export function redactLine(line: JsonlLine, groups: RedactionGroup[], dialect?: 
   }
   if (line.kind === 'request') {
     if (dialect === 'langgraph') {
-      return { ...line, input: redactLangGraphBody(line.input) };
+      return { ...line, input: redactLangGraphBody(line.input, set) };
     }
     // Gated per field inside `redactInput`, not wholesale on `state`. Gating the whole body on
     // one group meant selecting `text` left the user's own messages verbatim.

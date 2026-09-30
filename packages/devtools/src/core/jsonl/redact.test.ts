@@ -783,8 +783,8 @@ describe('redactLine — a named SSE event is never an AG-UI frame', () => {
    * `FIELD_RULES` table by coincidence of a shared `type` string (e.g.
    * a LangGraph `CUSTOM`-shaped frame) would be exactly the kind of misclassification this
    * module exists to avoid — it has no idea what that protocol's `CUSTOM` actually carries.
-   * L16's field-level LangGraph rules will hang off this same branch, replacing wholesale
-   * redaction with precise per-field rules once that PR lands.
+   * These lines carry no dialect: a connection KNOWN to be LangGraph Platform takes L16's
+   * field-level rules instead (see "LangGraph Platform, field by field" below).
    */
   it('redacts wholesale, ignoring an AG-UI-shaped type, when the line names an SSE event', () => {
     const line: JsonlEvent = {
@@ -1168,8 +1168,9 @@ describe('redactLine — a LangGraph Platform request body fails closed', () => 
    * A LangGraph Platform run's POST body is not a `RunAgentInput`: the user's prompt sits at
    * `input.messages[].content`, next to `command` (resume values), `config` and `metadata`.
    * `redactInput` reads only top-level `messages`/`state`/`context`/`forwardedProps`, so every
-   * one of those shipped verbatim with every group selected. Until field-level LangGraph rules
-   * land (spec L16), everything but the run's settings is redacted whenever any group is chosen.
+   * one of those shipped verbatim with every group selected (#46). Spec L16 now redacts it per
+   * field (see the field-by-field block below); these pin that what no group owns — `config`,
+   * `metadata`, unknown keys — still goes under any group, and that settings survive.
    */
   const PROMPT = 'please summarise the confidential acquisition memo for me';
   const body = {
@@ -1200,8 +1201,8 @@ describe('redactLine — a LangGraph Platform request body fails closed', () => 
     expect(input.assistant_id).toBe('agent');
     expect(input.stream_mode).toEqual(['values', 'messages-tuple']);
     expect(input.stream_subgraphs).toBe(true);
-    // Structure survives, content does not.
-    expect(input.input).toEqual({ messages: [{ type: '«redacted: 5 chars»', content: `«redacted: ${PROMPT.length} chars»` }] });
+    // Structure survives, content does not: since L16 the message's `type` is structure too.
+    expect(input.input).toEqual({ messages: [{ type: 'human', content: `«redacted: ${PROMPT.length} chars»` }] });
   });
 
   it('redacts every unknown key too — anything unclassified is content', () => {
@@ -1228,14 +1229,543 @@ describe('redactLine — a LangGraph Platform request body fails closed', () => 
   });
 
   it('leaves an AG-UI request on the RunAgentInput path', () => {
-    const agui: JsonlRequest = { ...line, input: { threadId: 't', messages: [{ role: 'user', content: 'hello there' }], metadata: { keep: 'me' } } };
+    // `tools` tells the two paths apart: kept by the RunAgentInput rules, an unknown key (so
+    // redacted in full) on the LangGraph path. An unknown top-level key fails closed on both.
+    const tools = [{ name: 'lookup', description: 'look it up', parameters: { type: 'object' } }];
+    const agui: JsonlRequest = {
+      ...line,
+      input: { threadId: 't', messages: [{ role: 'user', content: 'hello there' }], tools, metadata: { keep: 'me' } },
+    };
     const out = redactLine(agui, ['text'], 'agui') as JsonlRequest;
     // `metadata` is not a `RunAgentInput` field, so it is content no group can claim and goes
     // under any group (LangGraph PR 4) — the RunAgentInput path is per field, not a passthrough.
     expect(out.input).toEqual({
       threadId: 't',
       messages: [{ role: 'user', content: '«redacted: 11 chars»' }],
+      tools,
       metadata: { keep: '«redacted: 2 chars»' },
+    });
+    const asLangGraph = redactLine(agui, ['text'], 'langgraph') as JsonlRequest;
+    expect((asLangGraph.input as { tools: unknown }).tools).not.toEqual(tools);
+  });
+});
+
+describe('redactLine — LangGraph Platform, field by field (L16)', () => {
+  /*
+   * The rule tables in docs/superpowers/plans/2026-09-30-langgraph-pr4b-redaction.md. For each
+   * group alone, exactly the fields that group owns become placeholders; the fields no group can
+   * be attributed to (`additional_kwargs`, unknown content blocks, extra meta keys, `custom`,
+   * `debug`, …) are redacted whenever ANY group is selected; structure survives every group.
+   */
+  const R = (value: string): string => `«redacted: ${value.length} chars»`;
+  type Owner = RedactionGroup | 'any' | 'none';
+  /** The value `secret` should have after redacting with `groups`, when `owner` owns it. */
+  const as = (groups: ReadonlySet<RedactionGroup>, owner: Owner, secret: string): string =>
+    owner === 'none' || (owner !== 'any' && !groups.has(owner)) ? secret : R(secret);
+
+  function lg(sseEvent: string | undefined, event: unknown, seq = 1): JsonlEvent {
+    return { kind: 'event', connId: 'c1', seq, tMs: seq * 10, ...(sseEvent !== undefined ? { sseEvent } : {}), event };
+  }
+  function run(line: JsonlEvent | JsonlRequest, groups: RedactionGroup[]): unknown {
+    const out = redactLine(deepFreeze(structuredClone(line)), groups, 'langgraph');
+    return out.kind === 'event' ? out.event : (out as JsonlRequest).input;
+  }
+
+  const aiChunk = {
+    type: 'AIMessageChunk',
+    id: 'm1',
+    content: [
+      { type: 'reasoning', id: 'rs_1', summary: [{ type: 'summary_text', text: 'REASON-SECRET', index: 0 }], index: 0 },
+      { type: 'thinking', thinking: 'THINK-SECRET', index: 1 },
+      { type: 'text', text: 'TEXT-SECRET', index: 2 },
+      { type: 'text', text: '', index: 3 },
+      { type: 'image_url', image_url: { url: 'IMG-SECRET' } },
+    ],
+    tool_call_chunks: [{ index: 0, id: 'call_1', name: 'lookup', args: '{"q":"ARGS-SECRET"}', type: 'tool_call_chunk' }],
+    tool_calls: [{ name: 'lookup', id: 'call_1', args: { q: 'ARGS2-SECRET' }, type: 'tool_call' }],
+    invalid_tool_calls: [{ name: 'lookup', id: 'call_2', args: 'BAD-SECRET', error: 'ERR-SECRET', type: 'invalid_tool_call' }],
+    additional_kwargs: { reasoning_content: 'KW-SECRET' },
+    response_metadata: { finish_reason: 'stop', model_name: 'gpt-x', logprobs: { content: [{ token: 'LOGP-SECRET' }] } },
+    usage_metadata: { input_tokens: 3, output_tokens: 5, total_tokens: 8, output_token_details: { reasoning: 2 } },
+    chunk_position: 'last',
+  };
+  const expectedAiChunk = (g: ReadonlySet<RedactionGroup>): unknown => ({
+    type: 'AIMessageChunk',
+    id: 'm1',
+    content: [
+      { type: 'reasoning', id: 'rs_1', summary: [{ type: 'summary_text', text: as(g, 'reasoning', 'REASON-SECRET'), index: 0 }], index: 0 },
+      { type: 'thinking', thinking: as(g, 'reasoning', 'THINK-SECRET'), index: 1 },
+      { type: 'text', text: as(g, 'text', 'TEXT-SECRET'), index: 2 },
+      // An empty string stays empty: nothing to protect, and emptiness is a fact (validator parity).
+      { type: 'text', text: '', index: 3 },
+      { type: R('image_url'), image_url: { url: R('IMG-SECRET') } },
+    ],
+    tool_call_chunks: [
+      { index: 0, id: 'call_1', name: 'lookup', args: as(g, 'toolArgs', '{"q":"ARGS-SECRET"}'), type: 'tool_call_chunk' },
+    ],
+    tool_calls: [{ name: 'lookup', id: 'call_1', args: { q: as(g, 'toolArgs', 'ARGS2-SECRET') }, type: 'tool_call' }],
+    invalid_tool_calls: [
+      { name: 'lookup', id: 'call_2', args: as(g, 'toolArgs', 'BAD-SECRET'), error: R('ERR-SECRET'), type: 'invalid_tool_call' },
+    ],
+    additional_kwargs: { reasoning_content: R('KW-SECRET') },
+    response_metadata: { finish_reason: 'stop', model_name: 'gpt-x', logprobs: { content: [{ token: R('LOGP-SECRET') }] } },
+    usage_metadata: { input_tokens: 3, output_tokens: 5, total_tokens: 8, output_token_details: { reasoning: 2 } },
+    chunk_position: 'last',
+  });
+  const meta = {
+    langgraph_node: 'agent',
+    langgraph_step: 2,
+    langgraph_path: ['__pregel_pull', 'agent'],
+    langgraph_checkpoint_ns: 'agent:abc',
+    run_id: 'r-1',
+    thread_id: 't-1',
+    ls_provider: 'openai',
+    ls_model_name: 'gpt-x',
+    ls_temperature: 0.2,
+    tags: ['seq:step:1'],
+    user_note: 'META-SECRET',
+  };
+  const expectedMeta = { ...meta, tags: [R('seq:step:1')], user_note: R('META-SECRET') };
+  const toolMessage = {
+    type: 'tool',
+    id: 't1',
+    name: 'lookup',
+    tool_call_id: 'call_1',
+    status: 'success',
+    content: 'RESULT-SECRET',
+    artifact: { rows: ['ARTIFACT-SECRET'] },
+  };
+  const expectedToolMessage = (g: ReadonlySet<RedactionGroup>): unknown => ({
+    ...toolMessage,
+    content: as(g, 'toolResults', 'RESULT-SECRET'),
+    artifact: { rows: [as(g, 'toolResults', 'ARTIFACT-SECRET')] },
+  });
+
+  for (const group of ALL_REDACTION_GROUPS) {
+    const g: ReadonlySet<RedactionGroup> = new Set([group]);
+
+    describe(`with only ${group}`, () => {
+      it('messages: redacts the chunk by field and the meta outside its kept keys', () => {
+        expect(run(lg('messages', [aiChunk, meta]), [group])).toEqual([expectedAiChunk(g), expectedMeta]);
+      });
+
+      it('messages (namespaced): the same rules, the namespace survives on the line', () => {
+        const line = lg('messages|research:t1', [aiChunk, meta]);
+        const out = redactLine(line, [group], 'langgraph') as JsonlEvent;
+        expect(out.sseEvent).toBe('messages|research:t1');
+        expect(out.event).toEqual([expectedAiChunk(g), expectedMeta]);
+      });
+
+      it('messages: a tool message is a tool result, content and artifact', () => {
+        expect(run(lg('messages', [toolMessage, { langgraph_node: 'tools' }]), [group])).toEqual([
+          expectedToolMessage(g),
+          { langgraph_node: 'tools' },
+        ]);
+      });
+
+      it('messages: a tool message\'s text block is a tool result too', () => {
+        const message = { type: 'tool', tool_call_id: 'call_1', content: [{ type: 'text', text: 'RB-SECRET' }] };
+        expect(run(lg('messages', [message, {}]), [group])).toEqual([
+          { ...message, content: [{ type: 'text', text: as(g, 'toolResults', 'RB-SECRET') }] },
+          {},
+        ]);
+      });
+
+      it('messages/partial and messages/complete: each message by field; anything else in full', () => {
+        for (const mode of ['messages/partial', 'messages/complete']) {
+          const payload = [{ type: 'ai', id: 'm1', content: 'PARTIAL-SECRET' }, toolMessage, 'STRAY-SECRET'];
+          expect(run(lg(mode, payload), [group])).toEqual([
+            { type: 'ai', id: 'm1', content: as(g, 'text', 'PARTIAL-SECRET') },
+            expectedToolMessage(g),
+            R('STRAY-SECRET'),
+          ]);
+        }
+      });
+
+      it('messages/metadata: each value\'s metadata by the meta rule', () => {
+        const payload = { m1: { metadata: { langgraph_node: 'agent', note: 'MM-SECRET' }, other: 'X-SECRET' } };
+        expect(run(lg('messages/metadata', payload), [group])).toEqual({
+          m1: { metadata: { langgraph_node: 'agent', note: R('MM-SECRET') }, other: R('X-SECRET') },
+        });
+      });
+
+      it('values: state by state, message fields by their owners wherever the message sits', () => {
+        const payload = {
+          messages: [{ type: 'human', id: 'h1', content: 'PROMPT-SECRET' }, aiChunk, toolMessage],
+          notes: 'STATE-SECRET',
+          count: 3,
+          history: { turns: [{ type: 'human', content: 'NESTED-SECRET' }] },
+          __interrupt__: [{ value: { question: 'INTERRUPT-SECRET' }, id: 'int-1' }],
+        };
+        const out = run(lg('values', payload), [group]);
+        if (group === 'state') {
+          // Every message content group is the state's here; message structure still survives.
+          const all: ReadonlySet<RedactionGroup> = new Set(ALL_REDACTION_GROUPS);
+          expect(out).toEqual({
+            messages: [{ type: 'human', id: 'h1', content: R('PROMPT-SECRET') }, expectedAiChunk(all), expectedToolMessage(all)],
+            notes: R('STATE-SECRET'),
+            count: R('3'),
+            history: { turns: [{ type: 'human', content: R('NESTED-SECRET') }] },
+            __interrupt__: [{ value: { question: R('INTERRUPT-SECRET') }, id: R('int-1') }],
+          });
+        } else {
+          expect(out).toEqual({
+            ...payload,
+            messages: [{ type: 'human', id: 'h1', content: as(g, 'text', 'PROMPT-SECRET') }, expectedAiChunk(g), expectedToolMessage(g)],
+            history: { turns: [{ type: 'human', content: as(g, 'text', 'NESTED-SECRET') }] },
+          });
+        }
+      });
+
+      it('updates: node names survive; a node\'s messages by field, its other writes under state', () => {
+        const payload = {
+          agent: { messages: [{ type: 'ai', id: 'm2', content: 'UPD-SECRET' }], plan: 'PLAN-SECRET' },
+          tools: null,
+          __interrupt__: [{ value: 'ASK-SECRET' }],
+        };
+        expect(run(lg('updates|research:t1', payload), [group])).toEqual({
+          agent: {
+            messages: [{ type: 'ai', id: 'm2', content: group === 'state' ? R('UPD-SECRET') : as(g, 'text', 'UPD-SECRET') }],
+            plan: as(g, 'state', 'PLAN-SECRET'),
+          },
+          tools: null,
+          __interrupt__: [{ value: as(g, 'state', 'ASK-SECRET') }],
+        });
+      });
+
+      it('checkpoints: values as values, next kept, config/metadata/tasks in full', () => {
+        const payload = {
+          config: { configurable: { thread_id: 't-1', user: 'CFG-SECRET' } },
+          metadata: { source: 'loop', writes: { agent: { note: 'WRITES-SECRET' } } },
+          values: { messages: [{ type: 'ai', id: 'm3', content: 'CP-SECRET' }], notes: 'CPSTATE-SECRET' },
+          next: ['tools'],
+          tasks: [{ id: 'task-1', name: 'tools', result: 'TASK-SECRET' }],
+        };
+        expect(run(lg('checkpoints', payload), [group])).toEqual({
+          config: { configurable: { thread_id: R('t-1'), user: R('CFG-SECRET') } },
+          metadata: { source: R('loop'), writes: { agent: { note: R('WRITES-SECRET') } } },
+          values: {
+            messages: [{ type: 'ai', id: 'm3', content: group === 'state' ? R('CP-SECRET') : as(g, 'text', 'CP-SECRET') }],
+            notes: as(g, 'state', 'CPSTATE-SECRET'),
+          },
+          next: ['tools'],
+          tasks: [{ id: R('task-1'), name: R('tools'), result: R('TASK-SECRET') }],
+        });
+      });
+
+      it('metadata: kept', () => {
+        const payload = { run_id: 'r-1', attempt: 1 };
+        expect(run(lg('metadata', payload), [group])).toEqual(payload);
+      });
+
+      it('error: the exception class kept, its message redacted', () => {
+        expect(run(lg('error', { error: 'ValueError', message: 'ERROR-SECRET' }), [group])).toEqual({
+          error: 'ValueError',
+          message: R('ERROR-SECRET'),
+        });
+      });
+
+      it('custom, debug, tasks, events, tools, feedback and an unknown mode: in full', () => {
+        for (const mode of ['custom', 'debug', 'tasks', 'events', 'tools', 'feedback', 'surprise', 'custom|research:t1']) {
+          expect(run(lg(mode, { type: 'progress', note: 'OPAQUE-SECRET', n: 1 }), [group])).toEqual({
+            type: R('progress'),
+            note: R('OPAQUE-SECRET'),
+            n: R('1'),
+          });
+        }
+        // An unnamed frame on a LangGraph connection has no mode to classify it by.
+        expect(run(lg(undefined, { note: 'OPAQUE-SECRET' }), [group])).toEqual({ note: R('OPAQUE-SECRET') });
+      });
+
+      it('a payload of the wrong shape for its mode: in full', () => {
+        expect(run(lg('messages', { content: 'SHAPE-SECRET' }), [group])).toEqual({ content: R('SHAPE-SECRET') });
+        expect(run(lg('values', ['SHAPE-SECRET']), [group])).toEqual([R('SHAPE-SECRET')]);
+        expect(run(lg('messages', ['SHAPE-SECRET', 'META-SECRET']), [group])).toEqual([R('SHAPE-SECRET'), R('META-SECRET')]);
+      });
+
+      it('request body: prompt, resume, update and input by owner; config and friends in full; settings kept', () => {
+        const body = {
+          assistant_id: 'agent',
+          input: { messages: [{ type: 'human', id: 'h1', content: 'PROMPT-SECRET' }], topic: 'INPUT-STATE-SECRET' },
+          command: { resume: 'RESUME-SECRET', update: { notes: 'UPDATE-SECRET' }, goto: 'agent' },
+          config: { configurable: { user_token: 'CONFIG-SECRET' } },
+          context: { k: 'CONTEXT-SECRET' },
+          metadata: { m: 'METADATA-SECRET' },
+          checkpoint: { checkpoint_id: 'CP-ID-SECRET' },
+          webhook: 'WEBHOOK-SECRET',
+          surprise: 'SURPRISE-SECRET',
+          stream_mode: ['values', 'messages-tuple'],
+          stream_subgraphs: true,
+        };
+        const line: JsonlRequest = { kind: 'request', connId: 'c1', tMs: 0, method: 'POST', url: 'http://localhost:2024/threads/t1/runs/stream', input: body };
+        expect(run(line, [group])).toEqual({
+          assistant_id: 'agent',
+          input: {
+            messages: [{ type: 'human', id: 'h1', content: as(g, 'text', 'PROMPT-SECRET') }],
+            // An input-schema key is the user's words as often as state: `text` and `state` own it.
+            topic: g.has('text') ? R('INPUT-STATE-SECRET') : as(g, 'state', 'INPUT-STATE-SECRET'),
+          },
+          command: { resume: as(g, 'text', 'RESUME-SECRET'), update: { notes: as(g, 'state', 'UPDATE-SECRET') }, goto: 'agent' },
+          config: { configurable: { user_token: R('CONFIG-SECRET') } },
+          context: { k: R('CONTEXT-SECRET') },
+          metadata: { m: R('METADATA-SECRET') },
+          checkpoint: { checkpoint_id: R('CP-ID-SECRET') },
+          webhook: R('WEBHOOK-SECRET'),
+          surprise: R('SURPRISE-SECRET'),
+          stream_mode: ['values', 'messages-tuple'],
+          stream_subgraphs: true,
+        });
+      });
+    });
+  }
+
+  it('every group together leaves only structure', () => {
+    const lines: Array<JsonlEvent | JsonlRequest> = [
+      {
+        kind: 'request',
+        connId: 'c1',
+        tMs: 0,
+        method: 'POST',
+        url: 'http://localhost:2024/threads/t1/runs/stream',
+        input: {
+          assistant_id: 'agent',
+          input: { messages: [{ type: 'human', id: 'h1', content: 'PROMPT-SECRET' }] },
+          command: { resume: 'RESUME-SECRET', goto: 'agent' },
+          stream_mode: ['values'],
+        },
+      },
+      lg('metadata', { run_id: 'r-1' }, 1),
+      lg('messages', [aiChunk, meta], 2),
+      lg('messages|research:t1', [toolMessage, { langgraph_node: 'tools' }], 3),
+      lg('values', { messages: [{ type: 'human', id: 'h1', content: 'PROMPT-SECRET' }], notes: 'STATE-SECRET' }, 4),
+      lg('updates', { agent: { messages: [], plan: 'PLAN-SECRET' }, __interrupt__: [{ value: 'ASK-SECRET' }] }, 5),
+      lg('custom', { note: 'CUSTOM-SECRET' }, 6),
+      lg('error', { error: 'ValueError', message: 'ERROR-SECRET' }, 7),
+    ];
+    const text = JSON.stringify(lines.map((line) => redactLine(line, [...ALL_REDACTION_GROUPS], 'langgraph')));
+    expect(text.match(/[A-Z0-9]+(-[A-Z0-9]+)*-SECRET/g) ?? []).toEqual([]);
+    for (const survivor of [
+      'messages|research:t1',
+      'langgraph_node',
+      '"agent"',
+      '"tools"',
+      'r-1',
+      'm1',
+      'h1',
+      'call_1',
+      'lookup',
+      'AIMessageChunk',
+      'ValueError',
+      'assistant_id',
+      'stream_mode',
+      'gpt-x',
+    ]) {
+      expect(text).toContain(survivor);
+    }
+  });
+
+  it('returns the line by reference when no group is selected', () => {
+    const event = lg('messages', [aiChunk, meta]);
+    expect(redactLine(event, [], 'langgraph')).toBe(event);
+  });
+
+  it('keeps a __proto__ key as data, in a message and in state', () => {
+    const payload = JSON.parse(
+      '{"messages":[{"type":"ai","content":"x","__proto__":{"leak":"PROTO-SECRET"}}],"__proto__":{"leak":"STATE-PROTO-SECRET"}}',
+    ) as unknown;
+    const out = run(lg('values', payload), ['text']) as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(out, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    const message = (out.messages as Array<Record<string, unknown>>)[0]!;
+    expect(Object.prototype.hasOwnProperty.call(message, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(message)).toBe(Object.prototype);
+    // An unknown message key is unclassifiable: in full under any group.
+    expect(JSON.stringify(message)).not.toContain('PROTO-SECRET');
+  });
+
+  /*
+   * Review fixes (2026-09-30): each payload below shipped a user's or a model's content in a
+   * redacted export before.
+   */
+  const req = (input: unknown): JsonlRequest => ({
+    kind: 'request',
+    connId: 'c1',
+    tMs: 0,
+    method: 'POST',
+    url: 'http://localhost:2024/threads/t1/runs/stream',
+    input,
+  });
+  it('redacts a Send in command.goto as state, keeping node names', () => {
+    // `Command(goto=Send(node, input))`: the input is the state sent to that node, every word of it.
+    const body = {
+      command: {
+        goto: [
+          'summarise',
+          { node: 'research', input: { messages: [{ type: 'human', content: 'GOTO-PROMPT' }], topic: 'GOTO-STATE' } },
+        ],
+      },
+    };
+    for (const group of ALL_REDACTION_GROUPS) {
+      const out = JSON.stringify(run(req(body), [group]));
+      expect(out).toContain('"summarise"');
+      expect(out).toContain('"research"');
+      if (group === 'text' || group === 'state') expect(out).not.toContain('GOTO-PROMPT');
+      if (group === 'state') expect(out).not.toContain('GOTO-STATE');
+    }
+    const all = JSON.stringify(run(req(body), [...ALL_REDACTION_GROUPS]));
+    expect(all).not.toMatch(/GOTO-/);
+  });
+
+  it('redacts input.messages given as a bare string or a single message under text', () => {
+    // `add_messages` accepts a string as the prompt; not a list, but a message all the same.
+    expect(JSON.stringify(run(req({ input: { messages: 'STRING-PROMPT' } }), ['text']))).not.toContain('STRING-PROMPT');
+    expect(
+      JSON.stringify(run(req({ input: { messages: { role: 'user', content: 'ONE-PROMPT' } } }), ['text'])),
+    ).not.toContain('ONE-PROMPT');
+  });
+
+  it('finds OpenAI-format and non-object messages in state under text', () => {
+    // A node may return `{"messages": [{"role": "assistant", "content": ...}]}` — or tuples, or a
+    // string — and the `updates` frame carries its return value as-is.
+    const update = {
+      agent: {
+        messages: [{ role: 'assistant', content: 'ROLE-TEXT' }, ['assistant', 'TUPLE-TEXT'], 'BARE-TEXT'],
+        chat: [{ role: 'user', content: 'OTHER-KEY-TEXT' }],
+        note: 'STATE-NOTE',
+      },
+    };
+    const out = JSON.stringify(run(lg('updates', update), ['text']));
+    for (const secret of ['ROLE-TEXT', 'TUPLE-TEXT', 'BARE-TEXT', 'OTHER-KEY-TEXT']) expect(out).not.toContain(secret);
+    expect(out).toContain('STATE-NOTE');
+    expect(out).toContain('"role":"assistant"');
+  });
+
+  it('owns a FunctionMessage\'s content by toolResults, like a tool message', () => {
+    // LangChain's legacy FunctionMessage (`type: 'function'`) carries a function's result.
+    const fn = { type: 'function', name: 'lookup', content: 'FUNC-RESULT' };
+    expect(JSON.stringify(run(lg('messages', [fn, {}]), ['toolResults']))).not.toContain('FUNC-RESULT');
+    expect(JSON.stringify(run(lg('messages', [fn, {}]), ['text']))).toContain('FUNC-RESULT');
+    const role = { role: 'tool', tool_call_id: 'c', content: 'ROLE-RESULT' };
+    expect(JSON.stringify(run(lg('values', { messages: [role] }), ['toolResults']))).not.toContain('ROLE-RESULT');
+  });
+
+  it('keeps only the run identity of a metadata event', () => {
+    const out = run(lg('metadata', { run_id: 'r-1', attempt: 1, input: 'META-EXTRA' }), ['state']);
+    expect(out).toEqual({ run_id: 'r-1', attempt: 1, input: R('META-EXTRA') });
+  });
+
+  it('redacts the authenticated user LangGraph copies into messages metadata', () => {
+    // LangGraph Platform sets `langgraph_auth_user_id` in `configurable`; LangGraph copies
+    // configurable primitives into the metadata of every `messages` tuple.
+    const out = run(
+      lg('messages', [
+        { type: 'ai', content: 'x' },
+        { langgraph_node: 'agent', langgraph_auth_user_id: 'AUTH-USER', langgraph_auth_user: { email: 'AUTH-EMAIL' } },
+      ]),
+      ['reasoning'],
+    ) as unknown[];
+    expect(out[1]).toEqual({
+      langgraph_node: 'agent',
+      langgraph_auth_user_id: R('AUTH-USER'),
+      langgraph_auth_user: { email: R('AUTH-EMAIL') },
+    });
+  });
+
+  it('keeps an error event\'s `error` only when it is a class name', () => {
+    const out = run(lg('error', { error: { detail: 'ERR-OBJ' }, message: 'm' }), ['toolArgs']);
+    expect(JSON.stringify(out)).not.toContain('ERR-OBJ');
+    expect(run(lg('error', { error: 'ValueError', message: 'm' }), ['toolArgs'])).toEqual({ error: 'ValueError', message: R('m') });
+  });
+
+  it('owns a human message\'s name by text; an AI or tool message\'s name is kept', () => {
+    // In a multi-user chat LangChain sets a human message's `name` to the user's handle.
+    const human = { type: 'human', id: 'h1', name: 'priya.k', content: 'hi' };
+    const ai = { type: 'ai', id: 'a1', name: 'research_agent', content: 'yo' };
+    const tool = { type: 'tool', id: 't1', name: 'lookup', tool_call_id: 'c1', content: 'r' };
+    const role = { role: 'user', name: 'sam.j', content: 'hey' };
+    const out = run(lg('values', { messages: [human, ai, tool, role] }), ['text']) as { messages: Array<Record<string, unknown>> };
+    expect(out.messages.map((m) => m.name)).toEqual([R('priya.k'), 'research_agent', 'lookup', R('sam.j')]);
+    const body = run(req({ input: { messages: [human] } }), ['toolArgs']) as { input: { messages: Array<Record<string, unknown>> } };
+    expect(body.input.messages[0]!.name).toBe('priya.k');
+    // Inside state, `state` reaches every content field of a message, the name included.
+    const state = run(lg('values', { messages: [human] }), ['state']) as { messages: Array<Record<string, unknown>> };
+    expect(state.messages[0]!.name).toBe(R('priya.k'));
+  });
+
+  it('keeps a structure slot only while it holds a scalar', () => {
+    // An object where a name, id, type, index or status belongs is not known to be structure.
+    const O = (tag: string): Record<string, string> => ({ smuggled: `${tag}-SLOT` });
+    const chunk = {
+      type: 'AIMessageChunk',
+      id: O('MSGID'),
+      status: O('STATUS'),
+      chunk_position: O('POS'),
+      content: [{ type: 'text', text: 'x', id: O('BLOCKID'), index: O('BLOCKIDX') }],
+      tool_calls: [{ name: O('TCNAME'), id: O('TCID'), type: O('TCTYPE'), args: {} }],
+      tool_call_chunks: [{ name: O('TCCNAME'), id: 'c', index: O('TCCIDX'), type: 'tool_call_chunk', args: '' }],
+      response_metadata: { model_name: O('MODEL'), finish_reason: 'stop' },
+    };
+    const messages = JSON.stringify(run(lg('messages', [chunk, {}]), ['toolResults']));
+    expect(messages).not.toMatch(/-SLOT/);
+    expect(messages).toContain('"finish_reason":"stop"');
+    expect(messages).toContain('"type":"tool_call_chunk"');
+    const typed = JSON.stringify(run(lg('messages', [{ type: O('TYPE'), content: 'x' }, {}]), ['toolResults']));
+    expect(typed).not.toMatch(/-SLOT/);
+    const metadata = JSON.stringify(run(lg('metadata', { run_id: O('RUNID'), attempt: 1 }), ['toolResults']));
+    expect(metadata).not.toMatch(/-SLOT/);
+    expect(metadata).toContain('"attempt":1');
+    const checkpoint = JSON.stringify(run(lg('checkpoints', { values: {}, next: ['agent', O('NEXT')] }), ['toolResults']));
+    expect(checkpoint).not.toMatch(/-SLOT/);
+    expect(checkpoint).toContain('"agent"');
+    const body = run(req({ assistant_id: O('ASSISTANT'), stream_mode: ['values', O('MODE')], stream_subgraphs: true }), ['toolResults']);
+    expect(JSON.stringify(body)).not.toMatch(/-SLOT/);
+    expect((body as { stream_mode: unknown[] }).stream_mode[0]).toBe('values');
+    expect((body as { stream_subgraphs: unknown }).stream_subgraphs).toBe(true);
+  });
+
+  it('owns a request input key other than messages by text as well as state', () => {
+    // A RAG graph's input schema `{question}` is the user's own words.
+    const body = { input: { question: 'QUESTION-SECRET', messages: [] } };
+    expect(JSON.stringify(run(req(body), ['text']))).not.toContain('QUESTION-SECRET');
+    expect(JSON.stringify(run(req(body), ['state']))).not.toContain('QUESTION-SECRET');
+    expect(JSON.stringify(run(req(body), ['reasoning']))).toContain('QUESTION-SECRET');
+  });
+
+  it('fails closed on an AG-UI body\'s unknown top-level keys', () => {
+    // A LangGraph Platform server behind a proxy path whose first event is not `metadata` is
+    // classified AG-UI: its body's prompt sits at `input.messages`, its resume value at `command`.
+    const body = {
+      threadId: 't1',
+      runId: 'r1',
+      parentRunId: 'p1',
+      tools: [{ name: 'lookup' }],
+      messages: [{ id: 'u1', role: 'user', content: 'hi' }],
+      input: { messages: [{ type: 'human', content: 'PROXIED-PROMPT' }] },
+      command: { resume: 'PROXIED-RESUME' },
+    };
+    const request: JsonlRequest = { kind: 'request', connId: 'c1', tMs: 0, method: 'POST', url: '/api/chat', input: body };
+    for (const group of ALL_REDACTION_GROUPS) {
+      const out = redactLine(request, [group], 'agui') as JsonlRequest;
+      expect(JSON.stringify(out)).not.toMatch(/PROXIED-/);
+      expect(out.input).toMatchObject({ threadId: 't1', runId: 'r1', parentRunId: 'p1', tools: [{ name: 'lookup' }] });
+    }
+    // Not an object at all — a body that failed to parse — is unclassified too.
+    const raw = redactLine({ ...request, input: 'RAW-BODY-TEXT' }, ['state'], 'agui') as JsonlRequest;
+    expect(raw.input).toBe(R('RAW-BODY-TEXT'));
+  });
+
+  it('leaves AG-UI alone: a named matching frame and a RunAgentInput body are redacted as before', () => {
+    const named = ev({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'secret' });
+    named.sseEvent = 'TEXT_MESSAGE_CONTENT';
+    expect((redactLine(named, ['text'], 'agui') as JsonlEvent).event).toEqual({
+      type: 'TEXT_MESSAGE_CONTENT',
+      messageId: 'm1',
+      delta: '«redacted: 6 chars»',
+    });
+    // A LangGraph-shaped named frame on a connection not known to be LangGraph stays wholesale.
+    const values = lg('values', { messages: [{ type: 'ai', id: 'm1', content: 'secret' }] });
+    expect((redactLine(values, ['toolArgs']) as JsonlEvent).event).toEqual({
+      messages: [{ type: R('ai'), id: R('m1'), content: R('secret') }],
     });
   });
 });

@@ -8,6 +8,7 @@
  * see them (L12); what can actually be wrong with a LangGraph stream is reported here instead.
  */
 import { routeHint } from '../../detect/classifier';
+import type { RedactionGroup } from '../../jsonl/redact';
 import { makeIssue, type AguiEvent, type Issue, type IssueCode } from '../../model/types';
 import { contentParts, isObject, roleOf, toolCallChunks, type ToolCallChunk } from './messages';
 import { isKnownMode, parseEventName } from './names';
@@ -180,7 +181,29 @@ function valuesRequested(input: unknown): boolean {
   return true;
 }
 
-export function createLangGraphExpander(connId: string, request: LangGraphRequest): LangGraphExpander {
+export interface LangGraphExpanderOptions {
+  /** The §11 groups the SOURCE declares redacted (`JsonlHeader.redacted`): the claims they void are declined. */
+  readonly redacted?: readonly RedactionGroup[];
+}
+
+export function createLangGraphExpander(
+  connId: string,
+  request: LangGraphRequest,
+  options: LangGraphExpanderOptions = {},
+): LangGraphExpander {
+  /*
+   * Redaction removes evidence, so the checks that read redacted content weaken their claims to
+   * match — the rule `validator/rules/tool.ts` applies to AG-UI (spec L17). A `«redacted: N chars»`
+   * placeholder never parses as JSON, and two placeholders of different lengths never extend each
+   * other, so on a redacted source `lg-tool-args-invalid`, `lg-partial-regressed` and
+   * `lg-complete-mismatch` would be verdicts fixed in advance — raised for a clean capture and a
+   * broken one alike. A claim whose evidence a group destroyed is declined, not made falsely; only
+   * that group's part of the claim is, so a redacted `text` still lets tool args be judged.
+   */
+  const redacted = new Set(options.redacted ?? []);
+  const argsAreEvidence = !redacted.has('toolArgs');
+  const textIsEvidence = !redacted.has('text');
+  const reasoningIsEvidence = !redacted.has('reasoning');
   const hint =
     request.url !== undefined && request.method !== undefined
       ? routeHint(request.url, request.method)
@@ -300,7 +323,7 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
 
   function checkArgs(out: LangGraphExpansion, scope: Scope, seq: number, calls: Iterable<OpenToolCall>): void {
     for (const call of [...calls]) {
-      if (!scope.uncheckedArgs.delete(call) || call.argsText.trim() === '') continue;
+      if (!scope.uncheckedArgs.delete(call) || call.argsText.trim() === '' || !argsAreEvidence) continue;
       try {
         JSON.parse(call.argsText);
       } catch {
@@ -507,12 +530,12 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     const parts = contentParts(message.content);
     const text = suffix(previous.text, parts.text);
     const reasoning = suffix(previous.reasoning, parts.reasoning);
-    let regressed = text === undefined || reasoning === undefined;
+    let regressed = (text === undefined && textIsEvidence) || (reasoning === undefined && reasoningIsEvidence);
     const tools: ToolCallChunk[] = [];
     for (const chunk of toolCallChunks(message.tool_call_chunks)) {
       const before = previous.toolArgs.get(chunk.index);
       const delta = suffix(before ?? '', chunk.args);
-      if (delta === undefined) regressed = true;
+      if (delta === undefined && argsAreEvidence) regressed = true;
       // A call not seen before must reach `foldToolChunk` even with no new args, to be STARTed.
       if (before === undefined || (delta ?? '') !== '') tools.push({ ...chunk, args: delta ?? '' });
       previous.toolArgs.set(chunk.index, chunk.args);

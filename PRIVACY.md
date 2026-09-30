@@ -84,24 +84,22 @@ carry a name in the SSE `event:` field — LangGraph Platform, for one — that 
 including subgraph namespaces such as `messages|research:<task id>`, which name nodes in the
 developer's own graph. None of the five categories covers that material, because removing it would
 cost a bug report most of what makes it legible while protecting nothing anyone typed. One more
-field survives that can hold something closer to personal data: a message's optional `name`, which
-identifies who wrote it, and an app may fill it with the user's own display name. If
+field survives that can hold something closer to personal data: an AG-UI message's optional
+`name`, which identifies who wrote it, and an app may fill it with the user's own display name (on
+a LangGraph capture, a user's own name goes with message text). If
 an agent id or description is itself sensitive in your deployment, a capture is not the place to
 find that out — check the file before you share it.
 
 A frame whose SSE event name is the same string as the AG-UI event type it carries — an AG-UI
 server that names its `event:` field after the event, as Hono's `writeSSE({ event, data })` does —
-is treated as that AG-UI event and redacted the normal, precise way. Any other named frame —
-LangGraph Platform's, for one, whose names (`metadata`, `values`, `messages|<namespace>`) never
-match an AG-UI type — plus any payload the extension does not otherwise recognise as an AG-UI
-event, and any frame that failed to parse at all, are redacted in full as soon as any category is
-selected. The extension cannot tell which category their content belongs to, so it does not guess;
-it keeps only their shape, their keys, the SSE event name when the frame had one, and, for a
-payload with no event name, a `type` field that follows AG-UI's own naming convention. On a
-LangGraph Platform request, everything in the request body except its settings — the assistant id,
-the stream modes and similar — is redacted in full as soon as any category is selected, the prompt
-you typed included. Keeping keys has a real edge to it: if an app keys a state map, or any other object, by text a user typed — a
-note keyed by its own title, say — that text is exported as a key, and no category redacts a key.
+is treated as that AG-UI event and redacted the normal, precise way. A LangGraph Platform capture
+is redacted field by field, as described below. Any other named frame — on a connection the
+extension does not recognise as LangGraph Platform — plus any payload the extension does not
+otherwise recognise as an AG-UI event, and any frame that failed to parse at all, are redacted in
+full as soon as any category is selected. The extension cannot tell which category their content
+belongs to, so it does not guess; it keeps only their shape, their keys, the SSE event name when the
+frame had one, and, for a payload with no event name, a `type` field that follows AG-UI's own
+naming convention.
 
 Every field of every AG-UI event type is accounted for, including the ones whose content fits no
 single category. A `MESSAGES_SNAPSHOT` is redacted message by message according to who wrote each
@@ -111,10 +109,49 @@ tool calls an assistant message replays under tool arguments. The older `THINKIN
 as reasoning content, and activities count as state values. Some content cannot be attributed to
 any one category, so it is removed as soon as you select any category: a `CUSTOM` event's value, a
 `RAW` event's payload, a run's error message, result and interrupt details, your answer to an
-interrupt, and the `rawEvent` field any AG-UI event may carry. A server may use that field to echo
-the underlying provider's own chunk, even on an event whose own content a category already covers.
-The same applies to any field the protocol does not define, because the extension cannot know what
-that field holds.
+interrupt sent in an AG-UI request, and the `rawEvent` field any AG-UI event may carry. A server may
+use that field to echo the underlying provider's own chunk, even on an event whose own content a
+category already covers. The same applies to any field the protocol does not define, because the
+extension cannot know what that field holds.
+
+An AG-UI request body, and the copy of it a `RUN_STARTED` event may echo, keeps its thread and run
+ids and its tool schemas. Its messages are redacted by the same rules as a `MESSAGES_SNAPSHOT`'s;
+its `state`, `context` and `forwardedProps` go with state values; and an answer to an interrupt
+keeps only the interrupt's id and status. Any other top-level field of that body, and a body that
+is not a JSON object at all, is redacted in full as soon as any category is selected.
+
+The extension recognises a LangGraph Platform connection by its request going to a LangGraph run
+route, or by its first event being LangGraph's `metadata` event. On such a capture, each category
+removes its own content wherever it appears — in the streamed events, in graph state, and in the
+request body. Message text removes the prompt and the text of every message, a user's display name
+on their own messages, and the answer sent to resume an interrupt. Reasoning content removes
+reasoning and thinking blocks and reasoning summaries. Tool arguments removes the arguments of
+every tool call. Tool results removes what a tool returned, and its artifact. State values removes
+graph state: every value in a `values`, `updates` or checkpoint payload, including the question an
+interrupt puts to the user, the state a request sends with a command, and the content of every
+message inside that state. A request's input fields other than its messages — a graph's own input
+schema, such as a `question` field — are often what the user typed, so selecting either message
+text or state values removes them.
+
+What survives on a LangGraph capture is the run's structure: event names, subgraph namespaces
+included; node names; run, thread, message and tool-call ids; tool names; the model's name and why
+it stopped; token counts; and the request's settings, such as the assistant id and the stream modes.
+
+Some LangGraph content belongs to no one category, so it is redacted in full as soon as any
+category is selected: `custom` events (anything the graph chose to write), and any other event type
+the extension does not classify, such as `debug`; a payload that is not the shape its event name
+promises; a message's `additional_kwargs`, where providers put reasoning and function-call arguments
+of their own; any content block other than text and reasoning, such as an image or a file; the
+provider's response metadata beyond the model's name, the stop reason and a few identifiers like
+them; error messages, of which only the exception's class name survives; the metadata LangGraph
+attaches to a streamed message beyond its own bookkeeping, which includes the authenticated user
+LangGraph Platform records there; any field of the opening `metadata` event other than the run,
+thread and assistant ids and the attempt number; and a request's `config`, `context`, `metadata`,
+`checkpoint` and `webhook`, along with any request field the extension has never seen.
+
+Keeping keys has a real edge to it: if an app keys a state map, or any other object, by text a user
+typed — a note keyed by its own title, say — that text is exported as a key, and no category
+redacts a key.
 
 ## Remote code
 
