@@ -1106,6 +1106,41 @@ describe('redactLine — every field of a known AG-UI event is structure or reda
     });
   });
 
+  it('keeps a __proto__ key on a known event, a message and a patch op as redacted data', () => {
+    const event = JSON.parse(
+      '{"type":"MESSAGES_SNAPSHOT","__proto__":{"a":"top secret"},' +
+        '"messages":[{"id":"u","role":"user","content":"hi","__proto__":{"b":"msg secret"}}]}',
+    ) as Record<string, unknown>;
+    const patch = JSON.parse(
+      '{"type":"STATE_DELTA","delta":[{"op":"add","path":"/x","__proto__":{"c":"op secret"}}]}',
+    ) as Record<string, unknown>;
+
+    for (const input of [event, patch]) {
+      const out = (redactLine(ev(input), ['text']) as JsonlEvent).event;
+      const text = JSON.stringify(out);
+      for (const secret of ['top secret', 'msg secret', 'op secret']) {
+        expect(text).not.toContain(secret);
+      }
+      expect(text).toContain('"__proto__"');
+      expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    }
+  });
+
+  it('does not resolve a field or a role through Object.prototype — `constructor` is not a rule', () => {
+    // `rules['constructor']` is `Object`, which returns its argument: an unguarded lookup would
+    // ship the field verbatim. `CONTENT_GROUP_BY_ROLE['constructor']` is `Object` too, which no
+    // selection contains: an unguarded lookup would ship that message's content verbatim.
+    const field = ev({ type: 'TEXT_MESSAGE_END', messageId: 'm', constructor: 'field secret' });
+    const role = ev({
+      type: 'MESSAGES_SNAPSHOT',
+      messages: [{ id: 'x', role: 'constructor', content: 'role secret' }],
+    });
+
+    expect(JSON.stringify(redactLine(field, ['text']))).not.toContain('field secret');
+    expect(JSON.stringify(redactLine(role, ['text']))).not.toContain('role secret');
+    expect(JSON.stringify(redactLine(role, ['text']))).toContain('«redacted: 11 chars»');
+  });
+
   it('redacts a request resume payload under any group, keeping interruptId and status', () => {
     const line: JsonlRequest = {
       kind: 'request',
@@ -1124,6 +1159,83 @@ describe('redactLine — every field of a known AG-UI event is structure or reda
       threadId: 't',
       runId: 'r',
       resume: [{ interruptId: 'i', status: 'resolved', payload: '«redacted: 3 chars»' }],
+    });
+  });
+});
+
+describe('redactLine — a LangGraph Platform request body fails closed', () => {
+  /*
+   * A LangGraph Platform run's POST body is not a `RunAgentInput`: the user's prompt sits at
+   * `input.messages[].content`, next to `command` (resume values), `config` and `metadata`.
+   * `redactInput` reads only top-level `messages`/`state`/`context`/`forwardedProps`, so every
+   * one of those shipped verbatim with every group selected. Until field-level LangGraph rules
+   * land (spec L16), everything but the run's settings is redacted whenever any group is chosen.
+   */
+  const PROMPT = 'please summarise the confidential acquisition memo for me';
+  const body = {
+    assistant_id: 'agent',
+    input: { messages: [{ type: 'human', content: PROMPT }] },
+    command: { resume: 'approve the secret plan' },
+    config: { configurable: { user_token: 'sk-secret-123' } },
+    metadata: { note: 'private' },
+    stream_mode: ['values', 'messages-tuple'],
+    stream_subgraphs: true,
+  };
+  const line: JsonlRequest = {
+    kind: 'request',
+    connId: 'c1',
+    tMs: 0,
+    method: 'POST',
+    url: 'http://localhost:2024/threads/t1/runs/stream',
+    input: body,
+  };
+
+  it('redacts the prompt, command, config and metadata with only `text` selected', () => {
+    const out = redactLine(deepFreeze(structuredClone(line)), ['text'], 'langgraph') as JsonlRequest;
+    const text = JSON.stringify(out);
+    for (const secret of [PROMPT, 'approve the secret plan', 'sk-secret-123', 'private']) {
+      expect(text).not.toContain(secret);
+    }
+    const input = out.input as Record<string, unknown>;
+    expect(input.assistant_id).toBe('agent');
+    expect(input.stream_mode).toEqual(['values', 'messages-tuple']);
+    expect(input.stream_subgraphs).toBe(true);
+    // Structure survives, content does not.
+    expect(input.input).toEqual({ messages: [{ type: '«redacted: 5 chars»', content: `«redacted: ${PROMPT.length} chars»` }] });
+  });
+
+  it('redacts every unknown key too — anything unclassified is content', () => {
+    const out = redactLine({ ...line, input: { ...body, surprise: { x: 'mystery value' } } }, ['state'], 'langgraph');
+    expect(JSON.stringify(out)).not.toContain('mystery value');
+  });
+
+  it('keeps a __proto__ key as data', () => {
+    const input = JSON.parse('{"assistant_id":"agent","__proto__":{"leak":"prototype secret"}}') as unknown;
+    const out = redactLine({ ...line, input }, ['text'], 'langgraph') as JsonlRequest;
+    const redacted = out.input as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(redacted, '__proto__')).toBe(true);
+    expect(JSON.stringify(out)).not.toContain('prototype secret');
+    expect(Object.getPrototypeOf(redacted)).toBe(Object.prototype);
+  });
+
+  it('redacts a non-object body wholesale', () => {
+    const out = redactLine({ ...line, input: 'a raw body string' }, ['text'], 'langgraph') as JsonlRequest;
+    expect(out.input).toBe('«redacted: 17 chars»');
+  });
+
+  it('returns the line unchanged when no group is selected', () => {
+    expect(redactLine(line, [], 'langgraph')).toBe(line);
+  });
+
+  it('leaves an AG-UI request on the RunAgentInput path', () => {
+    const agui: JsonlRequest = { ...line, input: { threadId: 't', messages: [{ role: 'user', content: 'hello there' }], metadata: { keep: 'me' } } };
+    const out = redactLine(agui, ['text'], 'agui') as JsonlRequest;
+    // `metadata` is not a `RunAgentInput` field, so it is content no group can claim and goes
+    // under any group (LangGraph PR 4) — the RunAgentInput path is per field, not a passthrough.
+    expect(out.input).toEqual({
+      threadId: 't',
+      messages: [{ role: 'user', content: '«redacted: 11 chars»' }],
+      metadata: { keep: '«redacted: 2 chars»' },
     });
   });
 });

@@ -97,8 +97,10 @@ match an AG-UI type — plus any payload the extension does not otherwise recogn
 event, and any frame that failed to parse at all, are redacted in full as soon as any category is
 selected. The extension cannot tell which category their content belongs to, so it does not guess;
 it keeps only their shape, their keys, the SSE event name when the frame had one, and, for a
-payload with no event name, a `type` field that follows AG-UI's own naming convention. Keeping keys
-has a real edge to it: if an app keys a state map, or any other object, by text a user typed — a
+payload with no event name, a `type` field that follows AG-UI's own naming convention. On a
+LangGraph Platform request, everything in the request body except its settings — the assistant id,
+the stream modes and similar — is redacted in full as soon as any category is selected, the prompt
+you typed included. Keeping keys has a real edge to it: if an app keys a state map, or any other object, by text a user typed — a
 note keyed by its own title, say — that text is exported as a key, and no category redacts a key.
 
 Every field of every AG-UI event type is accounted for, including the ones whose content fits no

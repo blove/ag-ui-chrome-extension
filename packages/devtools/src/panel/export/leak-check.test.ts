@@ -20,6 +20,8 @@
  */
 import { describe, expect, test } from 'vitest';
 import happyJsonl from '../../test/fixtures/happy-run.agui.jsonl?raw';
+import lgReasoningJsonl from '../../test/fixtures/lg-reasoning.agui.jsonl?raw';
+import { aiChunk, langGraphJsonl } from '../../test/langgraph-capture';
 import { ALL_REDACTION_GROUPS, type RedactionGroup } from '../../core/jsonl/redact';
 import type { JsonlLine } from '../../core/jsonl/codec';
 import { loadJsonl } from '../import/load-jsonl';
@@ -122,6 +124,25 @@ function messagePayload(message: unknown, out: string[]): void {
   }
 }
 
+/** A LangGraph run request's settings: which assistant, which stream modes, how to schedule. */
+const LANGGRAPH_SETTINGS: readonly string[] = [
+  'assistant_id',
+  'stream_mode',
+  'stream_subgraphs',
+  'stream_resumable',
+  'multitask_strategy',
+  'on_completion',
+  'on_disconnect',
+  'if_not_exists',
+  'after_seconds',
+  'durability',
+  'checkpoint_during',
+  'interrupt_before',
+  'interrupt_after',
+  'feedback_keys',
+  'checkpoint_id',
+];
+
 /**
  * The payload strings a `RunAgentInput` carries, wherever one appears: the captured request body,
  * or the copy the protocol echoes back in `RUN_STARTED.input`.
@@ -130,11 +151,17 @@ function messagePayload(message: unknown, out: string[]): void {
  * group that owns developer-authored structure — so treating them as payload would report a leak
  * on every clean export. A `resume` entry keeps its `interruptId` and `status`; its `payload`
  * is the user's answer to an interrupt.
+ *
+ * A LangGraph Platform request body (LangChain shape) is read by the same walk: the user's
+ * messages sit one level down at `input.messages[].content`, beside `command` (resume values),
+ * `config` and `metadata`, and none of those keys is structure, so all of it is payload. Only
+ * the run's SETTINGS survive, restated in `LANGGRAPH_SETTINGS`.
  */
 function inputPayload(input: unknown, out: string[]): void {
   if (!isObject(input)) return;
   for (const [key, child] of Object.entries(input)) {
     if (['threadId', 'runId', 'parentRunId', 'tools'].includes(key)) continue;
+    if (LANGGRAPH_SETTINGS.includes(key)) continue;
     if (key === 'messages' && Array.isArray(child)) {
       for (const message of child) messagePayload(message, out);
     } else if (key === 'resume' && Array.isArray(child)) {
@@ -452,6 +479,31 @@ const OTHER_BY_GROUP: Record<RedactionGroup | 'anyGroup', string[]> = {
   ],
 };
 
+/**
+ * A LangGraph Platform capture whose request body carries a long prompt, a resume `command`, a
+ * `config` holding a token and private `metadata` — the fields a LangGraph body has that a
+ * `RunAgentInput` does not.
+ */
+const LANGGRAPH = langGraphJsonl(
+  [
+    { event: 'metadata', data: { run_id: 'r-lg', attempt: 1 } },
+    aiChunk('m1', 'ok'),
+    { event: 'values', data: { messages: [] } },
+  ],
+  {
+    body: {
+      assistant_id: 'agent',
+      input: {
+        messages: [{ type: 'human', content: 'what are the terms of the confidential merger' }],
+      },
+      command: { resume: 'approve the secret plan' },
+      config: { configurable: { user_token: 'sk-secret-123' } },
+      metadata: { note: 'private notes about the user' },
+      stream_mode: ['values', 'messages-tuple'],
+    },
+  },
+);
+
 function sourceOf(text: string): ExportSource {
   const loaded = loadJsonl(text);
   return {
@@ -527,6 +579,32 @@ describe('E6: a fully redacted export leaks nothing', () => {
   test('the same holds for every field outside the five groups’ own', () => {
     const raw = exportWith(EVERY_OTHER_FIELD, []);
     const redacted = exportWith(EVERY_OTHER_FIELD, [...ALL_REDACTION_GROUPS]);
+    expect(leakedValues(raw, redacted)).toEqual([]);
+  });
+
+  test('a LangGraph request body leaks nothing: prompt, command, config, metadata', () => {
+    const raw = exportWith(LANGGRAPH, []);
+    // The restatement must see the payload first, or the next assertion is vacuous. `r-lg` is the
+    // `metadata` frame's run id and `human` a LangChain message's `type`: this walk fails closed,
+    // so neither is structure to it, and the redactor removes both.
+    expect(leakedValues(raw, raw).sort()).toEqual(
+      [
+        'approve the secret plan',
+        'private notes about the user',
+        'sk-secret-123',
+        'what are the terms of the confidential merger',
+        'human',
+        'r-lg',
+      ].sort(),
+    );
+    const redacted = exportWith(LANGGRAPH, [...ALL_REDACTION_GROUPS]);
+    expect(leakedValues(raw, redacted)).toEqual([]);
+  });
+
+  test('the same holds for the real LangGraph reasoning capture, whose prompt is in the body', () => {
+    const raw = exportWith(lgReasoningJsonl, []);
+    expect(leakedValues(raw, raw).length).toBeGreaterThan(0);
+    const redacted = exportWith(lgReasoningJsonl, [...ALL_REDACTION_GROUPS]);
     expect(leakedValues(raw, redacted)).toEqual([]);
   });
 

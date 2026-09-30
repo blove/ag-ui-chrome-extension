@@ -9,42 +9,12 @@
  * Pure: `JsonlLine[]` in, TypeScript text out. The lines are the ones `build.ts` already produced,
  * so a redacted export produces a redacted fixture with no second policy path.
  */
-import type { JsonlEvent, JsonlHeader, JsonlLine } from '../../core/jsonl/codec';
-import { dialectOf, type Dialect } from '../../core/normalizer/dialect';
+import type { JsonlHeader, JsonlLine } from '../../core/jsonl/codec';
+import { dialectsOfLines } from '../../core/normalizer/dialect';
 
 function headerOf(lines: readonly JsonlLine[]): JsonlHeader | null {
   const first = lines[0];
   return first !== undefined && first.kind === 'header' ? first : null;
-}
-
-/**
- * Each connection's dialect, by the one rule the run builder uses (L5): its request line, and its
- * first event line. A header or keepalive decides nothing.
- */
-function dialectsOf(lines: readonly JsonlLine[]): Map<string, Dialect> {
-  const requests = new Map<string, { method: string; url: string }>();
-  const firstEvents = new Map<string, JsonlEvent>();
-  for (const line of lines) {
-    if (line.kind === 'request' && !requests.has(line.connId)) {
-      requests.set(line.connId, { method: line.method, url: line.url });
-    } else if (line.kind === 'event' && !firstEvents.has(line.connId)) {
-      firstEvents.set(line.connId, line);
-    }
-  }
-  const dialects = new Map<string, Dialect>();
-  for (const connId of new Set([...requests.keys(), ...firstEvents.keys()])) {
-    const first = firstEvents.get(connId);
-    dialects.set(
-      connId,
-      dialectOf(
-        requests.get(connId),
-        first === undefined
-          ? undefined
-          : { ...(first.sseEvent !== undefined ? { sseEvent: first.sseEvent } : {}), payload: first.event },
-      ),
-    );
-  }
-  return dialects;
 }
 
 /**
@@ -77,7 +47,7 @@ export function toFixtureModule(lines: readonly JsonlLine[], filename: string): 
    * payload never parsed is kept as whatever it was: dropping it would make the fixture's length
    * disagree with the capture it was taken from, which is the one thing a replay counts on.
    */
-  const dialects = dialectsOf(lines);
+  const dialects = dialectsOfLines(lines);
   const eventLines = lines.flatMap((line) => (line.kind === 'event' ? [line] : []));
   const events = eventLines.filter((line) => dialects.get(line.connId) !== 'langgraph').map((line) => line.event);
   /*

@@ -1,4 +1,5 @@
 import { EVENT_TABLE, EVENT_TYPES } from '../events/event-table.generated';
+import type { Dialect } from '../normalizer/dialect';
 import type { JsonlLine } from './codec';
 
 const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set<string>(EVENT_TYPES);
@@ -37,6 +38,16 @@ export function redactString(value: string): string {
   return `«redacted: ${value.length} chars»`;
 }
 
+/**
+ * A scratch object for building a redacted copy key by key. Null-prototype, so a `__proto__` key
+ * parsed from JSON is an ordinary own key here rather than the object's prototype setter; callers
+ * return `{ ...out }`, and spreading DEFINES own properties, so the key stays data — and redacted,
+ * like any other key — in an object with the normal prototype.
+ */
+function ownRecord(): Record<string, unknown> {
+  return Object.create(null) as Record<string, unknown>;
+}
+
 /** Leaves carry payload; `null`/`undefined` are structure and survive. */
 function redactLeaf(value: unknown): unknown {
   if (value === null || value === undefined) return value;
@@ -50,11 +61,11 @@ function redactDeep(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map((item) => redactDeep(item));
   if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
+    const out = ownRecord();
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       out[key] = redactDeep(child);
     }
-    return out;
+    return { ...out };
   }
   return redactLeaf(value);
 }
@@ -74,11 +85,11 @@ function owned(
 /** Keeps an object's `keep` keys and redacts every other key's value; a non-object, wholesale. */
 function keepOnly(value: unknown, keep: readonly string[]): unknown {
   if (!isPlainObject(value)) return redactDeep(value);
-  const out: Record<string, unknown> = {};
+  const out = ownRecord();
   for (const [key, child] of Object.entries(value)) {
     out[key] = keep.includes(key) ? child : redactDeep(child);
   }
-  return out;
+  return { ...out };
 }
 
 /**
@@ -90,13 +101,13 @@ function redactPatch(ops: unknown, groups: ReadonlySet<RedactionGroup>): unknown
   if (!Array.isArray(ops)) return redactDeep(ops);
   return ops.map((op) => {
     if (!isPlainObject(op)) return redactDeep(op);
-    const out: Record<string, unknown> = {};
+    const out = ownRecord();
     for (const [key, child] of Object.entries(op)) {
       if (key === 'op' || key === 'path' || key === 'from') out[key] = child;
       else if (key === 'value') out[key] = owned(child, 'state', groups);
       else out[key] = redactDeep(child);
     }
-    return out;
+    return { ...out };
   });
 }
 
@@ -107,14 +118,14 @@ function redactPatch(ops: unknown, groups: ReadonlySet<RedactionGroup>): unknown
  */
 function redactOutcome(outcome: unknown): unknown {
   if (!isPlainObject(outcome)) return redactDeep(outcome);
-  const out: Record<string, unknown> = {};
+  const out = ownRecord();
   for (const [key, child] of Object.entries(outcome)) {
     if (key === 'type') out[key] = child;
     else if (key === 'interrupts' && Array.isArray(child)) {
       out[key] = child.map((interrupt) => keepOnly(interrupt, ['id', 'toolCallId', 'expiresAt']));
     } else out[key] = redactDeep(child);
   }
-  return out;
+  return { ...out };
 }
 
 type FieldRule = (value: unknown, groups: ReadonlySet<RedactionGroup>) => unknown;
@@ -282,15 +293,17 @@ function redactEvent(event: unknown, groups: ReadonlySet<RedactionGroup>): unkno
   const declared = new Set(spec.fields.map((field) => field.name));
   const passthrough = PASSTHROUGH_STRUCTURE[type] ?? [];
   const rules = FIELD_RULES[type] ?? {};
-  const out: Record<string, unknown> = {};
+  const out = ownRecord();
   for (const [key, value] of Object.entries(event)) {
-    const rule = rules[key];
+    // Own properties only: `rules['constructor']` would otherwise be `Object`, the identity
+    // function, and ship the field verbatim.
+    const rule = Object.hasOwn(rules, key) ? rules[key] : undefined;
     if (rule !== undefined) out[key] = rule(value, groups);
     else if (STRUCTURAL_FIELDS.has(key) && declared.has(key)) out[key] = value;
     else if (passthrough.includes(key)) out[key] = value;
     else out[key] = redactDeep(value);
   }
-  return out;
+  return { ...out };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -317,21 +330,21 @@ const CONTENT_GROUP_BY_ROLE: Record<string, RedactionGroup> = {
 /** One tool call an assistant message replays: `id`, `type` and function `name` are structure. */
 function redactToolCall(call: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
   if (!isPlainObject(call)) return redactDeep(call);
-  const out: Record<string, unknown> = {};
+  const out = ownRecord();
   for (const [key, child] of Object.entries(call)) {
     if (key === 'id' || key === 'type') out[key] = child;
     else if (key === 'encryptedValue') out[key] = owned(child, 'reasoning', groups);
     else if (key === 'function' && isPlainObject(child)) {
-      const fn: Record<string, unknown> = {};
+      const fn = ownRecord();
       for (const [fnKey, fnChild] of Object.entries(child)) {
         if (fnKey === 'name') fn[fnKey] = fnChild;
         else if (fnKey === 'arguments') fn[fnKey] = owned(fnChild, 'toolArgs', groups);
         else fn[fnKey] = redactDeep(fnChild);
       }
-      out[key] = fn;
+      out[key] = { ...fn };
     } else out[key] = redactDeep(child);
   }
-  return out;
+  return { ...out };
 }
 
 /**
@@ -341,8 +354,12 @@ function redactToolCall(call: unknown, groups: ReadonlySet<RedactionGroup>): unk
 function redactMessage(message: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
   if (!isPlainObject(message)) return redactDeep(message);
   const role = typeof message.role === 'string' ? message.role : '';
-  const contentGroup = CONTENT_GROUP_BY_ROLE[role] as RedactionGroup | undefined;
-  const out: Record<string, unknown> = {};
+  // Own properties only, for the same reason as `redactEvent`'s rule lookup: a role named
+  // `constructor` must be an unknown role, not one owned by a group no selection contains.
+  const contentGroup = Object.hasOwn(CONTENT_GROUP_BY_ROLE, role)
+    ? CONTENT_GROUP_BY_ROLE[role]
+    : undefined;
+  const out = ownRecord();
   for (const [key, child] of Object.entries(message)) {
     if (['id', 'role', 'name', 'toolCallId', 'activityType'].includes(key)) out[key] = child;
     else if (key === 'content') {
@@ -355,7 +372,7 @@ function redactMessage(message: unknown, groups: ReadonlySet<RedactionGroup>): u
       out[key] = child.map((call) => redactToolCall(call, groups));
     } else out[key] = redactDeep(child);
   }
-  return out;
+  return { ...out };
 }
 
 /**
@@ -370,7 +387,7 @@ function redactMessage(message: unknown, groups: ReadonlySet<RedactionGroup>): u
  */
 function redactInput(input: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
   if (!isPlainObject(input)) return input;
-  const out: Record<string, unknown> = {};
+  const out = ownRecord();
   for (const [key, child] of Object.entries(input)) {
     if (['threadId', 'runId', 'parentRunId', 'tools'].includes(key)) out[key] = child;
     else if (key === 'messages' && Array.isArray(child)) {
@@ -381,7 +398,59 @@ function redactInput(input: unknown, groups: ReadonlySet<RedactionGroup>): unkno
       out[key] = child.map((entry) => keepOnly(entry, ['interruptId', 'status']));
     } else out[key] = redactDeep(child);
   }
-  return out;
+  return { ...out };
+}
+
+/**
+ * The keys of a LangGraph Platform run request that are run SETTINGS rather than content: which
+ * assistant, which stream modes, how to schedule and checkpoint. None of them carries anything a
+ * user typed or an app had in scope, and they are what makes a captured LangGraph run legible.
+ */
+const LANGGRAPH_SETTINGS_KEYS: ReadonlySet<string> = new Set([
+  'assistant_id',
+  'stream_mode',
+  'stream_subgraphs',
+  'stream_resumable',
+  'multitask_strategy',
+  'on_completion',
+  'on_disconnect',
+  'if_not_exists',
+  'after_seconds',
+  'durability',
+  'checkpoint_during',
+  'interrupt_before',
+  'interrupt_after',
+  'feedback_keys',
+  'checkpoint_id',
+]);
+
+/**
+ * A LangGraph Platform run request body, redacted fail-closed.
+ *
+ * Such a body is not a `RunAgentInput`: the user's prompt sits at `input.messages[].content` (the
+ * LangChain message shape), beside `command` (interrupt resume values), `config`, `context`,
+ * `metadata`, `checkpoint` and `webhook`. `redactInput` reads only top-level `messages`, `state`,
+ * `context` and `forwardedProps`, so with every group selected all of that used to ship verbatim.
+ *
+ * Every key except the settings in `LANGGRAPH_SETTINGS_KEYS` — including any key this module has
+ * never seen — is redacted deep as soon as ANY group is selected. That is deliberately
+ * group-agnostic, the same interim rule `redactWholesale` applies to named LangGraph frames: a
+ * redacted export is a file handed to other people, and content this module cannot yet attribute
+ * to one of the five §11 groups must not ship in it. Field-level LangGraph rules (spec L16, PR 4)
+ * will replace this with per-group precision; until then over-redacting is the only honest
+ * behaviour. A body that is not a plain object is redacted wholesale.
+ *
+ * `Object.fromEntries` builds the copy so a `__proto__` key parsed from JSON stays an own data
+ * property — and gets redacted like any other key — rather than becoming the copy's prototype.
+ */
+function redactLangGraphBody(input: unknown): unknown {
+  if (!isPlainObject(input)) return redactWholesale(input, { keepAguiType: false });
+  return Object.fromEntries(
+    Object.entries(input).map(([key, value]) => [
+      key,
+      LANGGRAPH_SETTINGS_KEYS.has(key) ? value : redactDeep(value),
+    ]),
+  );
 }
 
 /**
@@ -397,8 +466,13 @@ function redactInput(input: unknown, groups: ReadonlySet<RedactionGroup>): unkno
  * redaction does not spare ids or other structure inside that payload — it has no way to know
  * which fields are safe. Lines no group owns, and only those, are returned as-is, by reference:
  * a `header` or `keepalive` line, or an event/request line when `groups` is empty.
+ *
+ * `dialect` is the line's CONNECTION dialect (`dialectsOfLines`). It only changes a `request`
+ * line: a LangGraph Platform body goes through `redactLangGraphBody`, which fails closed. Absent
+ * or `'agui'`, a request body is a `RunAgentInput` and is redacted per field as before. Event
+ * lines ignore it — a named LangGraph frame is already caught by its `sseEvent`.
  */
-export function redactLine(line: JsonlLine, groups: RedactionGroup[]): JsonlLine {
+export function redactLine(line: JsonlLine, groups: RedactionGroup[], dialect?: Dialect): JsonlLine {
   if (groups.length === 0) return line;
   const set = new Set(groups);
 
@@ -442,6 +516,9 @@ export function redactLine(line: JsonlLine, groups: RedactionGroup[]): JsonlLine
     return { ...line, event: redactEvent(line.event, set) };
   }
   if (line.kind === 'request') {
+    if (dialect === 'langgraph') {
+      return { ...line, input: redactLangGraphBody(line.input) };
+    }
     // Gated per field inside `redactInput`, not wholesale on `state`. Gating the whole body on
     // one group meant selecting `text` left the user's own messages verbatim.
     return { ...line, input: redactInput(line.input, set) };

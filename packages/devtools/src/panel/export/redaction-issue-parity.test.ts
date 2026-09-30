@@ -26,6 +26,7 @@ import malformedJsonl from '../../test/fixtures/malformed.agui.jsonl?raw';
 import chunkedJsonl from '../../test/fixtures/chunked-run.agui.jsonl?raw';
 import messagesEdgeJsonl from '../../test/fixtures/messages-edge.agui.jsonl?raw';
 import stateEdgeJsonl from '../../test/fixtures/state-edge.agui.jsonl?raw';
+import lgReasoningJsonl from '../../test/fixtures/lg-reasoning.agui.jsonl?raw';
 import { encodeJsonl } from '../../core/jsonl/codec';
 import { ALL_REDACTION_GROUPS, type RedactionGroup } from '../../core/jsonl/redact';
 import { applyLoaded } from '../import/apply-loaded';
@@ -200,6 +201,9 @@ const CAPTURES: Array<readonly [string, string]> = [
   ['messages-edge', messagesEdgeJsonl],
   ['state-edge', stateEdgeJsonl],
   ['wide (authored here)', WIDE_JSONL],
+  // A real LangGraph Platform capture: its request body is redacted fail-closed, and that must
+  // still invent or withdraw nothing — the dialect comes from the URL, which survives.
+  ['lg-reasoning', lgReasoningJsonl],
 ];
 
 /** Every single group, plus the "Redact everything" button's set. */
