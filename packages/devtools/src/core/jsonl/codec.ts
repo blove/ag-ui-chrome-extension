@@ -59,6 +59,13 @@ export interface JsonlEvent {
   connId: string;
   seq: number;
   tMs: number;
+  /**
+   * The frame's SSE `event:` name, when it had one (spec L2). An optional KEY rather than a new
+   * line kind, for the same reason `runtime` is a header key: `decodeJsonl` rejects an unknown
+   * `kind`, so a new kind would make an older build report this intact file as damaged, while
+   * an unknown key is ignored by every JSON decoder ever written. `schemaVersion` stays 1.
+   */
+  sseEvent?: string;
   event: unknown;
 }
 

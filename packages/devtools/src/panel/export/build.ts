@@ -124,6 +124,7 @@ function toLine(record: CaptureRecord): JsonlLine {
     connId: record.connId,
     seq: record.seq,
     tMs: record.tMs,
+    ...(record.sseEvent !== undefined ? { sseEvent: record.sseEvent } : {}),
     event: record.raw ?? record.event,
   };
 }
