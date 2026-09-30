@@ -51,6 +51,11 @@ one page carrying both dialects.
 request line and dialect, and the folded runs — through both `reconstruct` and `foldAsLatePanel`,
 which must agree. `lg-reasoning` captures and settles in roughly 0.3–0.8 s.
 
+`e2e/badge.spec.ts` reads the toolbar badge Chrome holds for each tab (spec §14.6): `AG` for the
+`happy` page, `LG` for `lg-reasoning`, `A+L` for `agui=1`, and nothing for `page/plain-sse.html`,
+which reads `GET /plain-sse` — `data: {"tick":N}` frames that capture records but that are not
+AG-UI.
+
 ## Tier B: recording from a real agent
 
 Local only. The key never enters CI (design decision H8), and every recorded event passes

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AG-UI harness — an SSE stream that is not AG-UI</title>
+  </head>
+  <body>
+    <h1>plain SSE page</h1>
+    <!--
+      Reads `/plain-sse` (`page/serve.ts`) to its end: `data: {"tick":N}` frames with no `type`.
+      The capture layer records them like any other stream on a granted origin; the toolbar badge
+      must stay dark (spec §14.6, rule B4). `#status` reaches `done` or `error` on every path,
+      which is what `e2e/badge.spec.ts` waits on.
+    -->
+    <p>status: <output id="status">idle</output></p>
+    <p id="error" hidden></p>
+    <script type="module">
+      const status = document.getElementById('status');
+      const errorLine = document.getElementById('error');
+      status.textContent = 'running';
+      try {
+        const response = await fetch('/plain-sse', { headers: { Accept: 'text/event-stream' } });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const reader = response.body.getReader();
+        for (;;) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+        status.textContent = 'done';
+      } catch (cause) {
+        errorLine.hidden = false;
+        errorLine.textContent = cause instanceof Error ? cause.message : String(cause);
+        status.textContent = 'error';
+      }
+    </script>
+  </body>
+</html>

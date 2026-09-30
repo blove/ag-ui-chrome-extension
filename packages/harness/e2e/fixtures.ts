@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { chromium, type BrowserContext, type Worker } from '@playwright/test';
+import { chromium, type BrowserContext, type Page, type Worker } from '@playwright/test';
 
 import type { RuntimeInfo } from '@devtools/core/detect/info';
 import type { CaptureRecord, Issue, Run } from '@devtools/core/model/types';
@@ -367,4 +367,81 @@ export async function clearCapture(ctx: BrowserContext): Promise<void> {
     if (!hook) throw new Error('__AGUI_DT_TEST__ is not installed on the service worker.');
     hook.clear();
   });
+}
+
+/** What the toolbar shows for one tab: the badge text and the action's title (spec §14.6). */
+export interface BadgeReading {
+  text: string;
+  title: string;
+}
+
+/**
+ * The toolbar badge and title Chrome holds for `page`'s tab, read in the extension's service
+ * worker with `chrome.action.getBadgeText` / `getTitle` — the values Chrome draws, not the
+ * worker's own idea of them.
+ *
+ * FINDING THE TAB. The worker cannot look the page up by URL: `chrome.tabs.query` withholds
+ * `url` without the `tabs` permission or an explicit host permission, and the localhost
+ * content-script matches are neither (measured — every tab reads `url: undefined`, so a URL filter
+ * finds nothing). Adding either would test a build that is not the one shipped. So the page is
+ * brought to the front, which makes its tab the ACTIVE tab of its window, and the window is named
+ * by CDP's `Browser.getWindowForTarget` — the same id `chrome.windows` uses. Specs here are
+ * serial (`workers: 1`), so nothing else can take the front between the two steps.
+ */
+interface ActionReader {
+  tabs: { query(filter: { active: true; windowId: number }): Promise<{ id?: number }[]> };
+  action: {
+    getBadgeText(details: { tabId: number }): Promise<string>;
+    getTitle(details: { tabId: number }): Promise<string>;
+  };
+}
+
+export async function readBadge(ctx: BrowserContext, page: Page): Promise<BadgeReading> {
+  await page.bringToFront();
+  const cdp = await ctx.newCDPSession(page);
+  const { windowId } = (await cdp.send('Browser.getWindowForTarget')) as { windowId: number };
+  await cdp.detach();
+  const sw = await serviceWorker(ctx);
+  return sw.evaluate(async (windowId: number): Promise<BadgeReading> => {
+    const chrome = (globalThis as unknown as { chrome: ActionReader }).chrome;
+    const active = await chrome.tabs.query({ active: true, windowId });
+    const tabId = active[0]?.id;
+    if (active.length !== 1 || tabId === undefined) {
+      throw new Error(`expected one active tab in window ${String(windowId)}, found ${String(active.length)}`);
+    }
+    const [text, title] = await Promise.all([
+      chrome.action.getBadgeText({ tabId }),
+      chrome.action.getTitle({ tabId }),
+    ]);
+    return { text, title };
+  }, windowId);
+}
+
+/**
+ * `readBadge`, once the worker has stopped changing it.
+ *
+ * Call it AFTER `readSettledCapture`: by then every frame of the run has been handled, and the
+ * worker has issued every `chrome.action` call it is going to. Those calls are asynchronous, so
+ * this reads until three consecutive readings 50 ms apart agree. It waits for the badge to be
+ * STILL, never for it to be RIGHT — the same rule `readSettledCapture` keeps, so a badge that
+ * never lights is a diff, not a timeout, and a `''` that stays `''` means something.
+ */
+export async function readSettledBadge(
+  ctx: BrowserContext,
+  page: Page,
+  timeoutMs = 5_000,
+): Promise<BadgeReading> {
+  const deadline = Date.now() + timeoutMs;
+  let latest = await readBadge(ctx, page);
+  let agreeing = 1;
+  while (agreeing < 3) {
+    if (Date.now() >= deadline) {
+      throw new Error(`the badge did not settle within ${String(timeoutMs)}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const next = await readBadge(ctx, page);
+    agreeing = next.text === latest.text && next.title === latest.title ? agreeing + 1 : 1;
+    latest = next;
+  }
+  return latest;
 }
