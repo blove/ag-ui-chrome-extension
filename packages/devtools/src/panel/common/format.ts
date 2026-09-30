@@ -83,7 +83,18 @@ export function summarizeEvent(record: CaptureRecord): string {
   }
 
   const event = record.event;
-  // A frame whose payload would not parse is still shown, per the model's own comment.
+  // A LangGraph frame (L14) names itself on the wire, and its payload need not be an AG-UI event
+  // or even an object: a `messages` tuple is an array, and decoded fine.
+  if (record.sseEvent !== undefined) {
+    if (event === null && typeof record.raw !== 'string' && record.raw !== undefined) {
+      return truncate(summarizeLangGraphValue(record.raw), MAX_SUMMARY_CHARS);
+    }
+    if (event !== null && typeof event.type !== 'string') {
+      return truncate(keyList(event), MAX_SUMMARY_CHARS);
+    }
+  }
+  // A frame whose payload would not parse is still shown, per the model's own comment. Its
+  // `raw` is the frame TEXT, which is how it differs from a payload that parsed to a non-object.
   if (event === null) return 'unparsed payload';
 
   const parts: string[] = [];
@@ -99,6 +110,63 @@ export function summarizeEvent(record: CaptureRecord): string {
   }
 
   return truncate(parts.join(' · '), MAX_SUMMARY_CHARS);
+}
+
+/** `{ run_id, attempt }` — what a LangGraph object frame carries, without its values. */
+function keyList(value: object): string {
+  const keys = Object.keys(value);
+  return keys.length === 0 ? '{}' : `{ ${keys.join(', ')} }`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A LangGraph payload that is not an object. A `messages` tuple — `[chunk, metadata]` — and a
+ * `messages/*` list both lead with a message, so the first element is summarized the way an AG-UI
+ * content row is: the id, then what the chunk carries. Anything else is compact JSON.
+ */
+function summarizeLangGraphValue(raw: unknown): string {
+  const first: unknown = Array.isArray(raw) ? raw[0] : undefined;
+  if (!isRecord(first)) return renderValue(raw);
+
+  const parts: string[] = [];
+  if (typeof first.id === 'string' && first.id !== '') parts.push(sliceUnits(collapse(first.id), MAX_SUMMARY_CHARS));
+
+  const content = first.content;
+  const text =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content
+            .filter(isRecord)
+            .map((part) => (part.type === 'text' && typeof part.text === 'string' ? part.text : ''))
+            .join('')
+        : '';
+  const reasoning = Array.isArray(content)
+    ? content
+        .filter(isRecord)
+        .flatMap((part) => (part.type === 'reasoning' && Array.isArray(part.summary) ? part.summary : []))
+        .filter(isRecord)
+        .map((summary) => (typeof summary.text === 'string' ? summary.text : ''))
+        .join('')
+    : '';
+  const toolChunks = Array.isArray(first.tool_call_chunks) ? first.tool_call_chunks.filter(isRecord) : [];
+
+  if (text !== '') {
+    parts.push(renderValue(text));
+  } else if (reasoning !== '') {
+    parts.push(`reasoning ${renderValue(reasoning)}`);
+  } else if (toolChunks.length > 0) {
+    const name = toolChunks.map((chunk) => chunk.name).find((value) => typeof value === 'string' && value !== '');
+    if (typeof name === 'string') parts.push(sliceUnits(collapse(name), MAX_SUMMARY_CHARS));
+    const args = toolChunks.map((chunk) => (typeof chunk.args === 'string' ? chunk.args : '')).join('');
+    parts.push(args === '' ? 'tool call' : `tool call args ${renderValue(args)}`);
+  } else {
+    parts.push('(empty chunk)');
+  }
+  return parts.join(' · ');
 }
 
 function pickString(event: AguiEvent, keys: readonly string[]): string | undefined {

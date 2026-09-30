@@ -1906,6 +1906,7 @@ async function checkExportInExtension(): Promise<void> {
 interface TimelineRowShot {
   seq: number;
   type: string;
+  summary: string;
 }
 
 /**
@@ -1913,7 +1914,7 @@ interface TimelineRowShot {
  * the DOM, so a single query would count the window, not the capture.
  */
 async function allTimelineRows(page: Page): Promise<TimelineRowShot[]> {
-  const bySeq = new Map<number, string>();
+  const bySeq = new Map<number, TimelineRowShot>();
   const total = await page.$eval('.agui-timeline .agui-vlist', (el) => el.scrollHeight);
   const step = await page.$eval('.agui-timeline .agui-vlist', (el) => Math.max(el.clientHeight - 44, 22));
   for (let top = 0; ; top += step) {
@@ -1926,16 +1927,17 @@ async function allTimelineRows(page: Page): Promise<TimelineRowShot[]> {
       els.map((el) => ({
         seq: Number(el.getAttribute('data-seq') ?? '-1'),
         type: (el.querySelector('.agui-event-row__type')?.textContent ?? '').trim(),
+        summary: (el.querySelector('.agui-event-row__summary')?.textContent ?? '').trim(),
       })),
     );
-    for (const row of rows) bySeq.set(row.seq, row.type);
+    for (const row of rows) bySeq.set(row.seq, row);
     if (top >= total) break;
   }
   await page.$eval('.agui-timeline .agui-vlist', (el) => {
     el.scrollTop = 0;
     el.dispatchEvent(new Event('scroll'));
   });
-  return [...bySeq.entries()].sort(([a], [b]) => a - b).map(([seq, type]) => ({ seq, type }));
+  return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
 }
 
 /** Scroll the Timeline's virtual list to a seq's row (rows are in seq order from 1) and click it. */
@@ -1989,6 +1991,14 @@ async function checkLangGraph(browser: Browser, origin: string): Promise<void> {
     }
     if (types.has('unparsed')) {
       fail('an lg-reasoning Timeline row is labelled "unparsed"; every frame names its wire event.');
+    }
+    // Every frame of the recording decoded — a `messages` tuple is a JSON array, not a failure.
+    const unparsed = rows.filter((row) => row.summary.includes('unparsed'));
+    if (unparsed.length > 0) {
+      fail(
+        `${String(unparsed.length)} lg-reasoning Timeline rows summarize as "unparsed" (first: seq ` +
+          `${String(unparsed[0]?.seq)}, ${JSON.stringify(unparsed[0]?.summary)}); every frame decoded.`,
+      );
     }
     const badge = (await page.textContent('.agui-issue-badge__count'))?.trim();
     if (badge !== '0 issues') {
@@ -2213,7 +2223,7 @@ async function main(): Promise<void> {
   );
   console.log('a LangGraph Platform capture reads as one (L11, L14, L15):');
   console.log(
-    `  lg-reasoning: 1213 rows named metadata/messages/values, none unparsed, badge "0 issues"; a ` +
+    `  lg-reasoning: 1213 rows named metadata/messages/values, none labelled or summarized unparsed, badge "0 issues"; a ` +
       `text frame's Derived lists TEXT_MESSAGE_CONTENT and its Payload shows its JSON with no fault ` +
       `wording — ${outDir}/langgraph-timeline.png`,
   );
