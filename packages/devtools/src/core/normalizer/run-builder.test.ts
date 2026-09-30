@@ -1042,6 +1042,28 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     expect(top?.outcome).toBe('finished');
   });
 
+  it('gives a child run no input: the request body is the top-level run’s (L11)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'values|sub:1', { x: 1 }));
+    builder.closeConnection('c1', 30);
+    const [top, child] = builder.runs();
+    expect(top?.input).toEqual({ assistant_id: 'agent', stream_mode: ['values', 'messages-tuple'] });
+    expect(child?.parentRunId).toBe('r-1');
+    expect(child !== undefined && 'input' in child).toBe(false);
+  });
+
+  it('puts lg-no-metadata on the top-level run even when the first frame is a subgraph’s', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'messages|sub:1', chunk('s1', 'x')));
+    builder.addRecord(lgRecord(2, 'values', { messages: [] }));
+    builder.closeConnection('c1', 30);
+    const [top, child] = builder.runs();
+    expect(top?.runId).toBe('lg:c1');
+    expect(top?.issues.map((raised) => [raised.code, raised.seq, raised.runId])).toEqual([['lg-no-metadata', 1, 'lg:c1']]);
+    expect(child?.issues).toEqual([]);
+  });
+
   it('records a child the parent’s failure cut off as aborted', () => {
     const builder = lgBuilder();
     builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));

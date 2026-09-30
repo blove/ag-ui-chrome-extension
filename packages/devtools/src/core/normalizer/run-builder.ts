@@ -205,7 +205,16 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     return entry;
   }
 
-  function openRunFromStarted(conn: ConnEntry, event: AguiEvent, record: CaptureRecord): RunEntry {
+  /**
+   * `inheritInput: false` is a LangGraph child run (L11): the connection's request body is the
+   * top-level run's input, not the subgraph's, so a child's `input` stays absent.
+   */
+  function openRunFromStarted(
+    conn: ConnEntry,
+    event: AguiEvent,
+    record: CaptureRecord,
+    inheritInput = true,
+  ): RunEntry {
     const runId = str(event.runId) ?? `__run_${record.seq}__`;
     const existing = entries.get(runId);
     if (existing) {
@@ -216,7 +225,8 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     run.parentRunId = str(event.parentRunId);
     run.agentId = str(event.agentId);
     // The POST body stashed by addRequest is the fallback; an inlined RUN_STARTED.input wins.
-    run.input = event.input !== undefined ? event.input : conn.input;
+    if (event.input !== undefined) run.input = event.input;
+    else if (inheritInput) run.input = conn.input;
     const entry = createEntry(run);
     entries.set(runId, entry);
     order.push(runId);
@@ -609,7 +619,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
    */
   function openLangGraphRun(conn: ConnEntry, runKey: string, event: AguiEvent, record: EventRecord): RunEntry {
     const previous = conn.openRunId;
-    const entry = openRunFromStarted(conn, event, record);
+    const entry = openRunFromStarted(conn, event, record, runKey === '');
     if (runKey !== '') conn.openRunId = previous;
     if (!conn.runIds.includes(entry.run.runId)) conn.runIds.push(entry.run.runId);
     (conn.langGraphRuns ??= new Map()).set(runKey, entry.run.runId);
@@ -667,7 +677,10 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     // A frame that folded nothing onto its own run — a `debug` frame, `messages/metadata`, a
     // frame after an error — is still that run's record, raw.
     if (!counted) noteRecord(target, record, null, true);
-    attachIssues(target, expansion.issues);
+    // A frame's issues are its run's (S3) — except `lg-no-metadata`, which says the TOP-LEVEL run's
+    // id is synthesized, even when the first frame came from a subgraph.
+    const top = langGraphEntry(conn, '') ?? target;
+    for (const raised of expansion.issues) attachIssues(raised.code === 'lg-no-metadata' ? top : target, [raised]);
     attachIssues(target, record.issues);
   }
 
