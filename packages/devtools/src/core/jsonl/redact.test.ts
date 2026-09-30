@@ -572,3 +572,164 @@ describe('redactLine — passthrough cases', () => {
     expect(Object.keys(out as Record<string, unknown>)).toEqual(['type', 'threadId', 'runId']);
   });
 });
+
+describe('redactLine — fails closed on payloads it does not recognise', () => {
+  /*
+   * These pin the bug found against a LangGraph Platform capture: a payload this module cannot
+   * classify into one of the five groups was exported verbatim even with every group selected,
+   * which makes PRIVACY.md's claim about a fully-redacted export false for any non-AG-UI stream.
+   */
+
+  it('redacts a LangGraph metadata object wholesale, keeping sseEvent', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 1,
+      tMs: 10,
+      sseEvent: 'metadata',
+      event: { run_id: 'r1', attempt: 1 },
+    };
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out).toEqual({
+      kind: 'event',
+      connId: 'c1',
+      seq: 1,
+      tMs: 10,
+      sseEvent: 'metadata',
+      event: { run_id: '«redacted: 2 chars»', attempt: '«redacted: 1 chars»' },
+    });
+  });
+
+  it('leaves the LangGraph metadata object untouched when no group is selected', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 1,
+      tMs: 10,
+      sseEvent: 'metadata',
+      event: { run_id: 'r1', attempt: 1 },
+    };
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('redacts a messages tuple array wholesale, keeping shape and keys', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 2,
+      tMs: 20,
+      sseEvent: 'messages',
+      event: [
+        { type: 'AIMessageChunk', id: 'm1', content: 'Hello secret' },
+        { langgraph_node: 'agent' },
+      ],
+    };
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out).toEqual({
+      kind: 'event',
+      connId: 'c1',
+      seq: 2,
+      tMs: 20,
+      sseEvent: 'messages',
+      event: [
+        {
+          type: '«redacted: 14 chars»',
+          id: '«redacted: 2 chars»',
+          content: '«redacted: 12 chars»',
+        },
+        { langgraph_node: '«redacted: 5 chars»' },
+      ],
+    });
+    expect(JSON.stringify(out)).not.toContain('Hello secret');
+  });
+
+  it('leaves the messages tuple array untouched when no group is selected', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 2,
+      tMs: 20,
+      sseEvent: 'messages',
+      event: [
+        { type: 'AIMessageChunk', id: 'm1', content: 'Hello secret' },
+        { langgraph_node: 'agent' },
+      ],
+    };
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('redacts an unparseable raw string payload to its character count', () => {
+    const raw = 'data that did not parse';
+    const line: JsonlEvent = { kind: 'event', connId: 'c1', seq: 3, tMs: 30, event: raw };
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out.event).toBe(`«redacted: ${raw.length} chars»`);
+  });
+
+  it('leaves an unparseable raw string payload untouched when no group is selected', () => {
+    const line: JsonlEvent = {
+      kind: 'event',
+      connId: 'c1',
+      seq: 3,
+      tMs: 30,
+      event: 'data that did not parse',
+    };
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('redacts an object with an unknown type wholesale, but keeps the type — types are structure', () => {
+    const line = ev({ type: 'FUTURE_EVENT', text: 'secret' });
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out.event).toEqual({ type: 'FUTURE_EVENT', text: '«redacted: 6 chars»' });
+  });
+
+  it('leaves an object with an unknown type untouched when no group is selected', () => {
+    const line = ev({ type: 'FUTURE_EVENT', text: 'secret' });
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('redacts an object with no type wholesale', () => {
+    const line = ev({ foo: 'secret' });
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out.event).toEqual({ foo: '«redacted: 6 chars»' });
+  });
+
+  it('leaves an object with no type untouched when no group is selected', () => {
+    const line = ev({ foo: 'secret' });
+
+    expect(redactLine(line, [])).toEqual(line);
+  });
+
+  it('leaves a known AG-UI event untouched when the selected group does not own it', () => {
+    const line = ev({ type: 'TOOL_CALL_ARGS', toolCallId: 't1', delta: '{"a":1}' });
+
+    expect(redactLine(line, ['text'])).toEqual(line);
+  });
+
+  it('leaves a null payload as null', () => {
+    const line = ev(null as unknown as Record<string, unknown>);
+
+    expect(redactLine(line, ['text'])).toEqual(line);
+  });
+
+  it('leaves an empty string payload as empty', () => {
+    const line: JsonlEvent = { kind: 'event', connId: 'c1', seq: 4, tMs: 40, event: '' };
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(out.event).toBe('');
+  });
+});

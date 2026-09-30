@@ -1,4 +1,7 @@
+import { EVENT_TYPES } from '../events/event-table.generated';
 import type { JsonlLine } from './codec';
+
+const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set<string>(EVENT_TYPES);
 
 export type RedactionGroup = 'text' | 'reasoning' | 'toolArgs' | 'toolResults' | 'state';
 
@@ -70,10 +73,55 @@ function redactPatchOp(op: unknown): unknown {
   return { ...src, value: redactDeep(src.value) };
 }
 
+/**
+ * Fails closed on anything this module cannot classify into one of the five §11 groups.
+ *
+ * `redactEvent` only understands AG-UI events: a fixed table of `type` strings, each mapped to
+ * the group and field that owns its payload. A capture of any other streaming protocol — a
+ * LangGraph Platform run, most obviously, where the event name lives in the line's `sseEvent`
+ * rather than in the payload, and payloads are `{run_id, ...}` objects, `[chunk, metadata]`
+ * tuples, and `{messages: [...]}` state snapshots with no `type` field at all — used to fall
+ * through every branch below to the final `return event`, and ship byte-for-byte, even with
+ * every group selected. A raw frame that failed to parse as JSON is exported as its text string
+ * for the same reason: it has no `type` to dispatch on either.
+ *
+ * An export that PRIVACY.md says keeps only structure must not, in fact, keep content it merely
+ * failed to recognise — that is the same class of gap #38 corrected for empty-string deltas: a
+ * redacted file that quietly isn't. So anything that is not a plain object with a `type` in
+ * `KNOWN_EVENT_TYPES` (the generated AG-UI event table) is redacted wholesale with `redactDeep`
+ * as soon as ANY group is selected — deliberately group-agnostic, because an unrecognised
+ * payload cannot be attributed to text vs. reasoning vs. tool args vs. state; the extension has
+ * no way to know which of the five groups its content belongs to, and guessing wrong is worse
+ * than redacting more than asked. `type` itself survives when it is a string, known or not —
+ * §11 promises event types survive redaction, and a future protocol version's event names are
+ * structure the same way today's are.
+ *
+ * Field-level LangGraph rules (spec decision L16) will replace this wholesale fallback for
+ * LangGraph captures specifically, redacting message content, tool args and state precisely the
+ * way AG-UI events do. Until that ships, this is the only honest behaviour for anything it
+ * covers.
+ */
+function redactUnrecognised(event: unknown): unknown {
+  if (event === null || event === undefined) return event;
+  if (typeof event !== 'object') return redactLeaf(event);
+  if (Array.isArray(event)) return redactDeep(event);
+
+  const src = event as Record<string, unknown>;
+  const out = redactDeep(src) as Record<string, unknown>;
+  if (typeof src.type === 'string') out.type = src.type;
+  return out;
+}
+
 function redactEvent(event: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
-  if (event === null || typeof event !== 'object' || Array.isArray(event)) return event;
+  if (event === null || typeof event !== 'object' || Array.isArray(event)) {
+    return redactUnrecognised(event);
+  }
   const src = event as Record<string, unknown>;
   const type = typeof src.type === 'string' ? src.type : '';
+
+  if (!KNOWN_EVENT_TYPES.has(type)) {
+    return redactUnrecognised(event);
+  }
 
   const single = SINGLE_FIELD[type];
   if (single && groups.has(single.group) && single.field in src) {
