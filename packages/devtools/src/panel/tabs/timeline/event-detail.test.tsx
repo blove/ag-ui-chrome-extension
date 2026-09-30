@@ -186,6 +186,31 @@ describe('EventDetail', () => {
     expect(within(payload).getByText('type').nextElementSibling?.textContent?.trim()).toBe('values');
   });
 
+  it('shows a LangGraph array payload as the JSON it decoded to, not as undecodable', () => {
+    render(
+      <EventDetail
+        store={createPanelStore(
+          langGraphState([{ event: 'metadata', data: { run_id: 'r-1' } }, aiChunk('m1', 'Hi')], 2),
+        )}
+      />,
+    );
+    const payload = screen.getByRole('region', { name: 'Payload' });
+    expect(within(payload).getByText('type').nextElementSibling?.textContent).toBe('messages');
+    expect(payload.textContent).toContain('"type": "AIMessageChunk"');
+    expect(payload.textContent).toContain('"langgraph_node": "agent"');
+    expect(payload.textContent).not.toMatch(/could not/i);
+  });
+
+  it('still calls an unparseable LangGraph frame undecodable', () => {
+    const records: CaptureRecord[] = [
+      { kind: 'event', seq: 2, tMs: 5, connId: 'c1', raw: '[{oops', event: null, sseEvent: 'messages', issues: [] },
+    ];
+    render(<EventDetail store={createPanelStore({ ...initialPanelState(), records, selectedSeq: 2 })} />);
+    expect(
+      screen.getByText('This frame could not be decoded into an event. The bytes are under raw, below.'),
+    ).toBeTruthy();
+  });
+
   describe('Derived — what a LangGraph frame was read as (L14)', () => {
     const frames: LangGraphTestFrame[] = [
       { event: 'metadata', data: { run_id: 'r-1' } }, // seq 1

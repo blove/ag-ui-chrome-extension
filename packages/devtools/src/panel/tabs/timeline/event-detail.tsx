@@ -90,6 +90,27 @@ function Payload({ record }: { record: CaptureRecord }): JSX.Element {
     );
   }
   const event = record.event;
+  /*
+   * `event` is null for any payload that is not a JSON object, which is not the same as one that
+   * failed to parse: a parse failure keeps the frame TEXT as `raw`. A LangGraph `messages` frame
+   * is a JSON array and decoded fine, so it is shown as what it decoded to, under its SSE name.
+   */
+  if (event === null && record.sseEvent !== undefined && typeof record.raw !== 'string' && record.raw !== undefined) {
+    return (
+      <section class="agui-detail__payload" aria-label="Payload">
+        <dl class="agui-detail__fields">
+          <div class="agui-detail__field">
+            <dt>type</dt>
+            <dd>{record.sseEvent}</dd>
+          </div>
+          <div class="agui-detail__field">
+            <dt>data</dt>
+            <dd>{renderValue(record.raw)}</dd>
+          </div>
+        </dl>
+      </section>
+    );
+  }
   if (event === null) {
     return (
       <section class="agui-detail__payload" aria-label="Payload">
