@@ -972,7 +972,7 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     const frames = [
       lgRecord(1, 'metadata', { run_id: 'r-1' }),
       lgRecord(2, 'debug', { step: 1 }), // no synthetic event
-      lgRecord(3, 'messages|sub:1', chunk('s1', 'sub')), // namespaced: no synthetic event yet
+      lgRecord(3, 'messages/metadata', { m1: { metadata: {} } }), // no synthetic event
       lgRecord(4, 'messages', chunk('m1', 'Hi')), // several synthetic events
       lgRecord(5, 'metadata', { run_id: 'r-1' }), // a repeated metadata: no synthetic event
       lgRecord(6, 'error', { error: 'E', message: 'boom' }),
@@ -988,7 +988,7 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     expect(run?.metrics.eventCountByType).toEqual({
       metadata: 2,
       debug: 1,
-      'messages|sub:1': 1,
+      'messages/metadata': 1,
       messages: 1,
       error: 1,
       values: 1,
@@ -1019,6 +1019,229 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     const [run] = builder.runs();
     expect(run).toMatchObject({ runId: 'r-1', threadId: 't-9', dialect: 'langgraph', outcome: 'interrupted', endedAtMs: 30 });
     expect(builder.allIssues()).toEqual([]);
+  });
+
+  it('folds a subgraph into a child run that does not take over the connection', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages|research:t1', chunk('s1', 'Looking', { chunk_position: 'last' })));
+    builder.addRecord(lgRecord(3, 'messages', chunk('m1', 'Answer', { chunk_position: 'last' })));
+    builder.addRecord(lgRecord(4, 'values', { messages: [] }));
+    builder.closeConnection('c1', 50);
+
+    const runs = builder.runs();
+    expect(runs.map((run) => run.runId)).toEqual(['r-1', 'r-1/research:t1']);
+    const [top, child] = runs;
+    expect(child).toMatchObject({ parentRunId: 'r-1', threadId: 't-1', dialect: 'langgraph', outcome: 'finished' });
+    expect(child?.recordSeqs).toEqual([2]);
+    expect(child?.messages.get('s1')?.content).toBe('Looking');
+    expect(child?.metrics.eventCountByType).toEqual({ 'messages|research:t1': 1 });
+    // The top-level message after the subgraph still lands on the top-level run.
+    expect(top?.recordSeqs).toEqual([1, 3, 4]);
+    expect(top?.messages.get('m1')?.content).toBe('Answer');
+    expect(top?.outcome).toBe('finished');
+  });
+
+  it('gives a child run no input: the request body is the top-level run’s (L11)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'values|sub:1', { x: 1 }));
+    builder.closeConnection('c1', 30);
+    const [top, child] = builder.runs();
+    expect(top?.input).toEqual({ assistant_id: 'agent', stream_mode: ['values', 'messages-tuple'] });
+    expect(child?.parentRunId).toBe('r-1');
+    expect(child !== undefined && 'input' in child).toBe(false);
+  });
+
+  it('puts lg-no-metadata on the top-level run even when the first frame is a subgraph’s', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'messages|sub:1', chunk('s1', 'x')));
+    builder.addRecord(lgRecord(2, 'values', { messages: [] }));
+    builder.closeConnection('c1', 30);
+    const [top, child] = builder.runs();
+    expect(top?.runId).toBe('lg:c1');
+    expect(top?.issues.map((raised) => [raised.code, raised.seq, raised.runId])).toEqual([['lg-no-metadata', 1, 'lg:c1']]);
+    expect(child?.issues).toEqual([]);
+    // The frame is the child's alone: opening the top-level run does not make it the top's (S3).
+    expect(top?.recordSeqs).toEqual([2]);
+    expect(child?.recordSeqs).toEqual([1]);
+  });
+
+  it('a frame belongs to one run: a top-level error closes a child without joining it (S3)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages|sub:1', chunk('s1', 'x')));
+    builder.addRecord(lgRecord(3, 'error', { error: 'E', message: 'boom' }));
+    builder.closeConnection('c1', 40);
+    const [top, child] = builder.runs();
+    expect(top?.recordSeqs).toEqual([1, 3]);
+    expect(child?.recordSeqs).toEqual([2]);
+    // Closed by the error frame: stamped with its seq, but not a member of the child's records.
+    expect(child?.messages.get('s1')).toMatchObject({ closed: true, endedAtMs: 30 });
+    expect(child?.metrics.eventCountByType).toEqual({ 'messages|sub:1': 1 });
+  });
+
+  it('an ancestor opened by a nested frame holds no records, even after close (S3)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'values|a:1|b:2', { x: 1 }));
+    builder.addRecord(lgRecord(3, 'values', { messages: [] }));
+    builder.closeConnection('c1', 40);
+    const runs = builder.runs();
+    expect(runs.map((run) => [run.runId, run.recordSeqs, run.outcome])).toEqual([
+      ['r-1', [1, 3], 'finished'],
+      ['r-1/a:1', [], 'finished'],
+      ['r-1/a:1|b:2', [2], 'finished'],
+    ]);
+    expect(runs[1]?.metrics.eventCountByType).toEqual({});
+    expect(runs[1]?.metrics.totalStreamBytes).toBe(0);
+  });
+
+  it('puts a child’s close-time issue on the child, anchored to its own last frame', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(
+      lgRecord(2, 'messages|a:1', [
+        { type: 'AIMessageChunk', id: 's1', content: '', tool_call_chunks: [{ index: 0, id: 'call_a', name: 'f', args: '{bad' }] },
+        {},
+      ]),
+    );
+    builder.addRecord(lgRecord(3, 'values', { messages: [] }));
+    builder.closeConnection('c1', 40);
+    const [top, child] = builder.runs();
+    expect(top?.issues).toEqual([]);
+    expect(child?.issues.map((raised) => [raised.code, raised.seq, raised.runId])).toEqual([
+      ['lg-tool-args-invalid', 2, 'r-1/a:1'],
+    ]);
+  });
+
+  it('a child’s error cuts off its own subgraphs: aborted, and later frames go to the errored child (S5)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages|a:1|b:2', chunk('s1', 'x')));
+    builder.addRecord(lgRecord(3, 'error|a:1', { error: 'E', message: 'child boom' }));
+    builder.addRecord(lgRecord(4, 'messages|a:1|b:2', chunk('s1', 'y')));
+    builder.addRecord(lgRecord(5, 'values|a:1|c:3', { x: 1 }));
+    builder.addRecord(lgRecord(6, 'values', { messages: [] }));
+    builder.closeConnection('c1', 70);
+    const runs = builder.runs();
+    expect(runs.map((run) => [run.runId, run.outcome, run.recordSeqs])).toEqual([
+      ['r-1', 'finished', [1, 6]],
+      ['r-1/a:1', 'error', [3, 4, 5]],
+      ['r-1/a:1|b:2', 'aborted', [2]],
+    ]);
+    expect(runs[2]?.messages.get('s1')).toMatchObject({ content: 'x', closed: true });
+  });
+
+  it('anchors lg-no-final-values to the connection’s last top-level frame', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hi')));
+    builder.addRecord(lgRecord(3, 'messages|sub:1', chunk('s1', 'x')));
+    builder.closeConnection('c1', 40);
+    expect(builder.runs()[0]?.issues.map((raised) => [raised.code, raised.seq])).toEqual([['lg-no-final-values', 2]]);
+  });
+
+  it('records a child the parent’s failure cut off as aborted', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages|sub:1', chunk('s1', 'x')));
+    builder.addRecord(lgRecord(3, 'error', { error: 'E', message: 'boom' }));
+    builder.closeConnection('c1', 40);
+    expect(builder.runs().map((run) => [run.runId, run.outcome])).toEqual([
+      ['r-1', 'error'],
+      ['r-1/sub:1', 'aborted'],
+    ]);
+  });
+
+  it('marks each interrupted run interrupted', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'updates|sub:1', { __interrupt__: [{ value: 'ok?' }] }));
+    builder.addRecord(lgRecord(3, 'values', { __interrupt__: [{ value: 'ok?' }] }));
+    builder.closeConnection('c1', 40);
+    expect(builder.runs().map((run) => run.outcome)).toEqual(['interrupted', 'interrupted']);
+  });
+
+  it('a join stream continues its run: an abort is upgraded by the join’s finish (S8)', () => {
+    const builder = lgBuilder(); // c1: POST /threads/t-1/runs/stream, asked for values
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hel')));
+    builder.addRequest('c2', 'GET', 'http://localhost:2024/threads/t-1/runs/r-1/stream', undefined);
+    builder.addRecord({ ...lgRecord(3, 'messages', chunk('m1', 'lo', { chunk_position: 'last' })), connId: 'c2' });
+    builder.addRecord({ ...lgRecord(4, 'values', { messages: [] }), connId: 'c2' });
+    builder.closeConnection('c1', 50); // the dropped connection: no final values
+    builder.closeConnection('c2', 60);
+
+    const runs = builder.runs();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.outcome).toBe('finished');
+    expect(runs[0]?.messages.get('m1')?.content).toBe('Hello');
+    expect(runs[0]?.recordSeqs).toEqual([1, 2, 3, 4]);
+    // Anchored to the dropped connection's own last frame, not the run's.
+    expect(runs[0]?.issues.map((raised) => [raised.code, raised.seq])).toEqual([['lg-no-final-values', 2]]);
+  });
+
+  /** c1 has streamed the start of r-1 and is still open; c2 joins it. */
+  function joinedWhileStreaming(): RunBuilder {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hel')));
+    builder.addRequest('c2', 'GET', 'http://localhost:2024/threads/t-1/runs/r-1/stream', undefined);
+    return builder;
+  }
+
+  it('a join that closes before the run ends cannot abort a run its original connection is still streaming (S8)', () => {
+    const builder = joinedWhileStreaming();
+    builder.addRecord({ ...lgRecord(3, 'messages', chunk('m1', 'lo')), connId: 'c2' });
+    builder.closeConnection('c2', 40); // c1 never closes: the run is still live
+
+    const runs = builder.runs();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.outcome).toBe('running');
+    expect(runs[0]?.endedAtMs).toBeUndefined();
+    // Nothing from the join's close lands on the run: no RUN_FINISHED, no message closed under
+    // c1, and — a GET says nothing about stream_mode — no lg-no-final-values.
+    expect(runs[0]?.messages.get('m1')).toMatchObject({ content: 'Hello', closed: false });
+    expect(runs[0]?.issues).toEqual([]);
+  });
+
+  it('a join that saw the run finish is authoritative, although the original connection is still open (S8)', () => {
+    const builder = joinedWhileStreaming();
+    builder.addRecord({ ...lgRecord(3, 'messages', chunk('m1', 'lo', { chunk_position: 'last' })), connId: 'c2' });
+    builder.addRecord({ ...lgRecord(4, 'values', { messages: [] }), connId: 'c2' });
+    builder.closeConnection('c2', 50);
+
+    const [run] = builder.runs();
+    expect(run?.outcome).toBe('finished');
+    expect(run?.messages.get('m1')).toMatchObject({ content: 'Hello', closed: true });
+    expect(run?.issues).toEqual([]);
+  });
+
+  it('a keepalive after a child opens counts on the top-level run: a child never takes over the connection', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages|sub:1', chunk('s1', 'x')));
+    const topBefore = builder.getRun('r-1')?.metrics.totalStreamBytes ?? 0;
+    const childBefore = builder.getRun('r-1/sub:1')?.metrics.totalStreamBytes ?? 0;
+    builder.addRecord({ kind: 'keepalive', seq: 3, tMs: 30, connId: 'c1', raw: ':ka\n\n', comment: 'ka', issues: [] });
+
+    expect(builder.getRun('r-1')?.metrics.totalStreamBytes).toBeGreaterThan(topBefore);
+    expect(builder.getRun('r-1/sub:1')?.metrics.totalStreamBytes).toBe(childBefore);
+  });
+
+  it('a nested frame’s bytes and wire name count on its own run, not the ancestor it opened (S3, L13)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    // Its first synthetic event opens `a:1`, a run it does not belong to.
+    builder.addRecord(lgRecord(2, 'values|a:1|b:2', { x: 1 }));
+
+    const nested = builder.getRun('r-1/a:1|b:2')?.metrics;
+    expect(nested?.eventCountByType).toEqual({ 'values|a:1|b:2': 1 });
+    expect(nested?.totalStreamBytes).toBeGreaterThan(0);
+    const ancestor = builder.getRun('r-1/a:1')?.metrics;
+    expect(ancestor?.eventCountByType).toEqual({});
+    expect(ancestor?.totalStreamBytes).toBe(0);
   });
 
   it('leaves an AG-UI connection exactly as it was: no dialect, AG-UI types counted', () => {

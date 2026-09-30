@@ -18,7 +18,12 @@ import { runRules, finalizeRules, type RunValidationState } from '../validator';
 import { computeMetrics } from '../metrics/run-metrics';
 import { createChunkExpanderState, expandChunk, type ChunkExpanderState } from './chunk-expander';
 import { dialectOf, type Dialect } from './dialect';
-import { createLangGraphExpander, type LangGraphExpander } from './langgraph/expander';
+import {
+  createLangGraphExpander,
+  type ExpandedEvent,
+  type ExpandedIssue,
+  type LangGraphExpander,
+} from './langgraph/expander';
 
 /**
  * The `event` arm of the `CaptureRecord` union — the only arm the fold decodes. Naming it
@@ -87,6 +92,10 @@ interface ConnEntry {
   dialect?: Dialect;
   /** Present exactly when `dialect` is `'langgraph'`. */
   langGraph?: LangGraphExpander;
+  /** LangGraph: each scope's run (L11, S1). `''` is the connection's top-level run. */
+  langGraphRuns?: Map<string, string>;
+  /** LangGraph: the seq of this connection's last frame — what its close-time issues anchor to. */
+  lastLangGraphSeq?: number;
 }
 
 function str(value: unknown): string | undefined {
@@ -201,7 +210,16 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     return entry;
   }
 
-  function openRunFromStarted(conn: ConnEntry, event: AguiEvent, record: CaptureRecord): RunEntry {
+  /**
+   * `inheritInput: false` is a LangGraph child run (L11): the connection's request body is the
+   * top-level run's input, not the subgraph's, so a child's `input` stays absent.
+   */
+  function openRunFromStarted(
+    conn: ConnEntry,
+    event: AguiEvent,
+    record: CaptureRecord,
+    inheritInput = true,
+  ): RunEntry {
     const runId = str(event.runId) ?? `__run_${record.seq}__`;
     const existing = entries.get(runId);
     if (existing) {
@@ -212,7 +230,8 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     run.parentRunId = str(event.parentRunId);
     run.agentId = str(event.agentId);
     // The POST body stashed by addRequest is the fallback; an inlined RUN_STARTED.input wins.
-    run.input = event.input !== undefined ? event.input : conn.input;
+    if (event.input !== undefined) run.input = event.input;
+    else if (inheritInput) run.input = conn.input;
     const entry = createEntry(run);
     entries.set(runId, entry);
     order.push(runId);
@@ -238,16 +257,23 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     }
   }
 
+  /**
+   * `member: false` folds an event a record caused on a run the record does not belong to — a
+   * LangGraph frame closing another run's message, or opening an ancestor run (S3). It keeps the
+   * record's seq and time, but the seq does not join the run's `recordSeqs`, and it carries no
+   * bytes, so neither the run's event count nor its byte count sees the frame.
+   */
   function noteRecord(
     entry: RunEntry,
     record: EventRecord,
     event: AguiEvent | null,
     countBytes: boolean,
+    member = true,
   ): void {
     const seqs = entry.run.recordSeqs;
-    if (seqs[seqs.length - 1] !== record.seq) seqs.push(record.seq);
+    if (member && seqs[seqs.length - 1] !== record.seq) seqs.push(record.seq);
     entry.records.push(
-      countBytes
+      countBytes && member
         ? { ...record, event, issues: [] }
         : { ...record, raw: undefined, event, issues: [] },
     );
@@ -546,12 +572,13 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     record: EventRecord,
     countBytes: boolean,
     validate = true,
+    member = true,
   ): void {
     // L12: a synthetic event from the LangGraph expander is correct by construction. An AG-UI
     // issue raised against one would be our translation bug reported as the user's.
     const issues = validate ? runRules(event, record, entry.validation) : [];
     applyTransition(entry, event, record);
-    noteRecord(entry, record, event, countBytes);
+    noteRecord(entry, record, event, countBytes, member);
     attachIssues(entry, issues);
   }
 
@@ -597,27 +624,57 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     return conn.dialect;
   }
 
-  /** Fold synthetic events onto the runs they resolve to, stamped with the source frame (L10). */
+  /**
+   * Open the run a synthetic RUN_STARTED names. A child (non-empty runKey) must not take over the
+   * connection: the next top-level frame — and the next keepalive, which `foldKeepalive` routes by
+   * `openRunId` — still belongs to the top-level run (S3). A run that already exists is a join
+   * stream continuing it (S8): it is mapped here, so the join's frames and finish fold onto it, but
+   * not added to `conn.runIds` — `openRunFromStarted` registers a run only on the connection that
+   * created it, and only that connection's close may abort it.
+   */
+  function openLangGraphRun(conn: ConnEntry, runKey: string, event: AguiEvent, record: EventRecord): RunEntry {
+    const previous = conn.openRunId;
+    const entry = openRunFromStarted(conn, event, record, runKey === '');
+    if (runKey !== '') conn.openRunId = previous;
+    (conn.langGraphRuns ??= new Map()).set(runKey, entry.run.runId);
+    return entry;
+  }
+
+  function langGraphEntry(conn: ConnEntry, runKey: string): RunEntry | undefined {
+    const runId = conn.langGraphRuns?.get(runKey);
+    return runId === undefined ? undefined : entries.get(runId);
+  }
+
+  /**
+   * Fold a frame's synthetic events onto the runs their runKeys name, stamped with the frame (L10).
+   * The frame belongs to its own run only (S3): its seq joins that run's `recordSeqs` and its bytes
+   * and wire name are counted once there (L13). An event it causes on another run — closing a
+   * child a top-level error cut off, opening an ancestor — is folded there as a non-member.
+   * Returns whether the frame was counted.
+   */
   function foldSynthetic(
     conn: ConnEntry,
-    events: readonly AguiEvent[],
+    events: readonly ExpandedEvent[],
     record: EventRecord,
-  ): RunEntry | undefined {
-    let first: RunEntry | undefined;
-    events.forEach((event, i) => {
-      const entry = resolveRun(conn, event, record);
+    frameKey: string,
+  ): boolean {
+    let counted = false;
+    for (const { runKey, event } of events) {
+      const entry =
+        event.type === 'RUN_STARTED' ? openLangGraphRun(conn, runKey, event, record) : langGraphEntry(conn, runKey);
+      if (entry === undefined) continue;
       entry.run.dialect = 'langgraph';
-      first ??= entry;
-      // Only the first carries the frame's bytes, so a frame is counted once (L13).
-      foldEvent(entry, event, record, i === 0, false);
-    });
-    return first;
+      const member = runKey === frameKey;
+      const countBytes = member && !counted;
+      if (countBytes) counted = true;
+      foldEvent(entry, event, record, countBytes, false, member);
+    }
+    return counted;
   }
 
   /**
    * A LangGraph frame. Read `raw`, not `event`: `event` is null for any non-object payload, and
-   * the `messages` tuple is a JSON array. A frame that produces no synthetic event — a namespaced
-   * event, `messages/metadata`, a `debug` frame — is still recorded on its run, raw.
+   * the `messages` tuple is a JSON array.
    */
   function foldLangGraph(conn: ConnEntry, record: EventRecord): void {
     conn.langGraph ??= createLangGraphExpander(conn.connId, {
@@ -630,35 +687,51 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
       ...(record.sseEvent !== undefined ? { sseEvent: record.sseEvent } : {}),
       payload: record.raw,
     });
-    const first = foldSynthetic(conn, expansion.events, record);
-    const openEntry = conn.openRunId === undefined ? undefined : entries.get(conn.openRunId);
-    const target = first ?? openEntry ?? ensureOrphanEntry(conn.connId, record.tMs);
-    if (expansion.events.length === 0) noteRecord(target, record, null, true);
-    attachIssues(target, expansion.issues);
+    conn.lastLangGraphSeq = record.seq;
+    const counted = foldSynthetic(conn, expansion.events, record, expansion.runKey);
+    const target =
+      langGraphEntry(conn, expansion.runKey) ?? langGraphEntry(conn, '') ?? ensureOrphanEntry(conn.connId, record.tMs);
+    // A frame that folded nothing onto its own run — a `debug` frame, `messages/metadata`, a
+    // frame after an error — is still that run's record, raw.
+    if (!counted) noteRecord(target, record, null, true);
+    attachLangGraphIssues(conn, expansion.issues, target);
     attachIssues(target, record.issues);
   }
 
-  /** The expander's end of stream: close what is open and settle the outcome (L6, L9). */
+  /** Each issue on the run it is about (S3); `fallback` for a run key this connection never opened. */
+  function attachLangGraphIssues(conn: ConnEntry, issues: readonly ExpandedIssue[], fallback: RunEntry): void {
+    for (const { runKey, issue } of issues) attachIssues(langGraphEntry(conn, runKey) ?? fallback, [issue]);
+  }
+
+  /**
+   * The expander's end of stream: close what is open and settle each run's outcome (L6, L9, S6).
+   * Nothing was on the wire for these events: they fold as non-members (S3), so they add no seq,
+   * byte or wire name, and each is stamped with its own run's last seq, like the chunk flush — or,
+   * for a run that holds no record (an ancestor a nested frame opened), this connection's last frame.
+   */
   function finishLangGraph(conn: ConnEntry, tMs: number): void {
-    if (conn.langGraph === undefined || conn.openRunId === undefined) return;
-    const entry = entries.get(conn.openRunId);
-    if (entry === undefined) return;
-    const seq = entry.run.recordSeqs.at(-1) ?? 0;
-    const finish = conn.langGraph.finish(seq);
-    // Nothing was on the wire for these: `raw: undefined` keeps them out of the byte count and
-    // the wire-name count, and they anchor to the run's last real seq, like the chunk flush.
-    const record: EventRecord = {
-      kind: 'event',
-      seq,
-      tMs,
-      connId: conn.connId,
-      raw: undefined,
-      event: null,
-      issues: [],
-    };
-    for (const event of finish.events) foldEvent(entry, event, { ...record, event }, false, false);
-    attachIssues(entry, finish.issues.map((raised) => ({ ...raised, tMs })));
-    if (finish.interrupted) entry.run.outcome = 'interrupted';
+    const top = conn.langGraph === undefined ? undefined : langGraphEntry(conn, '');
+    if (conn.langGraph === undefined || top === undefined) return;
+    // Anchored to THIS connection's last frame, not the run's: with a join stream (S8) the run's
+    // last frame may be another connection's, and "this stream closed without its final values"
+    // is a claim about this one.
+    const finish = conn.langGraph.finish(conn.lastLangGraphSeq ?? top.run.recordSeqs.at(-1) ?? 0);
+    // A join that closed before seeing the run end says nothing about a run another connection
+    // opened (S8): that connection may still be streaming it, mid-message. Only its creator's
+    // close, or a join that saw the end, settles it.
+    if (!conn.runIds.includes(top.run.runId) && !finish.sawRunEnd) return;
+    for (const { runKey, event } of finish.events) {
+      const entry = langGraphEntry(conn, runKey);
+      if (entry === undefined) continue;
+      const seq = entry.run.recordSeqs.at(-1) ?? conn.lastLangGraphSeq ?? 0;
+      const record: EventRecord = { kind: 'event', seq, tMs, connId: conn.connId, raw: undefined, event, issues: [] };
+      foldEvent(entry, event, record, false, false, false);
+    }
+    attachLangGraphIssues(conn, finish.issues.map(({ runKey, issue }) => ({ runKey, issue: { ...issue, tMs } })), top);
+    for (const runKey of finish.interrupted) {
+      const entry = langGraphEntry(conn, runKey);
+      if (entry !== undefined) entry.run.outcome = 'interrupted';
+    }
   }
 
   function addRecord(record: CaptureRecord): void {

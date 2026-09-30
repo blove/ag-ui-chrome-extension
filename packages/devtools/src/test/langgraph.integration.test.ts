@@ -209,19 +209,113 @@ describe('LangGraph: a malformed stream produces exactly its issues, at the righ
   });
 });
 
-describe('LangGraph: subgraph events, before PR 3', () => {
-  it('are recorded on the run and counted, and fold nothing', () => {
-    const run = only(
-      load([
-        { event: 'metadata', data: { run_id: 'r-1' } },
-        { ...aiChunk('s1', [{ type: 'text', text: 'sub' }]), event: 'messages|research:abc' },
-        { event: 'values', data: { x: 1 } },
-      ]),
+describe('LangGraph: subgraphs fold into child runs (L11)', () => {
+  const frames: LangGraphTestFrame[] = [
+    { event: 'metadata', data: { run_id: 'r-1' } },
+    { event: 'values', data: { messages: [{ type: 'human', content: 'hi' }] } },
+    { ...aiChunk('s1', [{ type: 'text', text: 'Looking' }]), event: 'messages|research:t1' },
+    { ...aiChunk('s1', [], { chunk_position: 'last' }), event: 'messages|research:t1' },
+    { event: 'updates|research:t1', data: { search: { notes: 'x' } } },
+    { event: 'values|research:t1', data: { notes: 'x' } },
+    { event: 'updates', data: { research: { notes: 'x' } } },
+    aiChunk('m1', 'Answer', { chunk_position: 'last' }),
+    { event: 'values', data: { messages: [] } },
+  ];
+
+  it('gives the subgraph its own run, under its parent', () => {
+    const loaded = load(frames);
+    expect(loaded.runs.map((run) => [run.runId, run.parentRunId, run.outcome])).toEqual([
+      ['r-1', undefined, 'finished'],
+      ['r-1/research:t1', 'r-1', 'finished'],
+    ]);
+  });
+
+  it('splits frames, messages, steps, state and counts between parent and child', () => {
+    const [top, child] = load(frames).runs;
+    expect(child?.recordSeqs).toEqual([3, 4, 5, 6]);
+    expect(child?.messages.get('s1')).toMatchObject({ content: 'Looking', closed: true });
+    expect(child?.steps.map((step) => step.stepName)).toEqual(['search']);
+    expect(child?.stateTimeline).toHaveLength(1);
+    expect(child?.metrics.eventCountByType).toEqual({
+      'messages|research:t1': 2,
+      'updates|research:t1': 1,
+      'values|research:t1': 1,
+    });
+    expect(top?.recordSeqs).toEqual([1, 2, 7, 8, 9]);
+    expect(top?.messages.get('m1')?.content).toBe('Answer');
+    expect(top?.steps.map((step) => step.stepName)).toEqual(['research']);
+    expect(top?.metrics.eventCountByType).toEqual({ metadata: 1, values: 2, updates: 1, messages: 1 });
+    expect([...(top?.issues ?? []), ...(child?.issues ?? [])]).toEqual([]);
+  });
+
+  it('nests: a two-segment namespace is a child of the one-segment run', () => {
+    const loaded = load([
+      { event: 'metadata', data: { run_id: 'r-1' } },
+      { event: 'values|a:1|b:2', data: { x: 1 } },
+      { event: 'values', data: {} },
+    ]);
+    expect(loaded.runs.map((run) => [run.runId, run.parentRunId, run.outcome])).toEqual([
+      ['r-1', undefined, 'finished'],
+      ['r-1/a:1', 'r-1', 'finished'],
+      ['r-1/a:1|b:2', 'r-1/a:1', 'finished'],
+    ]);
+    // The frame is the innermost run's alone; the ancestor it opened sent nothing of its own (S3).
+    expect(loaded.runs.map((run) => run.recordSeqs)).toEqual([[1, 3], [], [2]]);
+  });
+
+  it('a child error is the child’s; a parent error aborts its children', () => {
+    const childError = load([
+      { event: 'metadata', data: { run_id: 'r-1' } },
+      { ...aiChunk('s1', 'x'), event: 'messages|sub:1' },
+      { event: 'error|sub:1', data: { error: 'E', message: 'child boom' } },
+      { event: 'values', data: {} },
+    ]);
+    expect(childError.runs.map((run) => [run.outcome, run.recordSeqs])).toEqual([
+      ['finished', [1, 4]],
+      ['error', [2, 3]],
+    ]);
+
+    const parentError = load([
+      { event: 'metadata', data: { run_id: 'r-1' } },
+      { ...aiChunk('s1', 'x'), event: 'messages|sub:1' },
+      { event: 'error', data: { error: 'E', message: 'boom' } },
+    ]);
+    // The top-level error frame closes the child's message, but it is the top run's frame (S3).
+    expect(parentError.runs.map((run) => [run.outcome, run.recordSeqs])).toEqual([
+      ['error', [1, 3]],
+      ['aborted', [2]],
+    ]);
+    expect(parentError.runs[1]?.messages.get('s1')?.closed).toBe(true);
+    expect(parentError.runs[1]?.metrics.eventCountByType).toEqual({ 'messages|sub:1': 1 });
+    expect(parentError.runs.flatMap((run) => run.issues)).toEqual([]);
+  });
+});
+
+describe('LangGraph: a join stream continues the run it rejoins (S8)', () => {
+  it('one run, the whole answer, finished by the joining connection', () => {
+    const original = langGraphJsonl([
+      { event: 'metadata', data: { run_id: 'r-1' } },
+      aiChunk('m1', 'Hel'),
+    ]);
+    const join = langGraphJsonl(
+      [aiChunk('m1', 'lo', { chunk_position: 'last' }), { event: 'values', data: { messages: [] } }],
+      {
+        connId: 'c2',
+        method: 'GET',
+        url: 'http://localhost:2024/threads/t-1/runs/r-1/stream',
+        body: null,
+        header: false,
+        firstSeq: 3,
+      },
     );
-    expect(run.messages.size).toBe(0);
-    expect(run.recordSeqs).toEqual([1, 2, 3]);
-    expect(run.metrics.eventCountByType).toEqual({ metadata: 1, 'messages|research:abc': 1, values: 1 });
-    expect(run.issues).toEqual([]);
+    const loaded = loadJsonl(`${original}\n${join}`);
+    const run = only(loaded);
+    expect(run.outcome).toBe('finished');
+    expect(run.messages.get('m1')?.content).toBe('Hello');
+    expect(run.recordSeqs).toEqual([1, 2, 3, 4]);
+    // True of the connection that dropped, and kept: it did close without its final values.
+    // Anchored to that connection's own last frame, not the run's (S6).
+    expect(codes(run)).toEqual([['lg-no-final-values', 2]]);
   });
 });
 
