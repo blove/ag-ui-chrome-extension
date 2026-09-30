@@ -109,10 +109,14 @@ Runs. The builder already has a slot that turns one record into zero or more eve
 
 ```ts
 interface LangGraphExpansion {
+  runKey: string; // the run this frame belongs to (S3): '' for the top level
   events: { runKey: string; event: AguiEvent }[]; // synthetic, stamped with the record's seq/tMs
-  issues: Issue[];
+  issues: { runKey: string; issue: Issue }[]; // each on the run it is about (S3)
 }
 ```
+
+The mapping below is per scope (S4): a namespaced event folds exactly as its top-level form, into
+its scope's child run (L11).
 
 **L6 — the mapping.**
 
@@ -131,9 +135,9 @@ interface LangGraphExpansion {
 | `values`/`updates` carrying `__interrupt__` | recorded on the run as an interrupt (L9); a `values` whose only key is `__interrupt__` emits no snapshot |
 | `updates {node: …}` | `STEP_STARTED` + `STEP_FINISHED {stepName: node}` per key other than `__interrupt__` |
 | `custom` | `CUSTOM {name: 'langgraph.custom', value: data}` |
-| `error {error, message}` | close open messages, then `RUN_ERROR {message, code: error}` |
+| `error {error, message}` | close open messages — its scope's and every scope inside it (S5) — then `RUN_ERROR {message, code: error}` |
 | connection close after an interrupt | close open messages, `RUN_FINISHED`; outcome `interrupted` |
-| connection close, no `error` | close open messages; `RUN_FINISHED` if the request did not ask for `values`, or a top-level `values` / `messages/complete` / `checkpoints` arrived after the last message chunk — otherwise `lg-no-final-values` and no finish, so the run is `aborted`. With no request body (a join stream's GET, or a body that did not decode) `values` is **not** assumed requested: a join stream carries whatever modes the run was created with. A capture does not store why a connection closed, so a client abort between steps reads as a finish |
+| connection close, no `error` | close open messages; `RUN_FINISHED` if the request did not ask for `values`, or a top-level `values` / `messages/complete` / `checkpoints` arrived after the last message chunk — otherwise `lg-no-final-values` and no finish, so the run is `aborted`. With no request body (a join stream's GET, or a body that did not decode) `values` is **not** assumed requested: a join stream carries whatever modes the run was created with. A capture does not store why a connection closed, so a client abort between steps reads as a finish. Children follow the top run (S6); a join stream's close speaks for a run it did not open only when it saw the run end (S8) |
 
 | # | Decision | Rationale |
 |---|---|---|
@@ -146,8 +150,8 @@ interface LangGraphExpansion {
 when text or a tool call starts. A `values` event closes the open message. Tool results come from
 `values` only for calls this run started — `values.messages` is the whole thread's history. Frames
 after `error` fold nothing. `lg-undecodable` means a payload that is not the shape its event name
-carries. The expander returns events without a `runKey` in PR 2 (top-level only); PR 3 adds it with
-child runs. Parallel tool calls whose chunks carry no `index` are split when a wire `id` differs
+carries. The expander returned events without a `runKey` in PR 2 (top-level only, namespaced
+events raw); PR 3 adds it and folds namespaced events into child runs (L11). Parallel tool calls whose chunks carry no `index` are split when a wire `id` differs
 from the call's; a call opened under L8's synthetic id is never split when its real id arrives —
 that id becomes an alias, so the tool's result still finds the call. `chunk_position: 'last'`
 closes only its own message. A tool result closes the open message only if that message owns the
@@ -159,7 +163,17 @@ and closes it for the moment.
 
 | # | Decision | Rationale |
 |---|---|---|
-| **L11** | **`mode|ns…` events fold into a child run**: `runId = parentRunId + '/' + ns.join('|')`, `parentRunId` set, opened on the first event for that namespace, closed (before the parent) at parent close or error. The builder's single `conn.openRunId` becomes a per-connection map of open runs, and it routes each synthetic event by its `runKey`. | `Run.parentRunId` already exists. Threadplane itself routes namespaced messages out of the main transcript into subagents; child runs are the same separation in this model. The map is the only structural change to the builder, and the AG-UI path uses exactly one entry in it. |
+| **L11** | **`mode|ns…` events fold into a child run.** The expander keeps one **scope** per namespace (the top level is the scope keyed `''`); a scope's `runKey` is its namespace joined by `|` (`research:t1`, `research:t1|tools:c9`). A child's run id is `` `${topRunId}/${runKey}` `` and its `parentRunId` the run of the namespace one segment shorter (the top-level run for one segment) — **S1**. A scope opens on its first frame with `RUN_STARTED {runId, threadId, parentRunId}`, first for any ancestor not yet open, outermost first — **S2**. **A frame belongs to exactly one run, its own scope's:** its seq joins that run's `recordSeqs`, its bytes and wire name that run's metrics. Effects it has on other runs (a top-level error closing a child's message, a nested frame opening an ancestor) keep its seq and time but not membership — no seq, bytes or wire-name count there, so an ancestor that sent no frame holds no records — **S3**. The builder keeps a per-connection map `runKey → runId` and routes each synthetic event by its `runKey`; **a child run never takes over the connection's current run** (`openRunId`), so the next top-level frame and the next keepalive stay with the top-level run. | `Run.parentRunId` already exists. Threadplane itself routes namespaced messages out of the main transcript into subagents; child runs are the same separation in this model. Ids mirror LangGraph's own namespace nesting (§9 Q2). One frame, one run keeps the Runs table, a run-scoped Timeline and a single-run export exact, and event count equal to wire-name count (L13). The AG-UI path uses no map and is unchanged. |
+
+**PR 3 decisions.**
+
+| # | Decision | Why |
+|---|---|---|
+| **S4** | Within a scope every mode folds exactly as at the top level, with the scope's own message, tool and partial state. `metadata` is never namespaced. | One code path; a subgraph is a graph. |
+| **S5** | An `error` ends its scope **and its subtree**: every scope inside it is settled (open messages closed, args checked), innermost first, then the scope itself. `RUN_ERROR` goes to the errored scope only; scopes inside it get no terminal event and are recorded `aborted`. Later frames from that subtree are recorded on the errored scope's run and fold nothing. Its parent and siblings carry on; a top-level error's subtree is everything. | A failure stops every subgraph inside the failed graph mid-flight, at any depth; a subgraph failure the parent survives is a child error. |
+| **S6** | At close every scope is settled, deepest first, each scope's issues anchored to its own last frame. If the top run finishes (normally or at an interrupt), every child not cut off by S5 gets `RUN_FINISHED` before the top run's. Otherwise children get nothing → `aborted`. `lg-no-final-values` is a top-level check, anchored to the connection's last top-level frame (falling back to its last frame). | Children end with their parent; a subgraph cannot finish inside a run that was cut off. |
+| **S7** | `finish` reports the runKeys that stopped at an interrupt; each is recorded `interrupted`. **Issues carry their run:** every issue names the runKey it is about (`lg-no-metadata` is always the top run's; a cut-off scope's bad args are that scope's), and one raised away from that run's own frames anchors to that run's last frame on this connection. | Interrupts and issues are per run now. |
+| **S8** | **A join stream continues its run** (§9 Q5). A LangGraph connection whose `RUN_STARTED` names a run that already exists folds onto it, but **only the connection that created a run can abort it**: a reused run is not registered on the joining connection. The join's finish settles the run only if the join saw the run end (its final `values`, or an interrupt) — then it is authoritative, even while the original connection is open, and upgrades an `aborted` run to `finished`. A join that closes before that leaves the run as it was. A join GET has no body, so `values` is not assumed requested and it raises no `lg-no-final-values`. `aborted` never overwrites a terminal outcome. | A second run with the same id cannot exist in a map keyed by run id; "the later connection's close wins" either aborts a run that is still streaming or loses the truth that it finished. |
 
 ### Validation and metrics
 
@@ -235,7 +249,8 @@ One PR each, merged on green:
    verbatim.
 2. **The expander** — L4–L10, L12, L13, L18 in `core/`, top-level runs only, golden fixtures.
    (L18 lives here, not in PR 1, because it branches on `dialectOf` per L5.)
-3. **Subgraphs** — L11, the builder's open-run map.
+3. **Subgraphs** — L11, S4–S8: expander scopes, the builder's per-connection `runKey → run` map,
+   join streams.
 4. **Panel and privacy** — L14–L17, harness e2e, visual gate.
 
 ## 9. Open questions
@@ -253,8 +268,10 @@ One PR each, merged on green:
 4. Live-capture eviction: a snapshot rebuilt after the worker evicted a connection's first frame
    re-decides its dialect from what survives — the same degradation class as AG-UI losing
    `RUN_STARTED`.
-5. Two connections sharing one LangGraph run id (a join stream after the original POST): both fold
-   into the one run, the later connection's finish overwrites the outcome, and a join that replays
-   the stream from the start would append its content a second time. Decide in PR 3.
+5. **Decided in PR 3 (S8).** Two connections sharing one LangGraph run id (a join stream after the
+   original POST) fold into the one run; only the creating connection can abort it, and a join that
+   saw the run end finishes it. Known limit: a join that **replays** the stream from the start
+   (`stream_resumable` with `Last-Event-ID: 0`) appends its content a second time — captures do not
+   store SSE `id:`s, so the replay cannot be told from new content.
 6. The URL wins over the payload in `dialectOf`: a non-LangGraph stream on a route that matches L3
    would be expanded, and every frame flagged `lg-unknown-event`.
