@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createRunBuilder } from './run-builder';
+import { createRunBuilder, type RunBuilder } from './run-builder';
 import type { RedactionGroup } from '../jsonl/redact';
 import { ORPHANED_RUN_ID } from '../model/types';
 import type { AguiEvent, CaptureRecord } from '../model/types';
@@ -876,5 +876,107 @@ describe('createRunBuilder — what the capture says was redacted out of it', ()
     const call = aware.getRun('r1')!.toolCalls.get('tc1')!;
     expect(call.argsText).toBe(ARGS_DELTA);
     expect(call.argsParseError).toBeDefined();
+  });
+});
+
+describe('run builder — LangGraph connections (L4, L10, L13)', () => {
+  function lgRecord(seq: number, sseEvent: string, raw: unknown): CaptureRecord {
+    return {
+      kind: 'event',
+      seq,
+      tMs: seq * 10,
+      connId: 'c1',
+      raw,
+      event: typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as AguiEvent) : null,
+      sseEvent,
+      issues: [],
+    };
+  }
+
+  function lgBuilder(): RunBuilder {
+    const builder = createRunBuilder();
+    builder.addRequest('c1', 'POST', 'http://localhost:2024/threads/t-1/runs/stream', {
+      assistant_id: 'agent',
+      stream_mode: ['values', 'messages-tuple'],
+    });
+    return builder;
+  }
+
+  const chunk = (id: string, content: unknown, extra: Record<string, unknown> = {}): unknown => [
+    { type: 'AIMessageChunk', id, content, tool_call_chunks: [], ...extra },
+    { langgraph_node: 'agent' },
+  ];
+
+  it('folds a LangGraph stream into a run, stamping synthetic events with the frame seq and time', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1', attempt: 1 }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hel')));
+    builder.addRecord(lgRecord(3, 'messages', chunk('m1', 'lo', { chunk_position: 'last' })));
+    builder.addRecord(lgRecord(4, 'values', { messages: [] }));
+    builder.closeConnection('c1', 50);
+
+    const [run] = builder.runs();
+    expect(run?.runId).toBe('r-1');
+    expect(run?.threadId).toBe('t-1');
+    expect(run?.dialect).toBe('langgraph');
+    expect(run?.outcome).toBe('finished');
+    expect(run?.input).toEqual({ assistant_id: 'agent', stream_mode: ['values', 'messages-tuple'] });
+    expect(run?.messages.get('m1')).toMatchObject({ content: 'Hello', closed: true, contentSeqs: [2, 3] });
+    expect(run?.recordSeqs).toEqual([1, 2, 3, 4]);
+    expect(run?.issues).toEqual([]);
+    expect(run?.metrics.ttftMs).toBe(10);
+  });
+
+  it('counts wire event names, one per frame, not synthetic event types (L13)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hi')));
+    builder.addRecord(lgRecord(3, 'messages', chunk('m1', '!')));
+    builder.addRecord(lgRecord(4, 'values', { messages: [] }));
+    builder.closeConnection('c1', 50);
+    expect(builder.runs()[0]?.metrics.eventCountByType).toEqual({ metadata: 1, messages: 2, values: 1 });
+  });
+
+  it('runs no AG-UI rule on a LangGraph run — no run-started-without-input, no unclosed-message', () => {
+    // No request at all: the dialect comes from the first frame, and there is no input for
+    // `run-started-without-input` to miss. No body also says nothing about `stream_mode`, so the
+    // expander does not expect a final values event.
+    const builder = createRunBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hi')));
+    builder.closeConnection('c1', 30);
+    expect(builder.allIssues()).toEqual([]);
+    expect(builder.runs()[0]?.outcome).toBe('finished');
+  });
+
+  it('settles the end with the expander, not finalizeRules — no run-never-terminated (L12)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hi')));
+    builder.closeConnection('c1', 30);
+    const codes = builder.allIssues().map((issue) => issue.code);
+    expect(codes).toEqual(['lg-no-final-values']);
+    expect(builder.runs()[0]?.outcome).toBe('aborted');
+  });
+
+  it('records the interrupted outcome (L9)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'values', { __interrupt__: [{ value: 'ok?' }] }));
+    builder.closeConnection('c1', 30);
+    expect(builder.runs()[0]?.outcome).toBe('interrupted');
+  });
+
+  it('leaves an AG-UI connection exactly as it was: no dialect, AG-UI types counted', () => {
+    const builder = createRunBuilder();
+    const record = (seq: number, event: AguiEvent): CaptureRecord => ({
+      kind: 'event', seq, tMs: seq, connId: 'a1', raw: event, event, issues: [],
+    });
+    builder.addRecord(record(1, { type: 'RUN_STARTED', runId: 'r', threadId: 't' }));
+    builder.addRecord(record(2, { type: 'RUN_FINISHED', runId: 'r', threadId: 't' }));
+    builder.closeConnection('a1', 3);
+    const [run] = builder.runs();
+    expect(run?.dialect).toBeUndefined();
+    expect(run?.metrics.eventCountByType).toEqual({ RUN_STARTED: 1, RUN_FINISHED: 1 });
   });
 });
