@@ -17,6 +17,9 @@ page's own world, tees the SSE bodies, and relays them across the world boundary
 ring buffer that the panel reads live. All five panel tabs are real — **Timeline**, **Runs**,
 **State**, **Messages**, **Session** — with protocol issues annotated inline and a toolbar issue
 count that doubles as a filter. Captures export and re-import as `.agui.jsonl`, redacted or not.
+A LangGraph Platform capture also exports as a ready-to-run Threadplane test — Export →
+**Download Threadplane test (.spec.ts)** replays it through `@threadplane/langgraph`'s
+`MockAgentTransport` and passes as generated; edit an assertion and it becomes a regression test.
 On a page backed by a CopilotKit runtime, Session also names the runtime's version, its mode and the
 agents it reports, read passively from the `/info` response the page's own client fetches when it
 connects — so the agent list is there before any run. Most AG-UI apps have no CopilotKit runtime and
@@ -86,6 +89,7 @@ pnpm icons            # listing/icon.svg → public/icons/*.png (run BEFORE buil
 pnpm listing:fixture  # regenerate the demo capture the screenshots use
 pnpm listing:assets   # → packages/devtools/listing/out/*.png (run AFTER build)
 pnpm verify:listing   # assert the store copy fits every CWS field limit
+pnpm verify:threadplane [dir]  # run generated Threadplane specs in a Threadplane checkout (on demand)
 ```
 
 `pnpm package` requires an existing `dist/`, so the release sequence is

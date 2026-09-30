@@ -476,6 +476,9 @@ AG-UI stream side by side in one format. Useful well beyond Threadplane.
 through Threadplane's transport seam. Threadplane's testing story already says "swap the
 transport, never mock `injectAgent()`" — this generates the swap. Prod bug to failing
 test in one click. Highest-value item on the list.
+*Built (2026-09-30): Export → **Download Threadplane test (.spec.ts)**; generated specs pass
+inside Threadplane via `pnpm verify:threadplane` — see
+[the design](../superpowers/specs/2026-09-30-threadplane-fixture-export-design.md).*
 
 **14.3 Signal graph.** *Requires a page-side hook.* Angular signals are not externally
 introspectable; there is no equivalent of the React DevTools global. This needs a small
