@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Carry the SSE `event:` name from the page's `fetch`/XHR stream all the way into `CaptureRecord` and the `.agui.jsonl` file (export and import), and recognise LangGraph Platform's streaming routes — with no behaviour change for AG-UI captures.
+**Goal:** Carry the SSE `event:` name from the page's `fetch`/XHR stream all the way into `CaptureRecord` and the `.agui.jsonl` file (export and import), and recognise LangGraph Platform's streaming routes. Unredacted AG-UI captures are unchanged; a redacted export now also redacts unparseable frames, unknown-type events, and named frames that are not the AG-UI event they name, in full — see Task 6b.
 
 **Architecture:** Spec [`2026-09-29-langgraph-normalization-design.md`](../specs/2026-09-29-langgraph-normalization-design.md) decisions **L1, L2, L3**. One pure helper, `normalizeEventName`, decides what counts as a name (empty and the SSE default `message` do not). The name rides as an optional `eventName` on `WireFrame` (inject → relay → sw), becomes an optional `sseEvent` on `CaptureRecord` and `JsonlEvent`, and round-trips through export/import. `routeHint` gains a `langgraph-run` arm. Nothing reads any of it yet; PR 2 (the expander) does.
 
@@ -38,6 +38,9 @@
 | `src/panel/export/sse-event.test.ts` | **Create.** export → import → export round trip, redaction preserves the name |
 | `src/core/detect/classifier.ts` | `RouteHint` gains `langgraph-run`; `routeHint` matches four routes |
 | `src/core/detect/classifier.test.ts` | route tests |
+| `src/core/jsonl/redact.ts` | (Task 6b) `redactLine`/`redactWholesale` fail closed on unrecognised and named payloads; matching-name exception |
+| `src/core/jsonl/redact.test.ts` | (Task 6b) fail-closed tests; matching-name exception tests |
+| `src/panel/export/redaction-issue-parity.test.ts` | (Task 6b) wholesale-redaction path added to the validator-parity sweep |
 
 ---
 
@@ -758,7 +761,7 @@ function toEventRecord(line: JsonlEvent): CaptureRecord {
 }
 ```
 
-(Replace the existing one-line doc comment on `toEventRecord` with the one above.) `redactLine` already spreads `...line`, so redaction preserves the key with no change — the redaction test proves it.
+(Replace the existing one-line doc comment on `toEventRecord` with the one above.) `redactLine` already spreads `...line`, so `sseEvent` is preserved on every path — including the wholesale-redaction path added in Task 6b — the redaction test proves it.
 
 - [ ] **Step 6: Run the panel and core suites**
 
@@ -934,6 +937,45 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
+### Task 6b (added during execution): redaction fails closed
+
+Not in the original plan. Found while reviewing this PR against a real LangGraph Platform
+capture: `redactEvent`'s dispatch table only understands AG-UI `type` strings, and every branch
+that didn't match fell through to `return event` — the payload shipped byte-for-byte, unredacted,
+even with every §11 category selected. This is pre-existing on `main` (any payload lacking a
+known AG-UI `type` already had this hole; LangGraph just makes it easy to hit, since none of its
+payloads carry one), not something L1–L3 introduced. The user chose to fail closed in this PR
+rather than leave it for PR 4 / L16's field-level LangGraph rules, since shipping a "redacted"
+export that isn't is a privacy defect, not a missing feature.
+
+Four commits cover it:
+
+- **`55db6f8` fix(redact): fail closed on payloads that are not AG-UI events** — `redactWholesale`
+  now runs on any payload `redactEvent` cannot classify (no `type`, unknown `type`, non-object,
+  unparseable raw string), gated by group selection like every other path. `type` survives only
+  when it looks like an AG-UI type (`AGUI_TYPE_RE`), and a non-string `type` is nulled rather than
+  redacted as a leaf, to avoid fabricating a validator issue (`unknown-event-type` for what should
+  read as `shape-invalid`).
+- **`b9c7357` fix(redact): a named SSE event is never AG-UI; keep only AG-UI-shaped types** —
+  a line's `sseEvent` (L2) means the frame came off some other protocol's SSE framing, so its
+  payload was routed to `redactWholesale` unconditionally, with `type` NOT kept (`keepAguiType:
+  false`): a LangGraph payload's `type`-shaped field (if any) is app data, not an AG-UI label, and
+  could collide with a real AG-UI type name by coincidence.
+- **`fed6b22` docs(redact): name every AG-UI field still exported as captured; truthful parity
+  comments** — PRIVACY.md and code comments corrected to name the fields the new fail-closed
+  behaviour does NOT yet cover (§8's per-event gaps), and the parity-test comments updated to
+  describe what the new wholesale path actually exercises.
+- **This commit** — added the matching-name exception: a named line whose `sseEvent` equals its
+  own payload's `type`, where that `type` is a known AG-UI type, IS treated as AG-UI (Hono's
+  `writeSSE({ event, data })` pattern). LangGraph's own names can never produce this match by
+  coincidence (`metadata`, `values`, `messages|<ns>` are lowercase/namespaced, never
+  `UPPER_SNAKE`), so this recovers precision for AG-UI-over-named-SSE servers without reopening
+  the LangGraph gap the three commits above closed.
+
+Field-level LangGraph redaction rules (precise, not wholesale) remain PR 4 / spec decision L16.
+
+---
+
 ### Task 8: mutation checks, full gates, PR
 
 - [ ] **Step 1: Watch each gate fail before believing it**
@@ -948,6 +990,9 @@ Apply each mutation, run the named suite, confirm it FAILS, then revert with `gi
 | `sw/index.ts`: drop the `sseEvent` spread | `vitest run src/sw` | the new record test |
 | `build.ts`: drop the `sseEvent` spread | `vitest run src/panel/export/sse-event.test.ts` | the round-trip test |
 | `load-jsonl.ts`: copy `line.sseEvent` without normalizing | same | the hostile-import test |
+| `redact.ts`: make the unrecognised-payload fallback return the payload unchanged instead of `redactWholesale` | `vitest run src/core/jsonl/redact.test.ts src/panel/export` | the fail-closed tests, and the sse-event leak-check test |
+| `redact.ts`: remove the `line.sseEvent !== undefined` branch (route every event line through `redactEvent`) | `vitest run src/core/jsonl/redact.test.ts` | "a named SSE event is never an AG-UI frame" |
+| `redact.ts`: remove the matching-name exception (always take the wholesale path when `sseEvent` is set) | `vitest run src/core/jsonl/redact.test.ts` | the new "a named line whose SSE event name matches its own payload type IS AG-UI" `TEXT_MESSAGE_CONTENT` test |
 
 Record each result for the PR description.
 
@@ -957,7 +1002,7 @@ Record each result for the PR description.
 pnpm typecheck && pnpm lint && pnpm build && pnpm test && pnpm verify:build && pnpm screenshot:panel && pnpm verify:listing
 ```
 
-Expected: every stage exits 0. Note the unit-test and harness counts before (on `main`) and after. `pnpm test:e2e` too: no e2e scenario sends `event:` lines, so it must be unchanged — that is the "no behaviour change for AG-UI" claim.
+Expected: every stage exits 0. Note the unit-test and harness counts before (on `main`) and after. `pnpm test:e2e` too: no e2e scenario sends `event:` lines, so it must be unchanged — that is the "unredacted AG-UI captures are unchanged" claim (a redacted export's behaviour DOES change for unrecognised payloads — see Task 6b).
 
 - [ ] **Step 3: Push and open the PR**
 

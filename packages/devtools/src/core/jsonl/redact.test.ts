@@ -832,3 +832,67 @@ describe('redactLine — a named SSE event is never an AG-UI frame', () => {
     expect(out.sseEvent).toBe('values');
   });
 });
+
+describe('redactLine — a named line whose SSE event name matches its own payload type IS AG-UI', () => {
+  /*
+   * An AG-UI server that names its SSE frames after the event type (e.g. Hono's
+   * `writeSSE({ event, data })`) produces lines where `sseEvent === event.type`. That equality
+   * is exactly the signal LangGraph Platform's frames can never produce by coincidence:
+   * LangGraph's own names (`metadata`, `values`, `messages|<ns>`) are lowercase and/or
+   * namespaced, so they can never equal an AG-UI `UPPER_SNAKE` `type`. Treat a match as
+   * confirmation this is an AG-UI frame and redact it exactly as an unnamed line would; treat a
+   * mismatch — or any non-AG-UI shape — as before: wholesale, erring safe.
+   */
+
+  it('redacts a matching named TEXT_MESSAGE_CONTENT exactly as the unnamed line would', () => {
+    const named = ev({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'secret' });
+    named.sseEvent = 'TEXT_MESSAGE_CONTENT';
+    const unnamed = ev({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'secret' }, 1);
+
+    const out = redactLine(named, ['text']) as JsonlEvent;
+    const expected = redactLine(unnamed, ['text']) as JsonlEvent;
+
+    expect(out.event).toEqual(expected.event);
+    expect(out.event).toEqual({
+      type: 'TEXT_MESSAGE_CONTENT',
+      messageId: 'm1',
+      delta: '«redacted: 6 chars»',
+    });
+    expect(out.sseEvent).toBe('TEXT_MESSAGE_CONTENT');
+  });
+
+  it('leaves a matching named TEXT_MESSAGE_CONTENT untouched when the selected group does not own it', () => {
+    const line = ev({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'secret' });
+    line.sseEvent = 'TEXT_MESSAGE_CONTENT';
+
+    const out = redactLine(line, ['toolArgs']) as JsonlEvent;
+
+    expect(out.event).toEqual({
+      type: 'TEXT_MESSAGE_CONTENT',
+      messageId: 'm1',
+      delta: 'secret',
+    });
+  });
+
+  it('still redacts wholesale when the named event does not match the payload type', () => {
+    const line = ev({ type: 'CUSTOM', value: 'SECRET' });
+    line.sseEvent = 'values';
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(JSON.stringify(out)).not.toContain('SECRET');
+    expect((out.event as Record<string, unknown>).type).toBe('«redacted: 6 chars»');
+  });
+
+  it('redacts wholesale when the named event does not match a known AG-UI type at all', () => {
+    const line = ev({ type: 'TEXT_MESSAGE_CONTENT', delta: 'secret' });
+    line.sseEvent = 'something-else';
+
+    const out = redactLine(line, ['text']) as JsonlEvent;
+
+    expect(JSON.stringify(out)).not.toContain('secret');
+    // Wholesale, not the AG-UI single-field path: `type` is dropped like any other unattributed
+    // field, since `keepAguiType` is false on this branch.
+    expect((out.event as Record<string, unknown>).type).toBe('«redacted: 20 chars»');
+  });
+});

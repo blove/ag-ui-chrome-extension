@@ -96,12 +96,14 @@ function redactPatchOp(op: unknown): unknown {
  * An export that PRIVACY.md says keeps only structure must not, in fact, keep content it merely
  * failed to recognise — that is the same class of gap #38 corrected for empty-string deltas: a
  * redacted file that quietly isn't. So: an UNRECOGNISED payload — one that is not a plain object
- * with a `type` in `KNOWN_EVENT_TYPES` (the generated AG-UI event table) — OR ANY payload on a
- * line that names its own SSE event (see `redactLine`; a named line is never AG-UI, whatever its
- * `type` looks like) is redacted wholesale with `redactDeep` as soon as ANY group is selected —
- * deliberately group-agnostic, because an unrecognised payload cannot be attributed to text vs.
- * reasoning vs. tool args vs. state; the extension has no way to know which of the five groups
- * its content belongs to, and guessing wrong is worse than redacting more than asked.
+ * with a `type` in `KNOWN_EVENT_TYPES` (the generated AG-UI event table) — OR any payload on a
+ * line that names its own SSE event AND that name does not equal the payload's own `type` (see
+ * `redactLine`'s matching-name exception; a named line whose name matches its payload's `type`
+ * IS treated as AG-UI, everything else named is not) is redacted wholesale with `redactDeep` as
+ * soon as ANY group is selected — deliberately group-agnostic, because an unrecognised payload
+ * cannot be attributed to text vs. reasoning vs. tool args vs. state; the extension has no way to
+ * know which of the five groups its content belongs to, and guessing wrong is worse than
+ * redacting more than asked.
  *
  * `type` survives only on an UNNAMED payload (no `sseEvent`), and only when it is a string
  * matching AG-UI's own `UPPER_SNAKE` naming convention (`AGUI_TYPE_RE`): §11 promises event
@@ -240,15 +242,18 @@ function redactInput(input: unknown, groups: ReadonlySet<RedactionGroup>): unkno
 }
 
 /**
- * Returns a redacted copy. Never mutates its argument. Structure survives by design — ids,
- * ordering, timings, JSON Pointer paths, patch ops always do, and so does `type` on a
- * recognised AG-UI event, or on an unnamed payload whose `type` merely follows AG-UI's own
- * naming convention. Beyond that, this is not a promise that only the value payloads named by
- * `groups` are replaced: a payload this module cannot classify as an AG-UI event — including
- * every payload on a line that names its own SSE event, which by definition is not one (see
- * below) — is redacted WHOLESALE as soon as any group is selected, per `redactWholesale`. Lines
- * no group owns, and only those, are returned as-is, by reference: a `header` or `keepalive`
- * line, or an event/request line when `groups` is empty.
+ * Returns a redacted copy. Never mutates its argument. Structure survives by design at the
+ * LINE level — `connId`, `seq`, `tMs`, `sseEvent` — and, on a payload this module can classify
+ * as AG-UI (an unnamed event with a `type` in `KNOWN_EVENT_TYPES`, or a named event whose
+ * `sseEvent` matches its own `type`; see below), the fields `redactEvent` leaves alone: ids,
+ * ordering, JSON Pointer paths, patch ops, and `type` itself, including on an unnamed payload
+ * whose `type` merely follows AG-UI's own naming convention. That is not a blanket promise for
+ * every payload, though: a payload this module cannot classify as AG-UI — an unrecognised
+ * `type`, no `type` at all, or a named line whose `sseEvent` does not match its own `type` — is
+ * redacted WHOLESALE as soon as any group is selected, per `redactWholesale`, and wholesale
+ * redaction does not spare ids or other structure inside that payload — it has no way to know
+ * which fields are safe. Lines no group owns, and only those, are returned as-is, by reference:
+ * a `header` or `keepalive` line, or an event/request line when `groups` is empty.
  */
 export function redactLine(line: JsonlLine, groups: RedactionGroup[]): JsonlLine {
   if (groups.length === 0) return line;
@@ -259,22 +264,37 @@ export function redactLine(line: JsonlLine, groups: RedactionGroup[]): JsonlLine
      * A line's `sseEvent` key means the frame carried an explicit `event:` name on the wire
      * (spec L1/L2). The capture and loader paths normalize the default name away — a bare
      * `message` event, or a frame with none at all, never sets this key — so ANY `sseEvent`
-     * value means this line came off a protocol other than AG-UI's own SSE framing (LangGraph
-     * Platform, today). Its payload must never reach the AG-UI dispatch table below: a
-     * LangGraph frame can carry a `type` field that happens to collide with an AG-UI type name
-     * (`CUSTOM`, say) by coincidence, and this module has no idea what that OTHER protocol's
-     * field actually means. `redactWholesale` with `keepAguiType: false` treats the whole
-     * payload, `type` included, as opaque app data. Spec L16's field-level LangGraph rules will
-     * replace this wholesale fallback for LangGraph specifically; until then this is the only
-     * honest behaviour.
+     * value means this line came off a protocol other than AG-UI's own SSE framing, UNLESS the
+     * name matches the payload's own `type`: an AG-UI server that names its SSE events after the
+     * event type (e.g. Hono's `writeSSE({ event, data })`) produces exactly that. LangGraph
+     * Platform's own names (`metadata`, `values`, `messages|<ns>`) are lowercase and/or
+     * namespaced and can never equal an AG-UI `UPPER_SNAKE` `type`, so this match cannot be
+     * produced by coincidence with a LangGraph frame — only by an AG-UI server naming its own
+     * events after themselves. A matching line is therefore dispatched through the normal AG-UI
+     * path below, exactly as an unnamed line would be.
      *
-     * This errs safe, not precise: an AG-UI server that also happened to send its own `event:
-     * <TYPE>` name on every frame would have those lines over-redacted here — their `type` label
-     * dropped along with everything else `redactWholesale` cannot attribute to a group — never
-     * under-redacted. Treating a named line as AG-UI by mistake is the direction that would leak.
+     * Any OTHER named line — `sseEvent` present but not equal to the payload's `type` (including
+     * every payload with no `type`, or a non-object payload) — still goes through
+     * `redactWholesale` with `keepAguiType: false`: this module has no idea what that other
+     * protocol's fields mean, so `type` is treated as opaque app data rather than kept. Spec
+     * L16's field-level LangGraph rules will replace this wholesale fallback for LangGraph
+     * specifically; until then this is the only honest behaviour for anything it covers.
+     *
+     * This still errs safe, not precise: a named AG-UI server whose `event:` names do NOT match
+     * their own payload's `type` is over-redacted here — never under-redacted. Treating a named,
+     * non-matching line as AG-UI by mistake is the direction that would leak.
      */
     if (line.sseEvent !== undefined) {
-      return { ...line, event: redactWholesale(line.event, { keepAguiType: false }) };
+      const payload = line.event;
+      const payloadType = isPlainObject(payload) ? payload.type : undefined;
+      const isMatchingAguiEvent =
+        typeof payloadType === 'string' &&
+        payloadType === line.sseEvent &&
+        KNOWN_EVENT_TYPES.has(payloadType);
+      if (isMatchingAguiEvent) {
+        return { ...line, event: redactEvent(payload, set) };
+      }
+      return { ...line, event: redactWholesale(payload, { keepAguiType: false }) };
     }
     return { ...line, event: redactEvent(line.event, set) };
   }

@@ -85,14 +85,17 @@ categories covers that material, because removing it would cost a bug report mos
 legible while protecting nothing anyone typed. If an agent id or description is itself sensitive in
 your deployment, a capture is not the place to find that out — check the file before you share it.
 
-Payloads the extension does not recognise as AG-UI events — any other streaming protocol,
-including LangGraph Platform, and frames that failed to parse at all — are redacted in full as
-soon as any category is selected. The extension cannot tell which category their content belongs
-to, so it does not guess; it keeps only their shape, their keys, the SSE event name when the frame
-had one, and, for a payload with no event name, a `type` field that follows AG-UI's own naming
-convention. Keeping keys has a real edge to it: if an app keys a state map, or any other object, by
-text a user typed — a note keyed by its own title, say — that text is exported as a key, and no
-category redacts a key.
+A frame whose SSE event name is the same string as the AG-UI event type it carries — an AG-UI
+server that names its `event:` field after the event, as Hono's `writeSSE({ event, data })` does —
+is treated as that AG-UI event and redacted the normal, precise way. Any other named frame —
+LangGraph Platform's, for one, whose names (`metadata`, `values`, `messages|<namespace>`) never
+match an AG-UI type — plus any payload the extension does not otherwise recognise as an AG-UI
+event, and any frame that failed to parse at all, are redacted in full as soon as any category is
+selected. The extension cannot tell which category their content belongs to, so it does not guess;
+it keeps only their shape, their keys, the SSE event name when the frame had one, and, for a
+payload with no event name, a `type` field that follows AG-UI's own naming convention. Keeping keys
+has a real edge to it: if an app keys a state map, or any other object, by text a user typed — a
+note keyed by its own title, say — that text is exported as a key, and no category redacts a key.
 
 This is not yet complete for AG-UI itself. With every category selected, the payloads of some
 AG-UI event types — `MESSAGES_SNAPSHOT`, `CUSTOM`, `RAW`, `ACTIVITY_SNAPSHOT`, `ACTIVITY_DELTA`,

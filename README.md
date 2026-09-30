@@ -25,7 +25,7 @@ never make that request, and Session says so without implying anything is wrong.
 Underneath, `core/` is Chrome-free and runs under Node: the generated event table and shape
 checking, the incremental SSE frame parser, connection detection, chunk expansion, the run model,
 the validator rules, run metrics, the RFC 6902 JSON Patch state timeline, and the `.agui.jsonl`
-codec with redaction. 1,501 tests, plus a Playwright harness that drives the extension in a real
+codec with redaction. 1,589 tests, plus a Playwright harness that drives the extension in a real
 browser against real sockets.
 
 What is not done: the Chrome Web Store submission itself. The listing pipeline is built and all five
@@ -55,8 +55,10 @@ The tool sits on the wire where prompts and completions flow, so its posture is 
   group the control reads **Export (unredacted)** and the file carries the real content of the
   streams you captured — so treat a capture you are about to share the way you would treat the
   conversation it came from. Selecting every group still leaves what the *developer* wrote rather
-  than what the *user* typed: ids, paths, tool names and schemas, and any `/info` agent metadata.
-  [PRIVACY.md](PRIVACY.md) says exactly what survives.
+  than what the *user* typed: ids, paths, tool names and schemas, any `/info` agent metadata, and —
+  on a stream whose frames carry their own SSE `event:` name, including LangGraph Platform's
+  subgraph namespaces — that name. Some AG-UI event types aren't covered by the five groups yet;
+  [PRIVACY.md](PRIVACY.md) says exactly what survives and which types those are.
 - **Bounded memory.** The capture buffer caps at a configurable default of 5k events / 8 MB, oldest
   dropped.
 

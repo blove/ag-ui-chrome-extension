@@ -142,8 +142,12 @@ function isSingleRouteInfoEnvelope(body: unknown): boolean {
  * in its pattern — a successful `exec` always filled it — so the default is unreachable. It
  * is also the only safe default to write: `''` is precisely what `(.*)` captures for a
  * root-mounted route, and the `([^/]+)` groups cannot match fewer than one character. That
- * keeps `RouteHint`'s `basePath` / `agentId` / `threadId` as plain `string`, so consumers
- * never have to narrow a value the route grammar already guarantees.
+ * keeps `basePath` / `agentId` / the CopilotKit-route `threadId` as plain `string` wherever the
+ * grammar guarantees them, so consumers never have to narrow those values themselves.
+ * `langgraph-run`'s `threadId` / `runId` are the exception: they are genuinely optional on that
+ * kind (a threadless join route has no `threadId`; a plain run-creation route has neither), so
+ * `RouteHint` types them `string | undefined` rather than defaulting them to `''` here — an
+ * absent LangGraph id is a fact worth keeping, not noise to paper over.
  *
  * `body` is the DECODED request body when one is available and `undefined` otherwise, so every
  * existing two-argument call keeps its meaning exactly. It matters for one arm only — the
@@ -209,6 +213,11 @@ export function routeHint(url: string, method: string, body?: unknown): RouteHin
       const [, basePath = ''] = lgRun;
       return { kind: 'langgraph-run', basePath };
     }
+    // The LangGraph URL checks run before the single-route info envelope deliberately, not just
+    // because they are more specific: a CopilotKit single-route runtime mounted at a path that
+    // happens to end `/runs/stream` is implausible, while a LangGraph run body must never be
+    // misread as a single-route `{method:'info'}` request merely for having some other key
+    // collide with `method`. Keep this order.
     // `basePath` is the whole path: in single-route mode the runtime URL IS the endpoint, so
     // there is no suffix to strip and no sub-path to report.
     if (isSingleRouteInfoEnvelope(body)) {

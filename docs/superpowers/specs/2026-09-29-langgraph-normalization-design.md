@@ -93,7 +93,7 @@ Runs. The builder already has a slot that turns one record into zero or more eve
 |---|---|---|
 | **L1** | **`WireFrame` gains an optional `eventName`**, set by the fetch and XHR paths from `SseFrame.eventName`. `relay.ts` `toRelayMessage` copies it explicitly; `isWireFrame` accepts it only as an own string property. **An empty name and the SSE default `message` are normalized to absent.** | `protocol.ts` already says a frame field "needs a field of its own on this type". The relay rebuilds frames field by field, so a field it does not name is silently stripped — the one step easiest to forget, and it gets its own test. `raw-invariant.test.ts` is extended so fetch and XHR stay byte-identical *including* the name. `EventSource` cannot tell `event: message` from no `event:` line, so treating both as absent keeps all three transports in agreement. |
 | **L2** | **`CaptureRecord` and `JsonlEvent` gain an optional `sseEvent`.** Absent when the frame had no `event:` line. `schemaVersion` stays `1`. | Same argument as #41's `runtime` header key: an older decoder ignores an unknown object key and shows the capture as before; a new line kind would make it report an intact file as damaged. Absent, not `null`, so there is no claim when there is nothing to say. |
-| **L3** | **`RouteHint` gains `langgraph-run`**, matching the four routes in §2, carrying `threadId` from the URL when present. | The URL is the strongest signal and is available before any byte of the response. |
+| **L3** | **`RouteHint` gains `langgraph-run`**, matching the four routes in §2, carrying `threadId` from the URL when the route has one and `runId` on a join route. | The URL is the strongest signal and is available before any byte of the response. |
 
 ### Dialect
 
@@ -165,7 +165,7 @@ interface LangGraphExpansion {
 
 | # | Decision | Rationale |
 |---|---|---|
-| **L16** | **`redact.ts` gains LangGraph rules over the same five groups**, selected by `dialectOf`: message and text-block content → `text`; reasoning blocks and summaries → `reasoning`; `tool_call_chunks[].args`, `tool_calls[].args` → `toolArgs`; `type:'tool'` message content → `toolResults`; `values` / `updates` payloads (excluding `__interrupt__` structure) → `state`. The request line's `input` is redacted as today. | Without this the privacy policy's description of a redacted export is false for LangGraph captures. Messages appear inside `values` too, so `state` and `text` both apply there — a redacted `text` group must reach them either way. Until then (PR 1), `redactEvent` fails closed: any payload that is not a known AG-UI event is redacted in full when any group is selected, keeping only keys, shape, the line's `sseEvent`, and — on an unnamed payload only — a `type` that follows AG-UI's UPPER_SNAKE naming. |
+| **L16** | **`redact.ts` gains LangGraph rules over the same five groups**, selected by `dialectOf`: message and text-block content → `text`; reasoning blocks and summaries → `reasoning`; `tool_call_chunks[].args`, `tool_calls[].args` → `toolArgs`; `type:'tool'` message content → `toolResults`; `values` / `updates` payloads (excluding `__interrupt__` structure) → `state`. The request line's `input` is redacted as today. | Without this the privacy policy's description of a redacted export is false for LangGraph captures. Messages appear inside `values` too, so `state` and `text` both apply there — a redacted `text` group must reach them either way. Until then (PR 1), `redactEvent` fails closed: any payload that is not a known AG-UI event is redacted in full when any group is selected, keeping only keys, shape, the line's `sseEvent`, and — on an unnamed payload only — a `type` that follows AG-UI's UPPER_SNAKE naming. Exception: a NAMED payload whose `sseEvent` equals its own `type`, and that `type` is a known AG-UI type, is treated as AG-UI and redacted through the normal per-field path instead — the one case where a named frame can be positively identified as AG-UI rather than merely not ruled out. |
 | **L17** | **The E6 leak check runs on a redacted LangGraph fixture** and restates §11 for this format rather than importing the redactor. | Same reason as E6: `redact.ts` has shipped a hole its own tests could not see. |
 | **L18** | **E7's fixture export writes `{event, data}` pairs for LangGraph connections** instead of bare payloads. | A bare `data` array without names is not replayable by anything. This is the minimum to stay truthful; the `MockAgentTransport` module is §14.2. |
 
@@ -214,8 +214,11 @@ The expander is Chrome-free and pure over its state, like the rest of `core/`.
 
 One PR each, merged on green:
 
-1. **Event names survive** — L1, L2, L3. No behaviour change for AG-UI; LangGraph captures
-   now keep their names.
+1. **Event names survive** — L1, L2, L3. Unredacted AG-UI captures are unchanged; LangGraph
+   captures now keep their names. A redacted export now also redacts, in full, any frame that
+   fails to parse, any unknown-type event, and any named frame that is not the AG-UI event it
+   names — an interim rule (see L16) that fails closed rather than shipping unrecognised content
+   verbatim.
 2. **The expander** — L4–L10, L12, L13, L18 in `core/`, top-level runs only, golden fixtures.
    (L18 lives here, not in PR 1, because it branches on `dialectOf` per L5.)
 3. **Subgraphs** — L11, the builder's open-run map.
