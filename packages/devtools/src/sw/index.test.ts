@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureRecord } from '../core/model/types';
 import type { WireFrame } from '../inject/protocol';
 import {
@@ -290,7 +290,33 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
 /* Helpers                                                                      */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Every test here loads a fresh worker module, and the previous one does not go away: its pending
+ * 250 ms mirror write still fires, and it writes through whatever `chrome` stub is installed BY
+ * THEN — a later test's session storage. Measured: with the restart tests on tab 7 (the tab most
+ * tests drive), an earlier test's leftover write overwrote the mirror they had just made, and
+ * `re-applies the badge for a restored tab` failed 3 runs out of 3.
+ *
+ * Chrome ends a terminated worker's timers with it, so `loadWorker` does the same: `setTimeout` is
+ * faked for this file (and only it — `shouldAdvanceTime` keeps it running on the real clock, so
+ * `settle(300)` still waits 300 ms and still lets a debounced write land), and a new incarnation
+ * starts by clearing whatever the last one left pending.
+ */
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'],
+    shouldAdvanceTime: true,
+    // The fake clock follows the real one in steps of this size; the 20 ms default made every
+    // `settle()` cost up to 20 ms, which more than doubled this file's run time.
+    advanceTimeDelta: 1,
+  });
+});
+
+afterAll(() => {
+  vi.useRealTimers();
+});
+
 async function loadWorker(): Promise<void> {
+  vi.clearAllTimers();
   vi.resetModules();
   await import('./index');
 }
@@ -850,8 +876,7 @@ describe('service worker', () => {
     // `deferGet` pins the read open, which is the real shape of a woken worker: the mirror load
     // is async and port traffic is not.
     stub = installChrome(session, { deferGet: true });
-    vi.resetModules();
-    await import('./index');
+    await loadWorker();
 
     const relay = relayPort(7);
     stub.connect(relay);
@@ -2134,11 +2159,10 @@ describe('service worker — the toolbar badge', () => {
 });
 
 /**
- * A tab id no other test uses. An earlier test's worker instance can still hold a pending mirror
- * write, which fires against whichever `chrome` stub is installed by then — a shared tab id would
- * let it overwrite this block's session storage mid-test.
+ * Tab 7, the one most tests above drive, on purpose: `loadWorker` clears an earlier incarnation's
+ * pending mirror write, so a leftover can no longer land in this block's session storage.
  */
-const RESTORED_TAB = 41;
+const RESTORED_TAB = 7;
 
 describe('service worker — the toolbar badge after a worker restart', () => {
   it('re-applies the badge for a restored tab, including what the records alone cannot show', async () => {
