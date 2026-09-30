@@ -22,6 +22,7 @@
     "listing:fixture": "pnpm --filter ag-ui-devtools listing:fixture",
     "listing:assets": "pnpm --filter ag-ui-devtools listing:assets",
     "verify:listing": "pnpm --filter ag-ui-devtools verify:listing",
+    "verify:threadplane": "pnpm --filter ag-ui-devtools verify:threadplane",
     "test:e2e": "pnpm --filter ag-ui-harness run test:e2e"
   },
   "pnpm": {

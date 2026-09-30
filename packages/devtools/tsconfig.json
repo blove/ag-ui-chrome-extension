@@ -1,7 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "types": ["chrome", "node"]
+    "types": ["chrome", "node"],
+    // Only for scripts/verify-threadplane.ts (T7), which reads the harness's LangGraph scenarios:
+    // that file imports `@devtools/…` the way the harness resolves it. Nothing under src/ uses it.
+    "paths": {
+      "@devtools/*": ["./src/*"]
+    }
   },
   "include": ["src", "scripts", "manifest.config.ts", "vite.config.ts", "vitest.config.ts"]
 }
