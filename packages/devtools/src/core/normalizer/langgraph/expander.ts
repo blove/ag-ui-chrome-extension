@@ -55,6 +55,12 @@ export interface LangGraphFinish {
   issues: ExpandedIssue[];
   /** The runKeys whose runs stopped at an interrupt (S7): the builder records them `interrupted` (L9). */
   interrupted: string[];
+  /**
+   * Whether this stream saw the top-level run end: its final `values`, or an interrupt. A join
+   * stream's close speaks for a run another connection opened only then (S8) — a join GET says
+   * nothing about `stream_mode`, so its close alone does not say the run finished.
+   */
+  sawRunEnd: boolean;
 }
 
 export interface LangGraphExpander {
@@ -669,7 +675,11 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
 
   function finish(seq: number): LangGraphFinish {
     const out: LangGraphExpansion = { runKey: '', events: [], issues: [] };
-    const done = (interrupted: string[]): LangGraphFinish => ({ events: out.events, issues: out.issues, interrupted });
+    const done = (interrupted: string[]): LangGraphFinish => {
+      const top = started ? topScope() : undefined;
+      const sawRunEnd = top !== undefined && !top.errored && (top.settled || top.interrupted);
+      return { events: out.events, issues: out.issues, interrupted, sawRunEnd };
+    };
     if (!started) return done([]);
     // Deepest first: a child's messages close before its parent's, and the top-level run's
     // RUN_FINISHED comes after every child's (S6). `sort` is stable, so siblings keep open order.

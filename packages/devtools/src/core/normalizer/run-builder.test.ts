@@ -1182,6 +1182,54 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     expect(runs[0]?.issues.map((raised) => [raised.code, raised.seq])).toEqual([['lg-no-final-values', 2]]);
   });
 
+  /** c1 has streamed the start of r-1 and is still open; c2 joins it. */
+  function joinedWhileStreaming(): RunBuilder {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hel')));
+    builder.addRequest('c2', 'GET', 'http://localhost:2024/threads/t-1/runs/r-1/stream', undefined);
+    return builder;
+  }
+
+  it('a join that closes before the run ends cannot abort a run its original connection is still streaming (S8)', () => {
+    const builder = joinedWhileStreaming();
+    builder.addRecord({ ...lgRecord(3, 'messages', chunk('m1', 'lo')), connId: 'c2' });
+    builder.closeConnection('c2', 40); // c1 never closes: the run is still live
+
+    const runs = builder.runs();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.outcome).toBe('running');
+    expect(runs[0]?.endedAtMs).toBeUndefined();
+    // Nothing from the join's close lands on the run: no RUN_FINISHED, no message closed under
+    // c1, and — a GET says nothing about stream_mode — no lg-no-final-values.
+    expect(runs[0]?.messages.get('m1')).toMatchObject({ content: 'Hello', closed: false });
+    expect(runs[0]?.issues).toEqual([]);
+  });
+
+  it('a join that saw the run finish is authoritative, although the original connection is still open (S8)', () => {
+    const builder = joinedWhileStreaming();
+    builder.addRecord({ ...lgRecord(3, 'messages', chunk('m1', 'lo', { chunk_position: 'last' })), connId: 'c2' });
+    builder.addRecord({ ...lgRecord(4, 'values', { messages: [] }), connId: 'c2' });
+    builder.closeConnection('c2', 50);
+
+    const [run] = builder.runs();
+    expect(run?.outcome).toBe('finished');
+    expect(run?.messages.get('m1')).toMatchObject({ content: 'Hello', closed: true });
+    expect(run?.issues).toEqual([]);
+  });
+
+  it('a keepalive after a child opens counts on the top-level run: a child never takes over the connection', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages|sub:1', chunk('s1', 'x')));
+    const topBefore = builder.getRun('r-1')?.metrics.totalStreamBytes ?? 0;
+    const childBefore = builder.getRun('r-1/sub:1')?.metrics.totalStreamBytes ?? 0;
+    builder.addRecord({ kind: 'keepalive', seq: 3, tMs: 30, connId: 'c1', raw: ':ka\n\n', comment: 'ka', issues: [] });
+
+    expect(builder.getRun('r-1')?.metrics.totalStreamBytes).toBeGreaterThan(topBefore);
+    expect(builder.getRun('r-1/sub:1')?.metrics.totalStreamBytes).toBe(childBefore);
+  });
+
   it('leaves an AG-UI connection exactly as it was: no dialect, AG-UI types counted', () => {
     const builder = createRunBuilder();
     const record = (seq: number, event: AguiEvent): CaptureRecord => ({

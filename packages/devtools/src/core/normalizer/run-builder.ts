@@ -626,15 +626,16 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
 
   /**
    * Open the run a synthetic RUN_STARTED names. A child (non-empty runKey) must not take over the
-   * connection: the next top-level frame still belongs to the top-level run (S3). Either way the
-   * run is registered on this connection, so its close settles it — which is also what makes a
-   * join stream continue the run it names (S8).
+   * connection: the next top-level frame — and the next keepalive, which `foldKeepalive` routes by
+   * `openRunId` — still belongs to the top-level run (S3). A run that already exists is a join
+   * stream continuing it (S8): it is mapped here, so the join's frames and finish fold onto it, but
+   * not added to `conn.runIds` — `openRunFromStarted` registers a run only on the connection that
+   * created it, and only that connection's close may abort it.
    */
   function openLangGraphRun(conn: ConnEntry, runKey: string, event: AguiEvent, record: EventRecord): RunEntry {
     const previous = conn.openRunId;
     const entry = openRunFromStarted(conn, event, record, runKey === '');
     if (runKey !== '') conn.openRunId = previous;
-    if (!conn.runIds.includes(entry.run.runId)) conn.runIds.push(entry.run.runId);
     (conn.langGraphRuns ??= new Map()).set(runKey, entry.run.runId);
     return entry;
   }
@@ -715,6 +716,10 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     // last frame may be another connection's, and "this stream closed without its final values"
     // is a claim about this one.
     const finish = conn.langGraph.finish(conn.lastLangGraphSeq ?? top.run.recordSeqs.at(-1) ?? 0);
+    // A join that closed before seeing the run end says nothing about a run another connection
+    // opened (S8): that connection may still be streaming it, mid-message. Only its creator's
+    // close, or a join that saw the end, settles it.
+    if (!conn.runIds.includes(top.run.runId) && !finish.sawRunEnd) return;
     for (const { runKey, event } of finish.events) {
       const entry = langGraphEntry(conn, runKey);
       if (entry === undefined) continue;

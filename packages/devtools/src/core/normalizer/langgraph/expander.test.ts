@@ -314,6 +314,17 @@ describe('createLangGraphExpander', () => {
     const done = expander.finish(3);
     expect(done.issues).toEqual([]);
     expect(done.events.at(-1)?.event).toEqual({ type: 'RUN_FINISHED', runId: 'r-9', threadId: 't-1' });
+    // …but it did not see the run end, so the builder does not let it speak for a run it joined (S8).
+    expect(done.sawRunEnd).toBe(false);
+  });
+
+  it('says whether the stream saw the run end: its final values, or an interrupt (S8)', () => {
+    const finished = drive([['metadata', { run_id: 'r-1' }], ['values', { messages: [] }]]).expander.finish(3);
+    expect(finished.sawRunEnd).toBe(true);
+    const interrupted = drive([['metadata', { run_id: 'r-1' }], ['updates', { __interrupt__: [{ value: 'ok?' }] }]]);
+    expect(interrupted.expander.finish(3).sawRunEnd).toBe(true);
+    const errored = drive([['metadata', { run_id: 'r-1' }], ['values', {}], ['error', { error: 'E', message: 'boom' }]]);
+    expect(errored.expander.finish(4).sawRunEnd).toBe(false);
   });
 
   it('starts a join stream that attached mid-run under the URL\'s run id, with no lg-no-metadata', () => {
