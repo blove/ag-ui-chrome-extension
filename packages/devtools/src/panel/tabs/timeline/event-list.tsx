@@ -4,7 +4,8 @@ import type { CaptureRecord, Issue, IssueSeverity } from '../../../core/model/ty
 import { VirtualList } from '../../common/virtual-list';
 import { useMeasuredHeight } from '../../common/layout';
 import { summarizeEvent } from '../../common/format';
-import { issuesBySeq, visibleRecords } from '../../model/selectors';
+import { connectionDialects, issuesBySeq, visibleRecords } from '../../model/selectors';
+import type { Dialect } from '../../../core/normalizer/dialect';
 import { selectSeq, type PanelStore } from '../../model/store';
 import { usePanelState } from '../../model/use-panel-state';
 
@@ -47,6 +48,8 @@ function typeLabel(record: CaptureRecord): string {
 interface EventRowProps {
   record: CaptureRecord;
   issues: Issue[];
+  /** The row's connection's protocol: only a LangGraph frame takes the LangGraph summary (L14). */
+  dialect: Dialect;
   selected: boolean;
   /** True for the one row in the tab order (the roving tabindex). */
   tabbable: boolean;
@@ -70,6 +73,7 @@ interface EventRowProps {
 function EventRow({
   record,
   issues,
+  dialect,
   selected,
   tabbable,
   focusSeqRef,
@@ -83,7 +87,7 @@ function EventRow({
   });
 
   const severity = worstSeverity(issues);
-  const summary = summarizeEvent(record);
+  const summary = summarizeEvent(record, dialect);
   // The tint carries no accessible information on its own, so the severity and the codes go into
   // the row's name. An explicit label rather than the concatenated spans: adjacent inline spans
   // produce a name with no separators.
@@ -125,6 +129,7 @@ export function EventList({ store, locateNonce }: EventListProps): JSX.Element {
   // to the run and the import path hands back the records it was fed, so `record.issues` is
   // empty on every imported record. `issuesBySeq` is the authoritative source.
   const bySeq = issuesBySeq(state);
+  const dialects = connectionDialects(state);
   /*
    * `scrollToIndex` is a value, not a command: `VirtualList` will not re-scroll for the same
    * index twice, deliberately, so an append cannot re-trigger a stale request. That remains
@@ -224,6 +229,7 @@ export function EventList({ store, locateNonce }: EventListProps): JSX.Element {
               key={record.seq}
               record={record}
               issues={bySeq.get(record.seq) ?? []}
+              dialect={dialects.get(record.connId) ?? 'agui'}
               selected={record.seq === state.selectedSeq}
               tabbable={index === rovingIndex}
               focusSeqRef={focusSeqRef}

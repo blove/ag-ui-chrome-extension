@@ -353,4 +353,11 @@ export interface Run {
    * a LangGraph run counts wire event names, because its AG-UI events are synthetic.
    */
   dialect?: 'langgraph';
+  /**
+   * LangGraph only (L14): the synthetic AG-UI events each wire frame was read as, keyed by the
+   * frame's seq, in fold order. Includes events a frame caused on THIS run although the frame
+   * belongs to another (S3: a top-level error closing a child's message). Excludes the events the
+   * expander emits at connection close — no frame caused those. Absent on AG-UI runs.
+   */
+  derived?: Map<number, AguiEvent[]>;
 }

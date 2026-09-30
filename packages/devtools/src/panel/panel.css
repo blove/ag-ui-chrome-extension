@@ -726,6 +726,24 @@ li[data-severity='warning'] .agui-detail__severity {
   white-space: pre-wrap;
 }
 
+.agui-detail__derived {
+  margin-top: 12px;
+}
+
+.agui-detail__derived p {
+  margin: 0;
+  color: var(--agui-fg-muted);
+}
+
+.agui-detail__derived ol {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.agui-detail__derived li {
+  overflow-wrap: anywhere;
+}
+
 .agui-detail__raw {
   margin-top: 12px;
 }

@@ -565,6 +565,9 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
    * Every event takes this path — off the wire, out of chunk expansion, or out of the
    * end-of-stream flush — so message closing, `endedAtMs` and tool-args parsing happen in
    * exactly one place and a synthesized END is validated like any other.
+   *
+   * `derive` records the event under the frame that caused it (L14). Only `foldSynthetic` sets
+   * it: an AG-UI event is its own frame, and the expander's close-time events have no frame.
    */
   function foldEvent(
     entry: RunEntry,
@@ -573,6 +576,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     countBytes: boolean,
     validate = true,
     member = true,
+    derive = false,
   ): void {
     // L12: a synthetic event from the LangGraph expander is correct by construction. An AG-UI
     // issue raised against one would be our translation bug reported as the user's.
@@ -580,6 +584,12 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     applyTransition(entry, event, record);
     noteRecord(entry, record, event, countBytes, member);
     attachIssues(entry, issues);
+    if (derive) {
+      const derived = (entry.run.derived ??= new Map());
+      const events = derived.get(record.seq);
+      if (events === undefined) derived.set(record.seq, [event]);
+      else events.push(event);
+    }
   }
 
   /**
@@ -667,7 +677,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
       const member = runKey === frameKey;
       const countBytes = member && !counted;
       if (countBytes) counted = true;
-      foldEvent(entry, event, record, countBytes, false, member);
+      foldEvent(entry, event, record, countBytes, false, member, true);
     }
     return counted;
   }

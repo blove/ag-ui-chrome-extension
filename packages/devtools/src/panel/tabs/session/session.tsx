@@ -3,7 +3,7 @@ import type { AgentInfo, RuntimeInfo } from '../../../core/detect/info';
 import type { PanelState, PanelSource, CaptureStatus } from '../../model/panel-types';
 import type { PanelStore } from '../../model/store';
 import { usePanelState } from '../../model/use-panel-state';
-import { issueCounts } from '../../model/selectors';
+import { connectionDialects, issueCounts } from '../../model/selectors';
 import { DropZone } from '../../import/drop-zone';
 import type { LoadedCapture } from '../../import/load-jsonl';
 import { applyLoaded } from '../../import/apply-loaded';
@@ -95,6 +95,31 @@ function describeTransport(state: PanelState): string {
       : 'nothing on the wire yet, which is normal before the first message';
   }
   return 'not detected — detection ships with the capture layer';
+}
+
+const PROTOCOL_NAMES = { agui: 'AG-UI', langgraph: 'LangGraph Platform' } as const;
+
+function connections(n: number): string {
+  return n === 1 ? '1 connection' : `${String(n)} connections`;
+}
+
+/**
+ * Which protocol the capture's connections speak (L15), per connection because one capture can
+ * hold both. No connection yet is an absence, worded as the Transport row words it: nothing has
+ * come past, which is ordinary before the first message.
+ */
+function describeProtocol(state: PanelState): string {
+  let agui = 0;
+  let langgraph = 0;
+  for (const dialect of connectionDialects(state).values()) {
+    if (dialect === 'langgraph') langgraph += 1;
+    else agui += 1;
+  }
+  if (agui === 0 && langgraph === 0) return 'nothing on the wire yet, which is normal before the first message';
+  if (langgraph === 0) return PROTOCOL_NAMES.agui;
+  if (agui === 0) return PROTOCOL_NAMES.langgraph;
+  if (agui === 1 && langgraph === 1) return `${PROTOCOL_NAMES.agui} and ${PROTOCOL_NAMES.langgraph} — 1 connection each`;
+  return `${PROTOCOL_NAMES.agui} (${connections(agui)}) and ${PROTOCOL_NAMES.langgraph} (${connections(langgraph)})`;
 }
 
 function Row({ label, value }: { label: string; value: string }): JSX.Element {
@@ -254,6 +279,7 @@ export function Session({ store, onLoaded, exportIo }: SessionProps): JSX.Elemen
         />
         <Row label="Endpoints" value="not detected — detection ships with the capture layer" />
         <Row label="Transport" value={describeTransport(state)} />
+        <Row label="Protocol" value={describeProtocol(state)} />
         {/*
          * Requirements §4 asks for the runtime's version AND its mode (multi-route vs
          * single-route). Both come from the same `/info` exchange, and the mode comes from WHICH

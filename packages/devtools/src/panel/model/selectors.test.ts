@@ -15,7 +15,10 @@ import {
   scopedRun,
   selectedRecord,
   issuesBySeq,
+  connectionDialects,
 } from './selectors';
+import { loadJsonl } from '../import/load-jsonl';
+import { aiChunk, langGraphJsonl } from '../../test/langgraph-capture';
 
 function eventRecord(seq: number, event: AguiEvent): CaptureRecord {
   return { kind: 'event', seq, tMs: seq * 10, connId: 'c1', raw: event, event, issues: [] };
@@ -238,5 +241,51 @@ describe('selectedRecord', () => {
     const s = state({ scope: 'r_1', filter: { text: 'zzz', issuesOnly: true }, selectedSeq: 5 });
 
     expect(selectedRecord(s)?.seq).toBe(5);
+  });
+});
+
+describe('connectionDialects', () => {
+  it('classifies each connection by its request line and first event record (L4, L15)', () => {
+    const state: PanelState = {
+      ...initialPanelState(),
+      requests: [
+        { connId: 'lg', tMs: 0, method: 'POST', url: 'http://localhost:2024/threads/t/runs/stream', input: {} },
+        { connId: 'ag', tMs: 0, method: 'POST', url: 'http://localhost:3000/api/agent', input: {} },
+      ],
+      records: [
+        keepaliveRecord(1, 'ka'),
+        { kind: 'event', seq: 2, tMs: 20, connId: 'proxy', raw: { run_id: 'r' }, event: null, sseEvent: 'metadata', issues: [] },
+        eventRecord(3, { type: 'RUN_STARTED', runId: 'r', threadId: 't' }),
+      ],
+    };
+    expect(connectionDialects(state)).toEqual(
+      new Map([
+        ['lg', 'langgraph'],
+        ['ag', 'agui'],
+        ['c1', 'agui'],
+        ['proxy', 'langgraph'],
+      ]),
+    );
+  });
+
+  it('is empty for an empty capture', () => {
+    expect(connectionDialects(initialPanelState()).size).toBe(0);
+  });
+
+  it('keeps a connection the builder folded as LangGraph, after its metadata frame was trimmed', () => {
+    // A proxied LangGraph server: no URL match, only the leading `metadata` frame said so, and a
+    // live capture has since trimmed it. The run the builder folded still names the connection.
+    const loaded = loadJsonl(
+      langGraphJsonl([{ event: 'metadata', data: { run_id: 'r-1' } }, aiChunk('m1', 'Hi')], {
+        url: 'http://localhost:3000/proxy/stream',
+      }),
+    );
+    const state: PanelState = {
+      ...initialPanelState(),
+      runs: loaded.runs,
+      records: loaded.records.slice(1),
+      requests: loaded.requests,
+    };
+    expect(connectionDialects(state).get('c1')).toBe('langgraph');
   });
 });

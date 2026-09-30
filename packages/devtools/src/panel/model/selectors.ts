@@ -1,4 +1,5 @@
 import type { CaptureRecord, Issue, Run } from '../../core/model/types';
+import { dialectOf, type Dialect } from '../../core/normalizer/dialect';
 import type { PanelState } from './panel-types';
 
 /**
@@ -91,4 +92,45 @@ export function visibleRecords(s: PanelState): CaptureRecord[] {
 export function selectedRecord(s: PanelState): CaptureRecord | undefined {
   if (s.selectedSeq === null) return undefined;
   return s.records.find((record) => record.seq === s.selectedSeq);
+}
+
+/**
+ * The protocol each connection speaks (L15), by the same rule the run builder folds with — the
+ * request line and the first event record — so Session can never name a protocol the Timeline and
+ * Runs tabs did not fold the connection as. Every connection that has a request line or an event
+ * record, requests first, then in record order.
+ *
+ * The builder decides once, at a connection's first event record, and keeps its answer; this
+ * reads the records the panel still HOLDS. A live capture trims its oldest records, and a request
+ * line can land after the first record, so the two can drift apart for a LangGraph server behind a
+ * proxy path (no URL match, only the leading `metadata` frame says so). A run the builder folded as
+ * LangGraph therefore names its own connection LangGraph whatever the held records now say.
+ */
+export function connectionDialects(s: PanelState): Map<string, Dialect> {
+  const requests = new Map<string, { method: string; url: string }>();
+  for (const request of s.requests) {
+    if (!requests.has(request.connId)) requests.set(request.connId, request);
+  }
+  const firstEvents = new Map<string, CaptureRecord & { kind: 'event' }>();
+  for (const record of s.records) {
+    if (record.kind === 'event' && !firstEvents.has(record.connId)) firstEvents.set(record.connId, record);
+  }
+  const dialects = new Map<string, Dialect>();
+  for (const connId of new Set([...requests.keys(), ...firstEvents.keys()])) {
+    const request = requests.get(connId);
+    const first = firstEvents.get(connId);
+    dialects.set(
+      connId,
+      dialectOf(
+        request === undefined ? undefined : { method: request.method, url: request.url },
+        first === undefined
+          ? undefined
+          : { ...(first.sseEvent !== undefined ? { sseEvent: first.sseEvent } : {}), payload: first.raw },
+      ),
+    );
+  }
+  for (const run of s.runs) {
+    if (run.dialect === 'langgraph') dialects.set(run.connId, 'langgraph');
+  }
+  return dialects;
 }

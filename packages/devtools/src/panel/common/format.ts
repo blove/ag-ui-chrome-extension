@@ -6,6 +6,7 @@
  * a 40kB tool-call argument blob would break the fixed row height virtualization depends on.
  */
 import type { AguiEvent, CaptureRecord } from '../../core/model/types';
+import type { Dialect } from '../../core/normalizer/dialect';
 
 /** Contract cap: a summary must fit one list row. Never exceeded, including the ellipsis. */
 const MAX_SUMMARY_CHARS = 80;
@@ -75,15 +76,30 @@ const VALUE_KEYS = [
  * One-line summary of an event for a list row, e.g. `m_1 · "Hello"` — never longer than 80
  * chars. The event *type* is a separate column (design §3), so it is deliberately not
  * repeated here.
+ *
+ * `dialect` is the record's connection's (`connectionDialects`). Only a LangGraph connection's
+ * frames take the LangGraph readings below: an AG-UI server may name its frames too, and its rows
+ * must read exactly as they did before LangGraph existed.
  */
-export function summarizeEvent(record: CaptureRecord): string {
+export function summarizeEvent(record: CaptureRecord, dialect: Dialect = 'agui'): string {
   if (record.kind === 'keepalive') {
     const comment = collapse(record.comment);
     return truncate(comment === '' ? 'keepalive' : `keepalive · ${comment}`, MAX_SUMMARY_CHARS);
   }
 
   const event = record.event;
-  // A frame whose payload would not parse is still shown, per the model's own comment.
+  // A LangGraph frame (L14) names itself on the wire, and its payload need not be an AG-UI event
+  // or even an object: a `messages` tuple is an array, and decoded fine.
+  if (dialect === 'langgraph') {
+    if (event === null && typeof record.raw !== 'string' && record.raw !== undefined) {
+      return truncate(summarizeLangGraphValue(record.raw), MAX_SUMMARY_CHARS);
+    }
+    if (event !== null && typeof event.type !== 'string') {
+      return truncate(keyList(event), MAX_SUMMARY_CHARS);
+    }
+  }
+  // A frame whose payload would not parse is still shown, per the model's own comment. Its
+  // `raw` is the frame TEXT, which is how it differs from a payload that parsed to a non-object.
   if (event === null) return 'unparsed payload';
 
   const parts: string[] = [];
@@ -99,6 +115,63 @@ export function summarizeEvent(record: CaptureRecord): string {
   }
 
   return truncate(parts.join(' · '), MAX_SUMMARY_CHARS);
+}
+
+/** `{ run_id, attempt }` — what a LangGraph object frame carries, without its values. */
+function keyList(value: object): string {
+  const keys = Object.keys(value);
+  return keys.length === 0 ? '{}' : `{ ${keys.join(', ')} }`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A LangGraph payload that is not an object. A `messages` tuple — `[chunk, metadata]` — and a
+ * `messages/*` list both lead with a message, so the first element is summarized the way an AG-UI
+ * content row is: the id, then what the chunk carries. Anything else is compact JSON.
+ */
+function summarizeLangGraphValue(raw: unknown): string {
+  const first: unknown = Array.isArray(raw) ? raw[0] : undefined;
+  if (!isRecord(first)) return renderValue(raw);
+
+  const parts: string[] = [];
+  if (typeof first.id === 'string' && first.id !== '') parts.push(sliceUnits(collapse(first.id), MAX_SUMMARY_CHARS));
+
+  const content = first.content;
+  const text =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content
+            .filter(isRecord)
+            .map((part) => (part.type === 'text' && typeof part.text === 'string' ? part.text : ''))
+            .join('')
+        : '';
+  const reasoning = Array.isArray(content)
+    ? content
+        .filter(isRecord)
+        .flatMap((part) => (part.type === 'reasoning' && Array.isArray(part.summary) ? part.summary : []))
+        .filter(isRecord)
+        .map((summary) => (typeof summary.text === 'string' ? summary.text : ''))
+        .join('')
+    : '';
+  const toolChunks = Array.isArray(first.tool_call_chunks) ? first.tool_call_chunks.filter(isRecord) : [];
+
+  if (text !== '') {
+    parts.push(renderValue(text));
+  } else if (reasoning !== '') {
+    parts.push(`reasoning ${renderValue(reasoning)}`);
+  } else if (toolChunks.length > 0) {
+    const name = toolChunks.map((chunk) => chunk.name).find((value) => typeof value === 'string' && value !== '');
+    if (typeof name === 'string') parts.push(sliceUnits(collapse(name), MAX_SUMMARY_CHARS));
+    const args = toolChunks.map((chunk) => (typeof chunk.args === 'string' ? chunk.args : '')).join('');
+    parts.push(args === '' ? 'tool call' : `tool call args ${renderValue(args)}`);
+  } else {
+    parts.push('(empty chunk)');
+  }
+  return parts.join(' · ');
 }
 
 function pickString(event: AguiEvent, keys: readonly string[]): string | undefined {
@@ -155,7 +228,7 @@ function sliceUnits(text: string, max: number): string {
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
-function truncate(text: string, max: number): string {
+export function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   let cut = text.slice(0, max - 1);
   const lastUnit = cut.charCodeAt(cut.length - 1);
