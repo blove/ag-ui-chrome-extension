@@ -9,6 +9,7 @@
  * tell two different stories about the same file.
  */
 import { routeHint } from '../detect/classifier';
+import type { JsonlEvent, JsonlLine } from '../jsonl/codec';
 
 export type Dialect = 'agui' | 'langgraph';
 
@@ -44,4 +45,38 @@ export function dialectOf(
     return 'langgraph';
   }
   return 'agui';
+}
+
+/**
+ * Each connection's dialect in a list of `.agui.jsonl` lines, by the one rule the run builder uses
+ * (L5): its request line, and its first event line. A header or keepalive decides nothing.
+ *
+ * Lives here rather than beside any one consumer because two of them must agree: the fixture
+ * export decides which frames are LangGraph from it, and export redaction decides which request
+ * bodies are LangGraph bodies from it. If they disagreed, one file would tell two stories.
+ */
+export function dialectsOfLines(lines: readonly JsonlLine[]): Map<string, Dialect> {
+  const requests = new Map<string, { method: string; url: string }>();
+  const firstEvents = new Map<string, JsonlEvent>();
+  for (const line of lines) {
+    if (line.kind === 'request' && !requests.has(line.connId)) {
+      requests.set(line.connId, { method: line.method, url: line.url });
+    } else if (line.kind === 'event' && !firstEvents.has(line.connId)) {
+      firstEvents.set(line.connId, line);
+    }
+  }
+  const dialects = new Map<string, Dialect>();
+  for (const connId of new Set([...requests.keys(), ...firstEvents.keys()])) {
+    const first = firstEvents.get(connId);
+    dialects.set(
+      connId,
+      dialectOf(
+        requests.get(connId),
+        first === undefined
+          ? undefined
+          : { ...(first.sseEvent !== undefined ? { sseEvent: first.sseEvent } : {}), payload: first.event },
+      ),
+    );
+  }
+  return dialects;
 }

@@ -1,4 +1,5 @@
 import { EVENT_TYPES } from '../events/event-table.generated';
+import type { Dialect } from '../normalizer/dialect';
 import type { JsonlLine } from './codec';
 
 const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set<string>(EVENT_TYPES);
@@ -242,6 +243,58 @@ function redactInput(input: unknown, groups: ReadonlySet<RedactionGroup>): unkno
 }
 
 /**
+ * The keys of a LangGraph Platform run request that are run SETTINGS rather than content: which
+ * assistant, which stream modes, how to schedule and checkpoint. None of them carries anything a
+ * user typed or an app had in scope, and they are what makes a captured LangGraph run legible.
+ */
+const LANGGRAPH_SETTINGS_KEYS: ReadonlySet<string> = new Set([
+  'assistant_id',
+  'stream_mode',
+  'stream_subgraphs',
+  'stream_resumable',
+  'multitask_strategy',
+  'on_completion',
+  'on_disconnect',
+  'if_not_exists',
+  'after_seconds',
+  'durability',
+  'checkpoint_during',
+  'interrupt_before',
+  'interrupt_after',
+  'feedback_keys',
+  'checkpoint_id',
+]);
+
+/**
+ * A LangGraph Platform run request body, redacted fail-closed.
+ *
+ * Such a body is not a `RunAgentInput`: the user's prompt sits at `input.messages[].content` (the
+ * LangChain message shape), beside `command` (interrupt resume values), `config`, `context`,
+ * `metadata`, `checkpoint` and `webhook`. `redactInput` reads only top-level `messages`, `state`,
+ * `context` and `forwardedProps`, so with every group selected all of that used to ship verbatim.
+ *
+ * Every key except the settings in `LANGGRAPH_SETTINGS_KEYS` — including any key this module has
+ * never seen — is redacted deep as soon as ANY group is selected. That is deliberately
+ * group-agnostic, the same interim rule `redactWholesale` applies to named LangGraph frames: a
+ * redacted export is a file handed to other people, and content this module cannot yet attribute
+ * to one of the five §11 groups must not ship in it. Field-level LangGraph rules (spec L16, PR 4)
+ * will replace this with per-group precision; until then over-redacting is the only honest
+ * behaviour. A body that is not a plain object is redacted wholesale.
+ *
+ * `Object.fromEntries` builds the copy so a `__proto__` key parsed from JSON stays an own data
+ * property — and gets redacted like any other key — rather than becoming the copy's prototype.
+ */
+function redactLangGraphBody(input: unknown): unknown {
+  if (!isPlainObject(input)) return redactWholesale(input, { keepAguiType: false });
+  return Object.fromEntries(
+    Object.entries(input).map(([key, value]) => [
+      key,
+      LANGGRAPH_SETTINGS_KEYS.has(key) ? value : redactDeep(value),
+    ]),
+  );
+}
+
+/**
  * Returns a redacted copy. Never mutates its argument. Structure survives by design at the
  * LINE level — `connId`, `seq`, `tMs`, `sseEvent` — and, on a payload this module can classify
  * as AG-UI (an unnamed event with a `type` in `KNOWN_EVENT_TYPES`, or a named event whose
@@ -254,8 +307,13 @@ function redactInput(input: unknown, groups: ReadonlySet<RedactionGroup>): unkno
  * redaction does not spare ids or other structure inside that payload — it has no way to know
  * which fields are safe. Lines no group owns, and only those, are returned as-is, by reference:
  * a `header` or `keepalive` line, or an event/request line when `groups` is empty.
+ *
+ * `dialect` is the line's CONNECTION dialect (`dialectsOfLines`). It only changes a `request`
+ * line: a LangGraph Platform body goes through `redactLangGraphBody`, which fails closed. Absent
+ * or `'agui'`, a request body is a `RunAgentInput` and is redacted per field as before. Event
+ * lines ignore it — a named LangGraph frame is already caught by its `sseEvent`.
  */
-export function redactLine(line: JsonlLine, groups: RedactionGroup[]): JsonlLine {
+export function redactLine(line: JsonlLine, groups: RedactionGroup[], dialect?: Dialect): JsonlLine {
   if (groups.length === 0) return line;
   const set = new Set(groups);
 
@@ -299,6 +357,9 @@ export function redactLine(line: JsonlLine, groups: RedactionGroup[]): JsonlLine
     return { ...line, event: redactEvent(line.event, set) };
   }
   if (line.kind === 'request') {
+    if (dialect === 'langgraph') {
+      return { ...line, input: redactLangGraphBody(line.input) };
+    }
     // Gated per field inside `redactInput`, not wholesale on `state`. Gating the whole body on
     // one group meant selecting `text` left the user's own messages verbatim.
     return { ...line, input: redactInput(line.input, set) };

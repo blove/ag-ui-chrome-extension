@@ -20,6 +20,8 @@
  */
 import { describe, expect, test } from 'vitest';
 import happyJsonl from '../../test/fixtures/happy-run.agui.jsonl?raw';
+import lgReasoningJsonl from '../../test/fixtures/lg-reasoning.agui.jsonl?raw';
+import { aiChunk, langGraphJsonl } from '../../test/langgraph-capture';
 import { ALL_REDACTION_GROUPS, type RedactionGroup } from '../../core/jsonl/redact';
 import type { JsonlLine } from '../../core/jsonl/codec';
 import { loadJsonl } from '../import/load-jsonl';
@@ -69,6 +71,16 @@ function inputPayload(input: unknown, out: string[]): void {
   stringLeaves(input.state, out);
   stringLeaves(input.context, out);
   stringLeaves(input.forwardedProps, out);
+  /*
+   * A LangGraph Platform request body (LangChain shape) nests the user's messages one level down
+   * — `input.messages[].content` — and carries `command` (resume values), `config` and `metadata`
+   * beside it, every one of which can hold anything the app had in scope. The prompt is the whole
+   * reason a request line is in this gate, so the nested shape is restated here too.
+   */
+  inputPayload(input.input, out);
+  stringLeaves(input.command, out);
+  stringLeaves(input.config, out);
+  stringLeaves(input.metadata, out);
 }
 
 /** The payload strings one event carries, by event type. §11's five groups, restated. */
@@ -167,6 +179,29 @@ const EVERY_GROUP = [
   '',
 ].join('\n');
 
+/**
+ * A LangGraph Platform capture whose request body carries a long prompt, a resume `command`, a
+ * `config` holding a token and private `metadata` — the fields a LangGraph body has that a
+ * `RunAgentInput` does not.
+ */
+const LANGGRAPH = langGraphJsonl(
+  [
+    { event: 'metadata', data: { run_id: 'r-lg', attempt: 1 } },
+    aiChunk('m1', 'ok'),
+    { event: 'values', data: { messages: [] } },
+  ],
+  {
+    body: {
+      assistant_id: 'agent',
+      input: { messages: [{ type: 'human', content: 'what are the terms of the confidential merger' }] },
+      command: { resume: 'approve the secret plan' },
+      config: { configurable: { user_token: 'sk-secret-123' } },
+      metadata: { note: 'private notes about the user' },
+      stream_mode: ['values', 'messages-tuple'],
+    },
+  },
+);
+
 function sourceOf(text: string): ExportSource {
   const loaded = loadJsonl(text);
   return {
@@ -225,6 +260,28 @@ describe('E6: a fully redacted export leaks nothing', () => {
   test('the same holds for the golden happy-run capture', () => {
     const raw = exportWith(happyJsonl, []);
     const redacted = exportWith(happyJsonl, [...ALL_REDACTION_GROUPS]);
+    expect(leakedValues(raw, redacted)).toEqual([]);
+  });
+
+  test('a LangGraph request body leaks nothing: prompt, command, config, metadata', () => {
+    const raw = exportWith(LANGGRAPH, []);
+    // The restatement must see the payload first, or the next assertion is vacuous.
+    expect(leakedValues(raw, raw).sort()).toEqual(
+      [
+        'approve the secret plan',
+        'private notes about the user',
+        'sk-secret-123',
+        'what are the terms of the confidential merger',
+      ].sort(),
+    );
+    const redacted = exportWith(LANGGRAPH, [...ALL_REDACTION_GROUPS]);
+    expect(leakedValues(raw, redacted)).toEqual([]);
+  });
+
+  test('the same holds for the real LangGraph reasoning capture, whose prompt is in the body', () => {
+    const raw = exportWith(lgReasoningJsonl, []);
+    expect(leakedValues(raw, raw).length).toBeGreaterThan(0);
+    const redacted = exportWith(lgReasoningJsonl, [...ALL_REDACTION_GROUPS]);
     expect(leakedValues(raw, redacted)).toEqual([]);
   });
 
