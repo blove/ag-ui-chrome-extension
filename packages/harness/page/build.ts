@@ -23,7 +23,12 @@ export async function buildPage(): Promise<void> {
     // Two entries, two pages. `copilotkit.ts` is a page of its own rather than a flag on
     // `main.ts` because `e2e/capture.spec.ts` asserts `main.ts` makes exactly one POST, and a
     // discovery request folded in there would silently rewrite that assertion.
-    entryPoints: [join(pageRoot, 'main.ts'), join(pageRoot, 'copilotkit.ts')],
+    // `langgraph.ts` is separate for the same reason.
+    entryPoints: [
+      join(pageRoot, 'main.ts'),
+      join(pageRoot, 'copilotkit.ts'),
+      join(pageRoot, 'langgraph.ts'),
+    ],
     bundle: true,
     format: 'esm',
     target: 'chrome111', // the manifest's `minimum_chrome_version`
@@ -34,6 +39,8 @@ export async function buildPage(): Promise<void> {
   copyFileSync(join(pageRoot, 'index.html'), join(outDir, 'index.html'));
   // The CopilotKit-shaped page: discovery before any run (spec §13 done-when #2).
   copyFileSync(join(pageRoot, 'copilotkit.html'), join(outDir, 'copilotkit.html'));
+  // The LangGraph Platform page: a run on `/threads/:id/runs/stream` (spec §7, PR 4c).
+  copyFileSync(join(pageRoot, 'langgraph.html'), join(outDir, 'langgraph.html'));
   // No bundle of its own: the point of this page is an INLINE script in `<head>`, which is the
   // earliest page code that can run after the document_start content scripts.
   copyFileSync(join(pageRoot, 'document-start.html'), join(outDir, 'document-start.html'));

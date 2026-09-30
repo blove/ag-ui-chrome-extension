@@ -15,7 +15,7 @@ export default tseslint.config(
   {
     // `page/main.ts` runs in the browser, and the e2e specs run in Node but carry closures
     // (`page.evaluate`, `waitForFunction`) that are serialised and executed in the page.
-    files: ['page/main.ts', 'e2e/**/*.ts'],
+    files: ['page/main.ts', 'page/langgraph.ts', 'e2e/**/*.ts'],
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
   },
 );

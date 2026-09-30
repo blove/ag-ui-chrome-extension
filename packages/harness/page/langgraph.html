@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AG-UI harness — LangGraph Platform</title>
+  </head>
+  <body>
+    <h1>LangGraph Platform capture harness</h1>
+    <!--
+      A page that talks to a LangGraph Platform server the way `@langchain/langgraph-sdk` does:
+      one POST to `/threads/:threadId/runs/stream`, read to the end. The scenario, the thread id,
+      an optional join and an optional AG-UI run beside it are chosen by query string — see
+      `langgraph.ts`.
+    -->
+    <form id="run-form">
+      <input id="prompt" name="prompt" value="hello" size="40" />
+      <button id="run" type="submit">Run</button>
+    </form>
+    <p>status: <output id="status">idle</output></p>
+    <p id="error" hidden></p>
+    <script type="module" src="./langgraph.js"></script>
+  </body>
+</html>
