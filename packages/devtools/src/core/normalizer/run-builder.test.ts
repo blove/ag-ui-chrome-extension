@@ -1230,6 +1230,20 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     expect(builder.getRun('r-1/sub:1')?.metrics.totalStreamBytes).toBe(childBefore);
   });
 
+  it('a nested frame’s bytes and wire name count on its own run, not the ancestor it opened (S3, L13)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    // Its first synthetic event opens `a:1`, a run it does not belong to.
+    builder.addRecord(lgRecord(2, 'values|a:1|b:2', { x: 1 }));
+
+    const nested = builder.getRun('r-1/a:1|b:2')?.metrics;
+    expect(nested?.eventCountByType).toEqual({ 'values|a:1|b:2': 1 });
+    expect(nested?.totalStreamBytes).toBeGreaterThan(0);
+    const ancestor = builder.getRun('r-1/a:1')?.metrics;
+    expect(ancestor?.eventCountByType).toEqual({});
+    expect(ancestor?.totalStreamBytes).toBe(0);
+  });
+
   it('leaves an AG-UI connection exactly as it was: no dialect, AG-UI types counted', () => {
     const builder = createRunBuilder();
     const record = (seq: number, event: AguiEvent): CaptureRecord => ({
