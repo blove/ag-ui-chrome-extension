@@ -317,4 +317,13 @@ describe('createLangGraphExpander', () => {
     expect(events[0]).toEqual({ type: 'RUN_STARTED', runId: 'lg:c1', threadId: '' });
     expect(codes).toEqual([['lg-no-metadata', 1]]);
   });
+
+  it('names an unnamed frame "message", as SSE dispatches it and as metrics and export count it', () => {
+    const expander = createLangGraphExpander('c1', REQUEST);
+    expander.push({ seq: 1, sseEvent: 'metadata', payload: { run_id: 'r-1' } });
+    const out = expander.push({ seq: 2, payload: { a: 1 } });
+    expect(out.issues.map((raised) => [raised.code, raised.message])).toEqual([
+      ['lg-unknown-event', '"message" is not an event LangGraph Platform emits'],
+    ]);
+  });
 });

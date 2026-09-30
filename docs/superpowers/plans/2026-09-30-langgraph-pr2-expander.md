@@ -2030,7 +2030,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 | Mutation | Must fail |
 |---|---|
 | `dialect.ts`: always return `'agui'` | builder LangGraph tests, integration tests |
-| expander: open a message on an empty chunk | "invents no message for the empty resp_ chunk", golden resp_ test |
+| expander: emit `TEXT_MESSAGE_START` on an empty chunk (opening without emitting is unobservable) | "invents no message for the empty resp_ chunk", golden resp_ test |
 | expander: `values` path emits results for any tool call (drop `onlyIfStartedHere`) | "does not attach an earlier run’s tool result" |
 | expander `finish`: always emit `RUN_FINISHED` | "does not finish a run that asked for values", malformed issues test |
 | run-builder: validate synthetic events (`validate` ignored) | "runs no AG-UI rule on a LangGraph run" |

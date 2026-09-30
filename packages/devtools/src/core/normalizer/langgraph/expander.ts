@@ -401,7 +401,8 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
   function push(frame: LangGraphFrame): LangGraphExpansion {
     const out: LangGraphExpansion = { events: [], issues: [] };
     const { seq, payload } = frame;
-    const name = frame.sseEvent ?? '';
+    // An unnamed frame is dispatched by SSE as `message`: the name metrics and export count it under.
+    const name = frame.sseEvent ?? 'message';
     const { mode, namespace } = parseEventName(frame.sseEvent);
 
     if (mode === 'metadata' && namespace.length === 0) {

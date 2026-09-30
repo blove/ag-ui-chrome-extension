@@ -118,8 +118,8 @@ interface LangGraphExpansion {
 
 | LangGraph | Synthetic AG-UI |
 |---|---|
-| `metadata {run_id}` | `RUN_STARTED {runId: run_id, threadId: URL ?? data.thread_id, input: request.input}` |
-| first non-`metadata` event with no run open | `RUN_STARTED {runId: 'lg:' + connId}` plus issue `lg-no-metadata` |
+| `metadata {run_id}` | `RUN_STARTED {runId: run_id, threadId: URL ?? data.thread_id}`; the run's `input` is the request body, by the builder's existing fallback |
+| first non-`metadata` event with no run open | `RUN_STARTED {runId: 'lg:' + connId}` plus issue `lg-no-metadata` — except on a join route (`/threads/:t/runs/:r/stream`), which may attach mid-run after `metadata` was sent: it starts under the URL's run id and raises nothing |
 | `messages` chunk, `type` ai / `AIMessageChunk` | `TEXT_MESSAGE_START` on the first chunk **with content**, then `TEXT_MESSAGE_CONTENT` per text delta; reasoning blocks → `REASONING_MESSAGE_START/CONTENT`; `tool_call_chunks` → `TOOL_CALL_START` when an entry's `id` or `name` is first known, `TOOL_CALL_ARGS` per `args` fragment, merged by `index` |
 | message end: `chunk_position: 'last'`, a chunk for a different message id, or run end | `REASONING_MESSAGE_END`, `TOOL_CALL_END` for each open call, `TEXT_MESSAGE_END` |
 | `messages` chunk, `type` tool | `TOOL_CALL_RESULT {toolCallId: tool_call_id, content}` once per id |
@@ -132,7 +132,8 @@ interface LangGraphExpansion {
 | `updates {node: …}` | `STEP_STARTED` + `STEP_FINISHED {stepName: node}` per key other than `__interrupt__` |
 | `custom` | `CUSTOM {name: 'langgraph.custom', value: data}` |
 | `error {error, message}` | close open messages, then `RUN_ERROR {message, code: error}` |
-| connection close, `complete`, no `error` seen | close open messages and child runs, then `RUN_FINISHED` |
+| connection close after an interrupt | close open messages, `RUN_FINISHED`; outcome `interrupted` |
+| connection close, no `error` | close open messages; `RUN_FINISHED` if the request did not ask for `values`, or a top-level `values` / `messages/complete` / `checkpoints` arrived after the last message chunk — otherwise `lg-no-final-values` and no finish, so the run is `aborted`. With no request body (a join stream's GET, or a body that did not decode) `values` is **not** assumed requested: a join stream carries whatever modes the run was created with. A capture does not store why a connection closed, so a client abort between steps reads as a finish |
 
 | # | Decision | Rationale |
 |---|---|---|
@@ -140,6 +141,19 @@ interface LangGraphExpansion {
 | **L8** | **A tool call with no `id` in its first chunk gets `messageId + '#' + index`**, and keeps it for the life of the call even if a later chunk carries a real id. | AG-UI requires the id at `TOOL_CALL_START`. Re-keying mid-call would split one call into two in the Messages tab. |
 | **L9** | **`RunOutcome` gains `'interrupted'`.** The expander marks the run; the builder sets the outcome when the run closes normally after an interrupt. No wire field is invented on the synthetic `RUN_FINISHED`. | An interrupt is the normal human-in-the-loop pause, not an error and not a plain finish. Runs shows it; the AG-UI path never sets it, so nothing existing changes. |
 | **L10** | **Synthetic events are stamped with their source record's `seq` and `tMs`** and are never Timeline rows. | TTFT, stalls and Waterfall timing come out right with no special handling, and Timeline keeps its promise of showing what was on the wire. |
+
+**Implementation notes (PR 2).** Reasoning is the separate message `` `${id}:reasoning` `` and closes
+when text or a tool call starts. A `values` event closes the open message. Tool results come from
+`values` only for calls this run started — `values.messages` is the whole thread's history. Frames
+after `error` fold nothing. `lg-undecodable` means a payload that is not the shape its event name
+carries. The expander returns events without a `runKey` in PR 2 (top-level only); PR 3 adds it with
+child runs. Parallel tool calls whose chunks carry no `index` are split when a wire `id` differs
+from the call's; a call opened under L8's synthetic id is never split when its real id arrives —
+that id becomes an alias, so the tool's result still finds the call. `chunk_position: 'last'`
+closes only its own message. A tool result closes the open message only if that message owns the
+call. Tool-args validity (`lg-tool-args-invalid`) is checked when a message truly ends — its
+`last` chunk, a `values`, an `error`, or the finish — not when another branch's chunk interleaves
+and closes it for the moment.
 
 ### Subgraphs
 
@@ -151,7 +165,7 @@ interface LangGraphExpansion {
 
 | # | Decision | Rationale |
 |---|---|---|
-| **L12** | **AG-UI validator rules do not run on synthetic events. The expander raises LangGraph issues instead:** `lg-unknown-event` (name not in the known set), `lg-no-metadata`, `lg-partial-regressed` (a partial that does not extend the previous one), `lg-tool-args-invalid` (accumulated args not JSON at call end), `lg-complete-mismatch`, `lg-no-final-values` (closed without a top-level `values`, **only** when the request's `stream_mode` included `values`), `lg-undecodable` (data not JSON). | Synthetic events are correct by construction; an AG-UI issue on one would be our translation bug reported as the user's. `lg-no-final-values` is the condition Threadplane's own bridge treats as "interrupted", so it is a real diagnostic — but only meaningful if `values` was asked for. |
+| **L12** | **AG-UI validator rules do not run on synthetic events. The expander raises LangGraph issues instead:** `lg-unknown-event` (name not in the known set), `lg-no-metadata`, `lg-partial-regressed` (a partial that does not extend the previous one), `lg-tool-args-invalid` (accumulated args not JSON at call end), `lg-complete-mismatch`, `lg-no-final-values` (closed without a top-level `values`, **only** when the request's `stream_mode` included `values`), `lg-undecodable` (a payload that is not the shape its event name carries). | Synthetic events are correct by construction; an AG-UI issue on one would be our translation bug reported as the user's. `lg-no-final-values` is the condition Threadplane's own bridge treats as "interrupted", so it is a real diagnostic — but only meaningful if `values` was asked for. |
 | **L13** | **`eventCountByType` counts wire event names for LangGraph runs** (`messages`, `values`, `messages|research:…`), not synthetic types. Other metrics read synthetic events. | The Runs table's event count must equal the number of Timeline rows for the run. |
 
 ### Panel
@@ -188,7 +202,7 @@ The expander is Chrome-free and pure over its state, like the rest of `core/`.
 
 ## 7. Testing
 
-- **Golden fixtures** (`src/test/fixtures/*.langgraph.agui.jsonl`):
+- **Golden fixtures** (`src/test/fixtures/lg-*.agui.jsonl`):
   - `lg-reasoning` — the real Python recording, trimmed to a few hundred chunks; covers reasoning
     and text blocks, the id quirk, the usage-only last chunk, final `values`. Asserts the Messages
     reconstruction equals the recording's `canonical_text`.
@@ -236,3 +250,11 @@ One PR each, merged on green:
    builder merges them into one message each, but per-message durations and stall detection are
    choppy. Keeping several messages open at once, each closed by its own `last` / `values` /
    `error` / finish, is the fix if this shows up in real captures.
+4. Live-capture eviction: a snapshot rebuilt after the worker evicted a connection's first frame
+   re-decides its dialect from what survives — the same degradation class as AG-UI losing
+   `RUN_STARTED`.
+5. Two connections sharing one LangGraph run id (a join stream after the original POST): both fold
+   into the one run, the later connection's finish overwrites the outcome, and a join that replays
+   the stream from the start would append its content a second time. Decide in PR 3.
+6. The URL wins over the payload in `dialectOf`: a non-LangGraph stream on a route that matches L3
+   would be expanded, and every frame flagged `lg-unknown-event`.
