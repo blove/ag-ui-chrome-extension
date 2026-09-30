@@ -186,8 +186,8 @@ and closes it for the moment.
 
 | # | Decision | Rationale |
 |---|---|---|
-| **L14** | **Timeline row label is `sseEvent` for LangGraph connections.** The detail pane keeps the raw payload and adds a **Derived** section listing the synthetic events the record produced (from a builder query, `derivedFor(seq)`). | The user sees the wire as it was and how we read it, side by side — which is also how a translation bug gets reported. |
-| **L15** | **Session's transport row names the dialect per connection** ("LangGraph Platform", "AG-UI"). | The side-by-side case is invisible otherwise. |
+| **L14** | **Timeline row label is `sseEvent` for LangGraph connections.** The detail pane keeps the raw payload and adds a **Derived** section listing the synthetic events the record produced (from a builder query, `derivedFor(seq)`). *Built in PR 4a:* the builder never leaves `live-session.ts` / `load-jsonl.ts`, so the derived events are recorded on the run they fold onto instead — `Run.derived`, keyed by source seq, excluding close-time events — and the Derived section gathers `run.derived.get(seq)` across all runs (a frame can close a child it does not belong to, S3). A frame read as nothing says so. A `messages` tuple's payload and row summary show what it decoded to, not "unparsed". | The user sees the wire as it was and how we read it, side by side — which is also how a translation bug gets reported. |
+| **L15** | **Session's transport row names the dialect per connection** ("LangGraph Platform", "AG-UI"). *Built in PR 4a* as its own **Protocol** row after Transport, classifying each connection with `dialectOf` (request line + first event record): `AG-UI`, `LangGraph Platform`, or both with per-protocol connection counts; an empty capture reads as the Transport row does, "nothing on the wire yet, which is normal before the first message". | The side-by-side case is invisible otherwise. |
 
 ### Redaction and export
 
@@ -251,7 +251,11 @@ One PR each, merged on green:
    (L18 lives here, not in PR 1, because it branches on `dialectOf` per L5.)
 3. **Subgraphs** — L11, S4–S8: expander scopes, the builder's per-connection `runKey → run` map,
    join streams.
-4. **Panel and privacy** — L14–L17, harness e2e, visual gate.
+4. **Panel and privacy** — L14–L17, harness e2e, visual gate. Split in three:
+   - **4a — the panel:** L14, L15, and the visual gate drawing a real LangGraph capture and a
+     subgraph.
+   - **4b — field-level redaction:** L16, L17.
+   - **4c — harness e2e.**
 
 ## 9. Open questions
 
