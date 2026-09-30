@@ -40,6 +40,7 @@ This is a wire-level tool. It attaches to the protocol instead of the framework.
 - **Reconstructs** messages, tool-call trees, and state with full RFC 6902 patch history
 - **Measures** time to first token, run duration, and streaming stalls — in the run table and on the timeline
 - **Records and replays** — export a capture as `.agui.jsonl` and reopen it anywhere
+- **Flags** an enabled tab in the toolbar once it speaks AG-UI or LangGraph Platform
 
 ## Privacy, stated as fact
 

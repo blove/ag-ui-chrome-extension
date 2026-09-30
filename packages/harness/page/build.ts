@@ -52,6 +52,10 @@ export async function buildPage(): Promise<void> {
   // The opposite page: no bundle, no request, nothing to capture. What the extension must be
   // silent on — see `e2e/quiet-page.spec.ts`.
   copyFileSync(join(pageRoot, 'quiet.html'), join(outDir, 'quiet.html'));
+  // An SSE stream that is not AG-UI, read to the end. Capture records it; the toolbar badge must
+  // not light for it — see `e2e/badge.spec.ts`. Inline script, no bundle: a raw `fetch` is all
+  // it needs.
+  copyFileSync(join(pageRoot, 'plain-sse.html'), join(outDir, 'plain-sse.html'));
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

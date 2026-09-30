@@ -164,6 +164,38 @@ function writeEarlyStream(res: ServerResponse): void {
   }, EARLY_FIRST_FRAME_DELAY_MS);
 }
 
+/**
+ * A server-sent event stream that is NOT AG-UI: JSON frames with no `type`, the shape of any
+ * progress feed or live-reload channel a localhost app might run. Capture takes every
+ * `text/event-stream` on a granted origin, so these frames ARE recorded — and the toolbar badge
+ * (spec §14.6, detection rule B4) must still not light for them. See `e2e/badge.spec.ts`.
+ */
+export const PLAIN_SSE_PATH = '/plain-sse';
+
+/** How many `{"tick":N}` frames the plain stream writes before it ends. */
+export const PLAIN_SSE_TICKS = 3;
+
+function writePlainStream(res: ServerResponse): void {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  let tick = 0;
+  const timer = setInterval(() => {
+    if (res.writableEnded || res.socket?.destroyed === true) {
+      clearInterval(timer);
+      return;
+    }
+    tick += 1;
+    res.write(`data: ${JSON.stringify({ tick })}\n\n`);
+    if (tick >= PLAIN_SSE_TICKS) {
+      clearInterval(timer);
+      res.end();
+    }
+  }, 20);
+}
+
 export function startPageServer(opts: { agentUrl: string; port?: number }): Promise<PageServer> {
   if (!existsSync(join(distRoot, 'index.html'))) {
     throw new Error(
@@ -180,6 +212,10 @@ export function startPageServer(opts: { agentUrl: string; port?: number }): Prom
     // LangGraph Platform runs and joins, same-origin so the path the capture layer classifies on
     // is the one the page sent — see `server/langgraph-server.ts`.
     if (handleLangGraph(req, res, url.pathname)) return;
+    if (url.pathname === PLAIN_SSE_PATH) {
+      writePlainStream(res);
+      return;
+    }
     if (url.pathname === DOCUMENT_START_PATH) {
       writeEarlyStream(res);
       return;

@@ -18,7 +18,9 @@ AG-UI event streams that page is already receiving — the same `fetch`, `XMLHtt
 `EventSource` responses the application itself reads. That necessarily includes the content of those
 streams: prompts, completions, tool calls, tool results, and agent state.
 
-That data is shown to you, in your own DevTools panel, on your own machine.
+That data is shown to you, in your own DevTools panel, on your own machine. The toolbar icon's badge
+and tooltip show only a summary of it — which protocol a tab spoke, how many connections, and the
+CopilotKit runtime version if the page fetched one — never its content; the page cannot read them.
 
 ## What it does with what it sees
 
