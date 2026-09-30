@@ -26,14 +26,25 @@ export interface LangGraphFrame {
   readonly payload: unknown;
 }
 
+/** One synthetic event and the run it belongs to: the scope's runKey (S1), `''` for the top level. */
+export interface ExpandedEvent {
+  readonly runKey: string;
+  readonly event: AguiEvent;
+}
+
 export interface LangGraphExpansion {
-  events: AguiEvent[];
+  /** The run this frame belongs to (S3): its record, bytes, wire name and issues go there. */
+  runKey: string;
+  events: ExpandedEvent[];
   issues: Issue[];
 }
 
-export interface LangGraphFinish extends LangGraphExpansion {
-  /** The run stopped at an interrupt: the builder records the outcome `interrupted` (L9). */
-  interrupted: boolean;
+export interface LangGraphFinish {
+  events: ExpandedEvent[];
+  /** Raised at close; they belong to the top-level run. */
+  issues: Issue[];
+  /** The runKeys whose runs stopped at an interrupt (S7): the builder records them `interrupted` (L9). */
+  interrupted: string[];
 }
 
 export interface LangGraphExpander {
@@ -73,6 +84,41 @@ interface PartialState {
   readonly toolArgs: Map<number, string>;
 }
 
+/**
+ * Everything the expander tracks for one namespace (L11, S4). The top level is the scope keyed
+ * `''`; a subgraph's is its namespace joined by `|` (S1).
+ */
+interface Scope {
+  readonly key: string;
+  readonly runId: string;
+  open: OpenMessage | undefined;
+  /**
+   * Per message id. Two branches of one step can stream their LLM calls interleaved: each switch
+   * of id closes the open message, and its tool calls must carry on under the same ids when it reopens.
+   */
+  readonly messageCalls: Map<string, MessageCalls>;
+  /** Ended calls whose args are not yet checked: a close on a switch of id may be mid-call. */
+  readonly uncheckedArgs: Set<OpenToolCall>;
+  /** A wire id that arrived after its call started under L8's synthetic id → that synthetic id. */
+  readonly syntheticIds: Map<string, string>;
+  readonly partials: Map<string, PartialState>;
+  readonly startedToolCalls: Set<string>;
+  readonly resultedToolCalls: Set<string>;
+  /**
+   * A `values`, `messages/complete` or `checkpoints` — the set after which Threadplane's bridge
+   * treats a close as a normal finish — arrived after the last message chunk. Read for the top
+   * level only (S6).
+   */
+  settled: boolean;
+  interrupted: boolean;
+  errored: boolean;
+}
+
+/** How many namespace segments a scope key has: 0 for the top level. */
+function depthOf(key: string): number {
+  return key === '' ? 0 : key.split('|').length;
+}
+
 function str(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined;
 }
@@ -110,26 +156,53 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
   let runId = '';
   let threadId = '';
   let started = false;
-  let errored = false;
-  let interrupted = false;
+  const scopes = new Map<string, Scope>();
+
+  function newScope(key: string, scopeRunId: string): Scope {
+    const scope: Scope = {
+      key,
+      runId: scopeRunId,
+      open: undefined,
+      messageCalls: new Map(),
+      uncheckedArgs: new Set(),
+      syntheticIds: new Map(),
+      partials: new Map(),
+      startedToolCalls: new Set(),
+      resultedToolCalls: new Set(),
+      settled: false,
+      interrupted: false,
+      errored: false,
+    };
+    scopes.set(key, scope);
+    return scope;
+  }
+
+  /** The top-level scope. `start` creates it, so it exists from the first frame on. */
+  function topScope(): Scope {
+    return scopes.get('')!;
+  }
+
   /**
-   * A top-level `values`, `messages/complete` or `checkpoints` — the set after which Threadplane's
-   * bridge treats a close as a normal finish — arrived after the last message chunk.
+   * The scope for a namespace, opening it — and any ancestor not yet open, outermost first — with
+   * a RUN_STARTED (S2): a frame from a nested namespace can be the first thing any ancestor sends.
    */
-  let settled = false;
-  let open: OpenMessage | undefined;
-  /**
-   * Per message id. Two branches of one step can stream their LLM calls interleaved: each switch
-   * of id closes the open message, and its tool calls must carry on under the same ids when it reopens.
-   */
-  const messageCalls = new Map<string, MessageCalls>();
-  /** Ended calls whose args are not yet checked: a close on a switch of id may be mid-call. */
-  const uncheckedArgs = new Set<OpenToolCall>();
-  /** A wire id that arrived after its call started under L8's synthetic id → that synthetic id. */
-  const syntheticIds = new Map<string, string>();
-  const partials = new Map<string, PartialState>();
-  const startedToolCalls = new Set<string>();
-  const resultedToolCalls = new Set<string>();
+  function scopeFor(out: LangGraphExpansion, namespace: readonly string[]): Scope {
+    let parent = topScope();
+    for (let depth = 1; depth <= namespace.length; depth += 1) {
+      const key = namespace.slice(0, depth).join('|');
+      let scope = scopes.get(key);
+      if (scope === undefined) {
+        // LangGraph sends no run id for a subgraph, so the id is ours (S1, spec §9 Q2).
+        scope = newScope(key, `${runId}/${key}`);
+        out.events.push({
+          runKey: key,
+          event: { type: 'RUN_STARTED', runId: scope.runId, threadId, parentRunId: parent.runId },
+        });
+      }
+      parent = scope;
+    }
+    return parent;
+  }
 
   function issue(out: LangGraphExpansion, code: IssueCode, message: string, seq: number): void {
     out.issues.push(makeIssue(code, message, seq));
@@ -139,7 +212,8 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     started = true;
     runId = str(meta?.run_id) ?? route?.runId ?? `lg:${connId}`;
     threadId = route?.threadId ?? str(meta?.thread_id) ?? '';
-    out.events.push({ type: 'RUN_STARTED', runId, threadId });
+    newScope('', runId);
+    out.events.push({ runKey: '', event: { type: 'RUN_STARTED', runId, threadId } });
   }
 
   function ensureStarted(out: LangGraphExpansion, seq: number): void {
@@ -159,15 +233,19 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     start(out, undefined);
   }
 
-  function closeReasoning(out: LangGraphExpansion, message: OpenMessage): void {
+  function emit(out: LangGraphExpansion, scope: Scope, event: AguiEvent): void {
+    out.events.push({ runKey: scope.key, event });
+  }
+
+  function closeReasoning(out: LangGraphExpansion, scope: Scope, message: OpenMessage): void {
     if (!message.reasoningOpen) return;
-    out.events.push({ type: 'REASONING_MESSAGE_END', messageId: reasoningIdOf(message.messageId) });
+    emit(out, scope, { type: 'REASONING_MESSAGE_END', messageId: reasoningIdOf(message.messageId) });
     message.reasoningOpen = false;
   }
 
-  function checkArgs(out: LangGraphExpansion, seq: number, calls: Iterable<OpenToolCall>): void {
+  function checkArgs(out: LangGraphExpansion, scope: Scope, seq: number, calls: Iterable<OpenToolCall>): void {
     for (const call of [...calls]) {
-      if (!uncheckedArgs.delete(call) || call.argsText.trim() === '') continue;
+      if (!scope.uncheckedArgs.delete(call) || call.argsText.trim() === '') continue;
       try {
         JSON.parse(call.argsText);
       } catch {
@@ -177,31 +255,31 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
   }
 
   /**
-   * Close the open message. `switched` is a close because a chunk for another message arrived:
-   * this message may resume, so its calls' args are checked later, when the message ends for good.
+   * Close the scope's open message. `switched` is a close because a chunk for another message
+   * arrived: this message may resume, so its calls' args are checked later, when it ends for good.
    */
-  function closeMessage(out: LangGraphExpansion, seq: number, switched = false): void {
-    const message = open;
+  function closeMessage(out: LangGraphExpansion, scope: Scope, seq: number, switched = false): void {
+    const message = scope.open;
     if (message === undefined) return;
-    open = undefined;
-    closeReasoning(out, message);
+    scope.open = undefined;
+    closeReasoning(out, scope, message);
     for (const call of message.calls) {
       if (call.ended) continue;
       call.ended = true;
-      uncheckedArgs.add(call);
-      out.events.push({ type: 'TOOL_CALL_END', toolCallId: call.toolCallId });
+      scope.uncheckedArgs.add(call);
+      emit(out, scope, { type: 'TOOL_CALL_END', toolCallId: call.toolCallId });
     }
-    if (!switched) checkArgs(out, seq, message.calls);
-    if (message.textOpen) out.events.push({ type: 'TEXT_MESSAGE_END', messageId: message.messageId });
+    if (!switched) checkArgs(out, scope, seq, message.calls);
+    if (message.textOpen) emit(out, scope, { type: 'TEXT_MESSAGE_END', messageId: message.messageId });
   }
 
   /** The step, the run or the stream is over: close the open message and check every call's args. */
-  function settle(out: LangGraphExpansion, seq: number): void {
-    closeMessage(out, seq);
-    checkArgs(out, seq, uncheckedArgs);
+  function settle(out: LangGraphExpansion, scope: Scope, seq: number): void {
+    closeMessage(out, scope, seq);
+    checkArgs(out, scope, seq, scope.uncheckedArgs);
   }
 
-  function foldToolChunk(out: LangGraphExpansion, message: OpenMessage, chunk: ToolCallChunk): void {
+  function foldToolChunk(out: LangGraphExpansion, scope: Scope, message: OpenMessage, chunk: ToolCallChunk): void {
     let call = message.toolCalls.get(chunk.index);
     // `toolCallChunks` falls back to array position when `index` is absent, so two parallel calls
     // in two chunks can both arrive as index 0. A different `id` at an occupied index is a new
@@ -219,9 +297,9 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
       if (chunk.name !== undefined) call.name = chunk.name;
       message.toolCalls.set(chunk.index, call);
       message.calls.push(call);
-      startedToolCalls.add(call.toolCallId);
-      closeReasoning(out, message);
-      out.events.push({
+      scope.startedToolCalls.add(call.toolCallId);
+      closeReasoning(out, scope, message);
+      emit(out, scope, {
         type: 'TOOL_CALL_START',
         toolCallId: call.toolCallId,
         ...(call.name !== undefined ? { toolCallName: call.name } : {}),
@@ -232,27 +310,28 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
       // AG-UI names a call only at START. A name that arrives late re-states it; the builder
       // folds a repeated START as an update, and no AG-UI rule sees synthetic events (L12).
       call.name = chunk.name;
-      out.events.push({
+      emit(out, scope, {
         type: 'TOOL_CALL_START',
         toolCallId: call.toolCallId,
         toolCallName: call.name,
         parentMessageId: message.messageId,
       });
     }
-    if (!call.wireId && chunk.id !== undefined && !syntheticIds.has(chunk.id)) {
+    if (!call.wireId && chunk.id !== undefined && !scope.syntheticIds.has(chunk.id)) {
       // The tool's result will name the call by this id: it must find the call's synthetic one.
-      syntheticIds.set(chunk.id, call.toolCallId);
+      scope.syntheticIds.set(chunk.id, call.toolCallId);
     }
     if (chunk.args !== '') {
       call.ended = false;
       call.argsText += chunk.args;
-      out.events.push({ type: 'TOOL_CALL_ARGS', toolCallId: call.toolCallId, delta: chunk.args });
+      emit(out, scope, { type: 'TOOL_CALL_ARGS', toolCallId: call.toolCallId, delta: chunk.args });
     }
   }
 
   /** One assistant delta: new text, new reasoning and new tool-call fragments for one message. */
   function foldAiDelta(
     out: LangGraphExpansion,
+    scope: Scope,
     seq: number,
     messageId: string | undefined,
     text: string,
@@ -263,65 +342,68 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     // L7: only a chunk that carries something opens (or switches) a message. The Python server's
     // stream opens with one empty chunk under an id no later chunk uses.
     if (text !== '' || reasoning !== '' || tools.length > 0) {
-      if (open !== undefined && messageId !== undefined && messageId !== open.messageId) {
-        closeMessage(out, seq, true);
+      if (scope.open !== undefined && messageId !== undefined && messageId !== scope.open.messageId) {
+        closeMessage(out, scope, seq, true);
       }
-      if (open === undefined) {
+      if (scope.open === undefined) {
         const id = messageId ?? `lg-msg-${seq}`;
-        let calls = messageCalls.get(id);
+        let calls = scope.messageCalls.get(id);
         if (calls === undefined) {
           calls = { calls: [], toolCalls: new Map() };
-          messageCalls.set(id, calls);
+          scope.messageCalls.set(id, calls);
         }
-        open = { messageId: id, textOpen: false, reasoningOpen: false, ...calls };
+        scope.open = { messageId: id, textOpen: false, reasoningOpen: false, ...calls };
       }
-      const message = open;
+      const message = scope.open;
       if (reasoning !== '') {
         const reasoningId = reasoningIdOf(message.messageId);
         if (!message.reasoningOpen) {
-          out.events.push({ type: 'REASONING_MESSAGE_START', messageId: reasoningId, role: 'assistant' });
+          emit(out, scope, { type: 'REASONING_MESSAGE_START', messageId: reasoningId, role: 'assistant' });
           message.reasoningOpen = true;
         }
-        out.events.push({ type: 'REASONING_MESSAGE_CONTENT', messageId: reasoningId, delta: reasoning });
+        emit(out, scope, { type: 'REASONING_MESSAGE_CONTENT', messageId: reasoningId, delta: reasoning });
       }
       if (text !== '') {
-        closeReasoning(out, message);
+        closeReasoning(out, scope, message);
         if (!message.textOpen) {
-          out.events.push({ type: 'TEXT_MESSAGE_START', messageId: message.messageId, role: 'assistant' });
+          emit(out, scope, { type: 'TEXT_MESSAGE_START', messageId: message.messageId, role: 'assistant' });
           message.textOpen = true;
         }
-        out.events.push({ type: 'TEXT_MESSAGE_CONTENT', messageId: message.messageId, delta: text });
+        emit(out, scope, { type: 'TEXT_MESSAGE_CONTENT', messageId: message.messageId, delta: text });
       }
-      for (const chunk of tools) foldToolChunk(out, message, chunk);
+      for (const chunk of tools) foldToolChunk(out, scope, message, chunk);
     }
     if (!last) return;
     // The end of one message closes that message only: with interleaved branches, another may be open.
-    if (messageId === undefined || messageId === open?.messageId) {
-      closeMessage(out, seq);
+    if (messageId === undefined || messageId === scope.open?.messageId) {
+      closeMessage(out, scope, seq);
     } else {
-      const calls = messageCalls.get(messageId);
-      if (calls !== undefined) checkArgs(out, seq, calls.calls);
+      const calls = scope.messageCalls.get(messageId);
+      if (calls !== undefined) checkArgs(out, scope, seq, calls.calls);
     }
   }
 
   function toolResult(
     out: LangGraphExpansion,
+    scope: Scope,
     seq: number,
     message: Record<string, unknown>,
     onlyIfStartedHere: boolean,
   ): void {
     const wireId = str(message.tool_call_id);
     if (wireId === undefined) return;
-    const toolCallId = syntheticIds.get(wireId) ?? wireId;
-    if (resultedToolCalls.has(toolCallId)) return;
+    const toolCallId = scope.syntheticIds.get(wireId) ?? wireId;
+    if (scope.resultedToolCalls.has(toolCallId)) return;
     // `values.messages` is the whole thread's history: a result for a call an EARLIER run made is
     // not this run's. A `messages` tool chunk, by contrast, was produced by this run.
-    if (onlyIfStartedHere && !startedToolCalls.has(toolCallId)) return;
+    if (onlyIfStartedHere && !scope.startedToolCalls.has(toolCallId)) return;
     // The call's TOOL_CALL_END precedes its result. Only its own message is closed: another branch's
     // message may be streaming.
-    if (open !== undefined && open.calls.some((call) => call.toolCallId === toolCallId)) closeMessage(out, seq);
-    resultedToolCalls.add(toolCallId);
-    out.events.push({
+    if (scope.open !== undefined && scope.open.calls.some((call) => call.toolCallId === toolCallId)) {
+      closeMessage(out, scope, seq);
+    }
+    scope.resultedToolCalls.add(toolCallId);
+    emit(out, scope, {
       type: 'TOOL_CALL_RESULT',
       messageId: str(message.id) ?? `${toolCallId}:result`,
       toolCallId,
@@ -330,10 +412,10 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     });
   }
 
-  function foldTupleMessage(out: LangGraphExpansion, seq: number, message: Record<string, unknown>): void {
+  function foldTupleMessage(out: LangGraphExpansion, scope: Scope, seq: number, message: Record<string, unknown>): void {
     const role = roleOf(message.type);
     if (role === 'tool') {
-      toolResult(out, seq, message, false);
+      toolResult(out, scope, seq, message, false);
       return;
     }
     // Human and system messages are the request's input, which the run already carries.
@@ -341,6 +423,7 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     const parts = contentParts(message.content);
     foldAiDelta(
       out,
+      scope,
       seq,
       str(message.id),
       parts.text,
@@ -353,18 +436,19 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
   /** A cumulative message (`messages/partial`, `messages/complete`) folded as the delta it adds. */
   function foldCumulativeMessage(
     out: LangGraphExpansion,
+    scope: Scope,
     seq: number,
     message: Record<string, unknown>,
     complete: boolean,
   ): void {
     const role = roleOf(message.type);
     if (role === 'tool') {
-      toolResult(out, seq, message, false);
+      toolResult(out, scope, seq, message, false);
       return;
     }
     if (role !== 'ai') return;
-    const id = str(message.id) ?? open?.messageId ?? `lg-msg-${seq}`;
-    const previous = partials.get(id) ?? { text: '', reasoning: '', toolArgs: new Map<number, string>() };
+    const id = str(message.id) ?? scope.open?.messageId ?? `lg-msg-${seq}`;
+    const previous = scope.partials.get(id) ?? { text: '', reasoning: '', toolArgs: new Map<number, string>() };
     const parts = contentParts(message.content);
     const text = suffix(previous.text, parts.text);
     const reasoning = suffix(previous.reasoning, parts.reasoning);
@@ -390,16 +474,117 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     }
     previous.text = parts.text;
     previous.reasoning = parts.reasoning;
-    partials.set(id, previous);
-    foldAiDelta(out, seq, id, text ?? '', reasoning ?? '', tools, complete);
+    scope.partials.set(id, previous);
+    foldAiDelta(out, scope, seq, id, text ?? '', reasoning ?? '', tools, complete);
   }
 
   function undecodable(out: LangGraphExpansion, name: string, seq: number): void {
     issue(out, 'lg-undecodable', `The "${name}" event's payload is not the shape that event carries`, seq);
   }
 
+  /** One frame of a known mode, folded within its scope exactly as at the top level (S4). */
+  function foldMode(
+    out: LangGraphExpansion,
+    scope: Scope,
+    mode: string,
+    name: string,
+    seq: number,
+    payload: unknown,
+  ): void {
+    switch (mode) {
+      case 'messages': {
+        const message = Array.isArray(payload) ? (payload[0] as unknown) : undefined;
+        if (!isObject(message)) {
+          undecodable(out, name, seq);
+          break;
+        }
+        scope.settled = false;
+        foldTupleMessage(out, scope, seq, message);
+        break;
+      }
+      case 'messages/partial':
+      case 'messages/complete': {
+        if (!Array.isArray(payload)) {
+          undecodable(out, name, seq);
+          break;
+        }
+        const complete = mode === 'messages/complete';
+        scope.settled = complete;
+        for (const message of payload) {
+          if (isObject(message)) foldCumulativeMessage(out, scope, seq, message, complete);
+        }
+        break;
+      }
+      case 'values': {
+        if (!isObject(payload)) {
+          undecodable(out, name, seq);
+          break;
+        }
+        // A values event marks a completed step: whatever message was streaming is done.
+        settle(out, scope, seq);
+        scope.settled = true;
+        if ('__interrupt__' in payload) scope.interrupted = true;
+        // `fromEntries` defines each key as an own property, so a `__proto__` key stays data.
+        const snapshot: Record<string, unknown> = Object.fromEntries(
+          Object.entries(payload).filter(([key]) => key !== '__interrupt__'),
+        );
+        // A values event whose only key is `__interrupt__` is an interrupt, not a state.
+        if (Object.keys(snapshot).length > 0) emit(out, scope, { type: 'STATE_SNAPSHOT', snapshot });
+        if (Array.isArray(snapshot.messages)) {
+          for (const message of snapshot.messages) {
+            if (isObject(message) && roleOf(message.type) === 'tool') toolResult(out, scope, seq, message, true);
+          }
+        }
+        break;
+      }
+      case 'updates': {
+        if (!isObject(payload)) {
+          undecodable(out, name, seq);
+          break;
+        }
+        for (const node of Object.keys(payload)) {
+          if (node === '__interrupt__') {
+            scope.interrupted = true;
+            continue;
+          }
+          // An update arrives once its node has run, so the step starts and finishes together.
+          emit(out, scope, { type: 'STEP_STARTED', stepName: node });
+          emit(out, scope, { type: 'STEP_FINISHED', stepName: node });
+        }
+        break;
+      }
+      case 'custom':
+        emit(out, scope, { type: 'CUSTOM', name: 'langgraph.custom', value: payload });
+        break;
+      case 'error': {
+        if (scope.key === '') {
+          // A run failure stops every subgraph mid-flight (S5): close what each has open,
+          // innermost first. The children get no terminal event, so the builder records them aborted.
+          for (const each of [...scopes.values()].reverse()) settle(out, each, seq);
+        } else {
+          // A subgraph failure ends that child only; its parent and siblings carry on (S5).
+          settle(out, scope, seq);
+        }
+        scope.errored = true;
+        const message = isObject(payload)
+          ? (str(payload.message) ?? str(payload.error) ?? 'error')
+          : (str(payload) ?? 'error');
+        const code = isObject(payload) ? str(payload.error) : undefined;
+        emit(out, scope, { type: 'RUN_ERROR', message, ...(code !== undefined ? { code } : {}) });
+        break;
+      }
+      case 'checkpoints':
+        scope.settled = true;
+        break;
+      default:
+        // messages/metadata, debug, tasks, events, tools, feedback — and a namespaced `metadata`,
+        // which carries no run of its own (S4): shown raw in Timeline only.
+        break;
+    }
+  }
+
   function push(frame: LangGraphFrame): LangGraphExpansion {
-    const out: LangGraphExpansion = { events: [], issues: [] };
+    const out: LangGraphExpansion = { runKey: '', events: [], issues: [] };
     const { seq, payload } = frame;
     // An unnamed frame is dispatched by SSE as `message`: the name metrics and export count it under.
     const name = frame.sseEvent ?? 'message';
@@ -413,118 +598,53 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     }
 
     ensureStarted(out, seq);
-    // An error ends the run; anything after it is recorded as it arrived and folds nothing.
-    if (errored) return out;
-    // PR 3 folds subgraph events into child runs (L11). Until then they are recorded, raw.
-    if (namespace.length > 0) return out;
+    const top = topScope();
+    // A top-level error ends the run and every subgraph in it (S5): later frames are recorded as
+    // they arrived, on the top-level run, and fold nothing.
+    if (top.errored) return out;
+    const scope = namespace.length === 0 ? top : scopeFor(out, namespace);
+    out.runKey = scope.key;
+    // A child that errored folds nothing more; its siblings and parent carry on (S5).
+    if (scope.errored) return out;
     if (!isKnownMode(mode)) {
       issue(out, 'lg-unknown-event', `"${name}" is not an event LangGraph Platform emits`, seq);
       return out;
     }
-
-    switch (mode) {
-      case 'messages': {
-        const message = Array.isArray(payload) ? (payload[0] as unknown) : undefined;
-        if (!isObject(message)) {
-          undecodable(out, name, seq);
-          break;
-        }
-        settled = false;
-        foldTupleMessage(out, seq, message);
-        break;
-      }
-      case 'messages/partial':
-      case 'messages/complete': {
-        if (!Array.isArray(payload)) {
-          undecodable(out, name, seq);
-          break;
-        }
-        const complete = mode === 'messages/complete';
-        settled = complete;
-        for (const message of payload) {
-          if (isObject(message)) foldCumulativeMessage(out, seq, message, complete);
-        }
-        break;
-      }
-      case 'values': {
-        if (!isObject(payload)) {
-          undecodable(out, name, seq);
-          break;
-        }
-        // A values event marks a completed step: whatever message was streaming is done.
-        settle(out, seq);
-        settled = true;
-        if ('__interrupt__' in payload) interrupted = true;
-        // `fromEntries` defines each key as an own property, so a `__proto__` key stays data.
-        const snapshot: Record<string, unknown> = Object.fromEntries(
-          Object.entries(payload).filter(([key]) => key !== '__interrupt__'),
-        );
-        // A values event whose only key is `__interrupt__` is an interrupt, not a state.
-        if (Object.keys(snapshot).length > 0) out.events.push({ type: 'STATE_SNAPSHOT', snapshot });
-        if (Array.isArray(snapshot.messages)) {
-          for (const message of snapshot.messages) {
-            if (isObject(message) && roleOf(message.type) === 'tool') toolResult(out, seq, message, true);
-          }
-        }
-        break;
-      }
-      case 'updates': {
-        if (!isObject(payload)) {
-          undecodable(out, name, seq);
-          break;
-        }
-        for (const node of Object.keys(payload)) {
-          if (node === '__interrupt__') {
-            interrupted = true;
-            continue;
-          }
-          // An update arrives once its node has run, so the step starts and finishes together.
-          out.events.push({ type: 'STEP_STARTED', stepName: node });
-          out.events.push({ type: 'STEP_FINISHED', stepName: node });
-        }
-        break;
-      }
-      case 'custom':
-        out.events.push({ type: 'CUSTOM', name: 'langgraph.custom', value: payload });
-        break;
-      case 'error': {
-        settle(out, seq);
-        errored = true;
-        const message = isObject(payload)
-          ? (str(payload.message) ?? str(payload.error) ?? 'error')
-          : (str(payload) ?? 'error');
-        const code = isObject(payload) ? str(payload.error) : undefined;
-        out.events.push({ type: 'RUN_ERROR', message, ...(code !== undefined ? { code } : {}) });
-        break;
-      }
-      case 'checkpoints':
-        settled = true;
-        break;
-      default:
-        // messages/metadata, debug, tasks, events, tools, feedback: shown raw in Timeline only.
-        break;
-    }
+    foldMode(out, scope, mode, name, seq, payload);
     return out;
   }
 
   function finish(seq: number): LangGraphFinish {
-    const out: LangGraphExpansion = { events: [], issues: [] };
-    if (!started) return { ...out, interrupted: false };
-    settle(out, seq);
-    if (errored) return { ...out, interrupted: false };
-    if (!interrupted && valuesRequested(request.input) && !settled) {
+    const out: LangGraphExpansion = { runKey: '', events: [], issues: [] };
+    const done = (interrupted: string[]): LangGraphFinish => ({ events: out.events, issues: out.issues, interrupted });
+    if (!started) return done([]);
+    // Deepest first: a child's messages close before its parent's, and the top-level run's
+    // RUN_FINISHED comes after every child's (S6). `sort` is stable, so siblings keep open order.
+    const ordered = [...scopes.values()].sort((a, b) => depthOf(b.key) - depthOf(a.key));
+    for (const scope of ordered) settle(out, scope, seq);
+    const top = topScope();
+    // A run cut off by its error, or by a close before its final values, finishes no child (S6).
+    if (top.errored) return done([]);
+    if (!top.interrupted && valuesRequested(request.input) && !top.settled) {
       // Threadplane's bridge reads this exact condition as "did not finish normally": the stream
       // stopped mid-answer. No RUN_FINISHED, so the run builder records the outcome `aborted`.
+      // A top-level check only: a subgraph's own `values` are not the run's (S6).
       issue(
         out,
         'lg-no-final-values',
         'The stream closed without a final values event, although the request asked for values',
         seq,
       );
-      return { ...out, interrupted: false };
+      return done([]);
     }
-    out.events.push({ type: 'RUN_FINISHED', runId, threadId });
-    return { ...out, interrupted };
+    const interrupted: string[] = [];
+    for (const scope of ordered) {
+      // A child that errored already ended; the top level cannot be errored here.
+      if (scope.errored) continue;
+      emit(out, scope, { type: 'RUN_FINISHED', runId: scope.runId, threadId });
+      if (scope.interrupted) interrupted.push(scope.key);
+    }
+    return done(interrupted);
   }
 
   return { push, finish };
