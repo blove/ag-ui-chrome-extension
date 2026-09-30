@@ -1808,6 +1808,49 @@ async function checkExportSurfaces(page: Page, where: string, shots: string): Pr
   if (!fixture.text.includes('export const events: AguiEvent[] = [')) {
     fail(`${where}: the fixture export holds no event array (E7).`);
   }
+
+  /* --- the Threadplane test: off for an AG-UI-only capture (T6) ---------- */
+  const threadplane = page.locator('button:has-text("Download Threadplane test")');
+  if (!(await threadplane.isDisabled())) {
+    fail(`${where}: the Threadplane test button is enabled for happy-run, which has no LangGraph connection.`);
+  }
+  const reason = (await page.textContent('[data-testid="agui-export-threadplane-reason"]'))?.trim() ?? '';
+  if (!reason.includes('no LangGraph Platform connection')) {
+    fail(`${where}: the disabled Threadplane test button states no reason (read ${JSON.stringify(reason)}).`);
+  }
+}
+
+/**
+ * T6 over a real LangGraph capture: the button is enabled, and a real click saves a spec that
+ * replays the capture through `MockAgentTransport`.
+ */
+async function checkThreadplaneExport(browser: Browser, origin: string): Promise<void> {
+  const session = await openPanel(browser, origin, { scheme: 'dark' });
+  try {
+    const { page } = session;
+    await importFixture(page, join(fixtureDir, 'lg-reasoning.agui.jsonl'));
+    await page.click('button[role="tab"][id="agui-tab-session"]');
+    await page.waitForSelector('.agui-export');
+    const button = page.locator('button:has-text("Download Threadplane test")');
+    if (await button.isDisabled()) {
+      fail('lg-reasoning: the Threadplane test button is disabled for a LangGraph capture.');
+      return;
+    }
+    const spec = await clickAndSave(page, 'button:has-text("Download Threadplane test")', 'lg-reasoning');
+    if (spec === null) return;
+    await page.screenshot({ path: join(outDir, 'served-export-threadplane.png'), fullPage: true });
+    if (!/^threadplane-127\.0\.0\.1-2024-.+\.spec\.ts$/.test(spec.filename)) {
+      fail(`lg-reasoning: the Threadplane export saved ${JSON.stringify(spec.filename)}, expected threadplane-<host>-<ISO>.spec.ts.`);
+    }
+    for (const wanted of ['MockAgentTransport', 'frames_1']) {
+      if (!spec.text.includes(wanted)) fail(`lg-reasoning: the saved Threadplane spec has no ${wanted}.`);
+    }
+    if (session.errors.length > 0) {
+      fail(`the Threadplane export logged errors: ${session.errors.join(' | ')}`);
+    }
+  } finally {
+    await session.close();
+  }
 }
 
 /**
@@ -1828,6 +1871,7 @@ async function checkExport(browser: Browser, origin: string): Promise<void> {
   } finally {
     await session.close();
   }
+  await checkThreadplaneExport(browser, origin);
 }
 
 /**
@@ -2245,6 +2289,10 @@ async function main(): Promise<void> {
   console.log(`  served dist/: toolbar 17 lines unredacted, redacted export leaks no text, fixture .ts`);
   console.log(
     `  the extension origin (chrome-extension://…/panel.html): the same, under the extension CSP`,
+  );
+  console.log(
+    `  Threadplane test (T6): off with its reason on happy-run; lg-reasoning saves a .spec.ts with ` +
+      `MockAgentTransport and frames_1 — ${outDir}/served-export-threadplane.png`,
   );
   console.log(`  screenshots: ${outDir}/served-export-controls.png, ${outDir}/extension-export-redacted.png`);
 }

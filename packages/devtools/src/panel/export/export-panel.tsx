@@ -14,11 +14,13 @@ import { useState } from 'preact/hooks';
 import type { JSX } from 'preact';
 import { encodeJsonl } from '../../core/jsonl/codec';
 import { ALL_REDACTION_GROUPS, type RedactionGroup } from '../../core/jsonl/redact';
+import { toThreadplaneSpec } from '../../core/fixture/threadplane';
+import { connectionDialects } from '../model/selectors';
 import type { PanelStore } from '../model/store';
 import { usePanelState } from '../model/use-panel-state';
 import { buildExport, exportBlockedReason, type ExportBundle, type ExportCounts } from './build';
 import { DEFAULT_EXPORT_IO, type ExportIo, type IoResult } from './download';
-import { exportFilename, fixtureFilename } from './filename';
+import { exportFilename, fixtureFilename, threadplaneFilename } from './filename';
 import { toFixtureModule } from './fixture';
 
 /** §11's five groups, with the words a user chooses by. */
@@ -52,6 +54,12 @@ function summarize(counts: ExportCounts, groups: RedactionGroup[]): string {
   return `${body} — ${tail}.`;
 }
 
+/** Why the Threadplane button is off (T6): stated as what the capture holds, not as a fault. */
+const NO_LANGGRAPH =
+  'This capture has no LangGraph Platform connection — the Threadplane test replays LangGraph streams.';
+const NO_LANGGRAPH_IN_SCOPE =
+  'The selected scope has no LangGraph Platform connection — the Threadplane test replays LangGraph streams.';
+
 type Notice = { tone: 'ok' | 'error'; text: string } | null;
 
 export function ExportPanel({ store, io = DEFAULT_EXPORT_IO }: { store: PanelStore; io?: ExportIo }): JSX.Element {
@@ -60,6 +68,11 @@ export function ExportPanel({ store, io = DEFAULT_EXPORT_IO }: { store: PanelSto
   const [notice, setNotice] = useState<Notice>(null);
 
   const blocked = exportBlockedReason(state, state.scope);
+  /*
+   * T6. Read from the unredacted state's connections, so the choice of redaction groups can never
+   * change whether the button is offered — only what the spec holds.
+   */
+  const hasLangGraph = [...connectionDialects(state).values()].includes('langgraph');
   // Ordered by `ALL_REDACTION_GROUPS` so the header, the summary and the checkbox list all say
   // the same thing in the same order.
   const selected = ALL_REDACTION_GROUPS.filter((group) => groups.includes(group));
@@ -132,6 +145,23 @@ export function ExportPanel({ store, io = DEFAULT_EXPORT_IO }: { store: PanelSto
       io.download(name, toFixtureModule(built.lines, name), 'text/typescript'),
       'Fixture downloaded.',
     );
+  }
+
+  function onThreadplane(): void {
+    if (refused()) return;
+    if (!hasLangGraph) {
+      setNotice({ tone: 'error', text: NO_LANGGRAPH });
+      return;
+    }
+    const built = build();
+    const name = threadplaneFilename(built.header.url, built.header.capturedAt);
+    // The capture has LangGraph connections, but the scoped run may not be one of them.
+    const spec = toThreadplaneSpec(built.lines, { filename: name });
+    if (spec === null) {
+      setNotice({ tone: 'error', text: NO_LANGGRAPH_IN_SCOPE });
+      return;
+    }
+    report(io.download(name, spec, 'text/typescript'), 'Threadplane test downloaded.');
   }
 
   return (
@@ -235,7 +265,21 @@ export function ExportPanel({ store, io = DEFAULT_EXPORT_IO }: { store: PanelSto
         >
           Download TypeScript fixture (.ts)
         </button>
+        <button
+          type="button"
+          class="agui-toolbar__button"
+          disabled={blocked !== null || !hasLangGraph}
+          onClick={onThreadplane}
+        >
+          Download Threadplane test (.spec.ts)
+        </button>
       </div>
+
+      {blocked === null && !hasLangGraph && (
+        <p class="agui-export__blocked" data-testid="agui-export-threadplane-reason">
+          {NO_LANGGRAPH}
+        </p>
+      )}
 
       {notice !== null && (
         <p
