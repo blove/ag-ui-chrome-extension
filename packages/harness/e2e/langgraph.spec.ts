@@ -170,10 +170,15 @@ function foldBoth(capture: CaptureSnapshot): Run[] {
  */
 function expectWireFaithful(capture: CaptureSnapshot, request: RequestLine, frames: readonly LangGraphFrame[]): void {
   const events = eventsOf(capture, request.connId);
-  // Every record named, not just "the names match where present": a record that lost its name
-  // would otherwise shorten both sides of nothing and still read as a mismatch, but this says why.
-  const unnamed = events.filter((record) => record.sseEvent === undefined).map((record) => record.seq);
-  expect(unnamed, 'captured event records with no sseEvent (lost in inject -> relay -> sw)').toEqual([]);
+  // Every record named — and when one is not, the failure says WHICH names were lost, counted
+  // by the name the server wrote, rather than a bare list of seqs to cross-reference by hand.
+  const lost: Record<string, number> = {};
+  events.forEach((record, index) => {
+    if (record.sseEvent !== undefined) return;
+    const name = frames[index]?.event ?? '<extra record>';
+    lost[name] = (lost[name] ?? 0) + 1;
+  });
+  expect(lost, 'SSE event names lost between inject -> relay -> sw, by name').toEqual({});
   expect(events.map((record) => record.sseEvent)).toEqual(frames.map((frame) => frame.event));
   expect(events.map((record) => record.raw)).toEqual(frames.map((frame) => frame.data));
   expect(capture.droppedBefore).toBe(0);
