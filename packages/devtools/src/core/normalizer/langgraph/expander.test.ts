@@ -299,4 +299,22 @@ describe('createLangGraphExpander', () => {
     expect(done.issues).toEqual([]);
     expect(done.events.at(-1)).toEqual({ type: 'RUN_FINISHED', runId: 'r-9', threadId: 't-1' });
   });
+
+  it('starts a join stream that attached mid-run under the URL\'s run id, with no lg-no-metadata', () => {
+    const { events, codes } = drive([['messages', ai('m1', 'Hi')]], {
+      method: 'GET',
+      url: 'http://localhost:2024/threads/t-1/runs/r-9/stream',
+    });
+    expect(events[0]).toEqual({ type: 'RUN_STARTED', runId: 'r-9', threadId: 't-1' });
+    expect(codes).toEqual([]);
+  });
+
+  it('still raises lg-no-metadata on a run-creation route, which always sends metadata first', () => {
+    const { events, codes } = drive([['messages', ai('m1', 'Hi')]], {
+      ...REQUEST,
+      url: 'http://localhost:2024/runs/stream',
+    });
+    expect(events[0]).toEqual({ type: 'RUN_STARTED', runId: 'lg:c1', threadId: '' });
+    expect(codes).toEqual([['lg-no-metadata', 1]]);
+  });
 });

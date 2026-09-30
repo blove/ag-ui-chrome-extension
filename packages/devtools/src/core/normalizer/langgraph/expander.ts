@@ -144,6 +144,12 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
 
   function ensureStarted(out: LangGraphExpansion, seq: number): void {
     if (started) return;
+    // A join stream (its URL names the run) that attaches mid-run legitimately missed `metadata`:
+    // the run id is the URL's, not synthesized, so there is nothing to report.
+    if (route?.runId !== undefined) {
+      start(out, undefined);
+      return;
+    }
     issue(
       out,
       'lg-no-metadata',

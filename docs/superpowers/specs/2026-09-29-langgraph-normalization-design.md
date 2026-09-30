@@ -125,7 +125,7 @@ interface LangGraphExpansion {
 | `messages` chunk, `type` tool | `TOOL_CALL_RESULT {toolCallId: tool_call_id, content}` once per id |
 | `messages` chunk, `type` human / system | nothing — input messages come from the request |
 | `messages/partial [msg]` | the suffix beyond the previous partial for that id, as the same events as a tuple delta |
-| `messages/complete [msg…]` | message end for each; issue `lg-complete-mismatch` if final text ≠ accumulated |
+| `messages/complete [msg…]` | message end for each; issue `lg-complete-mismatch` when the complete message does not extend what its partials streamed (a complete with no prior partials is normal) |
 | `messages/metadata` | nothing |
 | `values {…}` | `STATE_SNAPSHOT {snapshot}`; each `type:'tool'` message not yet seen → `TOOL_CALL_RESULT` |
 | `values`/`updates` carrying `__interrupt__` | recorded on the run as an interrupt (L9); a `values` whose only key is `__interrupt__` emits no snapshot |
@@ -231,3 +231,8 @@ One PR each, merged on green:
    only. Acceptable for v1?
 2. Child-run ids (`parent/ns`) are ours, not LangGraph's. A namespaced `metadata` does not exist to
    give them a real id. Fine for display; worth noting before §14.2 exports per-run fixtures.
+3. Interleaved parallel branches: the expander keeps one message open at a time, so chunks
+   alternating between two message ids produce repeated START/END pairs for the same ids. The
+   builder merges them into one message each, but per-message durations and stall detection are
+   choppy. Keeping several messages open at once, each closed by its own `last` / `values` /
+   `error` / finish, is the fix if this shows up in real captures.
