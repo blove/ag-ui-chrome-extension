@@ -195,4 +195,108 @@ describe('createLangGraphExpander', () => {
     expect(types(events)).toEqual(['RUN_STARTED']);
     expect(codes).toEqual([]);
   });
+
+  it('continues an interleaved message\'s tool call under its id, and ends only the message that ended', () => {
+    const { events, codes, expander } = drive([
+      ['metadata', { run_id: 'r-1' }],
+      ['messages', ai('m1', [], { tool_call_chunks: [{ index: 0, id: 'call_a', name: 'f', args: '{"x"' }] })],
+      ['messages', ai('m2', 'Hello')],
+      ['messages', ai('m1', [], { tool_call_chunks: [{ index: 0, args: ':1}' }] })],
+      ['messages', ai('m2', [], { chunk_position: 'last' })],
+      ['messages', ai('m1', [], { chunk_position: 'last' })],
+    ]);
+    const done = expander.finish(7);
+    expect(events.slice(1)).toEqual([
+      { type: 'TOOL_CALL_START', toolCallId: 'call_a', toolCallName: 'f', parentMessageId: 'm1' },
+      { type: 'TOOL_CALL_ARGS', toolCallId: 'call_a', delta: '{"x"' },
+      { type: 'TOOL_CALL_END', toolCallId: 'call_a' },
+      { type: 'TEXT_MESSAGE_START', messageId: 'm2', role: 'assistant' },
+      { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm2', delta: 'Hello' },
+      { type: 'TEXT_MESSAGE_END', messageId: 'm2' },
+      { type: 'TOOL_CALL_ARGS', toolCallId: 'call_a', delta: ':1}' },
+      // m2's last chunk arrived while m1 was open: m1 stays open until its own last chunk.
+      { type: 'TOOL_CALL_END', toolCallId: 'call_a' },
+    ]);
+    // The args are checked once the call has ended for good, not at the mid-call switch.
+    expect(codes).toEqual([]);
+    expect(done.issues.filter((issue) => issue.code === 'lg-tool-args-invalid')).toEqual([]);
+  });
+
+  it('still reports invalid args of a call whose message was switched away from and never resumed', () => {
+    const { codes, expander } = drive([
+      ['metadata', { run_id: 'r-1' }],
+      ['messages', ai('m1', [], { tool_call_chunks: [{ index: 0, id: 'call_a', name: 'f', args: '{"x"' }] })],
+      ['messages', ai('m2', 'Hello')],
+    ]);
+    expect(codes).toEqual([]);
+    const argIssues = expander.finish(4).issues.filter((issue) => issue.code === 'lg-tool-args-invalid');
+    expect(argIssues.map((issue) => issue.seq)).toEqual([4]);
+  });
+
+  it('gives a tool result the synthetic id of the call its wire id arrived late on (L8)', () => {
+    const { events } = drive([
+      ['metadata', { run_id: 'r-1' }],
+      ['messages', ai('m1', [], { tool_call_chunks: [{ index: 0, args: '{' }] })],
+      ['messages', ai('m1', [], { tool_call_chunks: [{ index: 0, id: 'call_1', args: '}' }] })],
+      ['messages', [{ type: 'tool', id: 't1', tool_call_id: 'call_1', content: 'ok' }, {}]],
+    ]);
+    expect(events.slice(-2)).toEqual([
+      { type: 'TOOL_CALL_END', toolCallId: 'm1#0' },
+      { type: 'TOOL_CALL_RESULT', messageId: 't1', toolCallId: 'm1#0', content: 'ok', role: 'tool' },
+    ]);
+  });
+
+  it('finds a values tool result for a synthetic-id call by its late wire id (L8)', () => {
+    const { events } = drive([
+      ['metadata', { run_id: 'r-1' }],
+      ['messages', ai('m1', [], { tool_call_chunks: [{ index: 0, args: '{}' }] })],
+      ['messages', ai('m1', [], { tool_call_chunks: [{ index: 0, id: 'call_1', args: '' }] })],
+      ['values', { messages: [{ type: 'tool', id: 't1', tool_call_id: 'call_1', content: 'ok' }] }],
+    ]);
+    expect(events.at(-1)).toEqual({
+      type: 'TOOL_CALL_RESULT',
+      messageId: 't1',
+      toolCallId: 'm1#0',
+      content: 'ok',
+      role: 'tool',
+    });
+  });
+
+  it('does not close another branch\'s streaming message for a tool result', () => {
+    const { events } = drive([
+      ['metadata', { run_id: 'r-1' }],
+      ['messages', ai('m1', [], { tool_call_chunks: [{ index: 0, id: 'call_a', name: 'f', args: '{}' }] })],
+      ['messages', ai('m1', [], { chunk_position: 'last' })],
+      ['messages', ai('m2', 'Hel')],
+      ['messages', [{ type: 'tool', id: 't1', tool_call_id: 'call_a', content: 'ok' }, {}]],
+      ['messages', ai('m2', 'lo')],
+    ]);
+    expect(types(events).slice(4)).toEqual([
+      'TEXT_MESSAGE_START',
+      'TEXT_MESSAGE_CONTENT',
+      'TOOL_CALL_RESULT',
+      'TEXT_MESSAGE_CONTENT',
+    ]);
+  });
+
+  it('keeps a __proto__ key in a values snapshot as data', () => {
+    const { events } = drive([
+      ['metadata', { run_id: 'r-1' }],
+      ['values', JSON.parse('{"__proto__": {"messages": [1]}, "a": 1}') as unknown],
+    ]);
+    const snapshot = events[1]?.snapshot as Record<string, unknown>;
+    expect(Object.getPrototypeOf(snapshot)).toBe(Object.prototype);
+    expect(Object.keys(snapshot)).toEqual(['__proto__', 'a']);
+    expect(snapshot.messages).toBeUndefined();
+  });
+
+  it('finishes a join stream, whose GET says nothing about stream_mode, without asking for values', () => {
+    const { expander } = drive([['metadata', { run_id: 'r-9' }], ['messages', ai('m1', 'Hi')]], {
+      method: 'GET',
+      url: 'http://localhost:2024/threads/t-1/runs/r-9/stream',
+    });
+    const done = expander.finish(3);
+    expect(done.issues).toEqual([]);
+    expect(done.events.at(-1)).toEqual({ type: 'RUN_FINISHED', runId: 'r-9', threadId: 't-1' });
+  });
 });
