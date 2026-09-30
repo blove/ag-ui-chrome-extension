@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import type { RedactionGroup } from '../../jsonl/redact';
 import type { AguiEvent } from '../../model/types';
 import {
   createLangGraphExpander,
@@ -490,6 +491,80 @@ describe('createLangGraphExpander — subgraphs (L11)', () => {
     const out = expander.push({ seq: 3, sseEvent: 'error', payload: { error: 'E', message: 'boom' } });
     expect(out.issues.map(({ runKey, issue }) => [runKey, issue.code, issue.seq])).toEqual([
       ['a:1', 'lg-tool-args-invalid', 2],
+    ]);
+  });
+});
+
+describe('createLangGraphExpander — a redacted source (L17)', () => {
+  const R = (n: number): string => `«redacted: ${n} chars»`;
+
+  function codesOf(redacted: readonly RedactionGroup[], frames: Array<[string, unknown]>): string[] {
+    const expander = createLangGraphExpander('c1', REQUEST, { redacted });
+    const codes: string[] = [];
+    frames.forEach(([sseEvent, payload], i) => {
+      codes.push(...expander.push({ seq: i + 1, sseEvent, payload }).issues.map(({ issue }) => issue.code));
+    });
+    codes.push(...expander.finish(frames.length).issues.map(({ issue }) => issue.code));
+    return codes.filter((code) => code.startsWith('lg-tool-args') || code.startsWith('lg-partial') || code.startsWith('lg-complete'));
+  }
+
+  const toolArgFrames: Array<[string, unknown]> = [
+    ['metadata', { run_id: 'r-1' }],
+    ['messages', ai('m1', [], { tool_call_chunks: [{ index: 0, id: 'call_a', name: 'f', args: R(8) }], chunk_position: 'last' })],
+    ['values', {}],
+  ];
+
+  const partialFrames = (text: [string, string, string]): Array<[string, unknown]> => [
+    ['metadata', { run_id: 'r-1' }],
+    ['messages/partial', [{ type: 'ai', id: 'm1', content: text[0] }]],
+    ['messages/partial', [{ type: 'ai', id: 'm1', content: text[1] }]],
+    ['messages/complete', [{ type: 'ai', id: 'm1', content: text[2] }]],
+    ['values', {}],
+  ];
+
+  const reasoningFrames: Array<[string, unknown]> = [
+    ['metadata', { run_id: 'r-1' }],
+    ['messages/partial', [{ type: 'ai', id: 'm1', content: [{ type: 'reasoning', summary: [{ type: 'summary_text', text: R(5) }] }] }]],
+    ['messages/partial', [{ type: 'ai', id: 'm1', content: [{ type: 'reasoning', summary: [{ type: 'summary_text', text: R(11) }] }] }]],
+    ['values', {}],
+  ];
+
+  const partialArgFrames: Array<[string, unknown]> = [
+    ['metadata', { run_id: 'r-1' }],
+    ['messages/partial', [{ type: 'ai', id: 'm1', content: '', tool_call_chunks: [{ index: 0, id: 'call_a', name: 'f', args: R(3) }] }]],
+    ['messages/partial', [{ type: 'ai', id: 'm1', content: '', tool_call_chunks: [{ index: 0, id: 'call_a', name: 'f', args: R(9) }] }]],
+    ['values', {}],
+  ];
+
+  it('raises no lg-tool-args-invalid when toolArgs is redacted', () => {
+    expect(codesOf(['toolArgs'], toolArgFrames)).toEqual([]);
+  });
+
+  it('raises no lg-partial-regressed or lg-complete-mismatch when text is redacted', () => {
+    expect(codesOf(['text'], partialFrames([R(5), R(11), R(12)]))).toEqual([]);
+  });
+
+  it('raises no lg-partial-regressed when reasoning is redacted', () => {
+    expect(codesOf(['reasoning'], reasoningFrames)).toEqual([]);
+  });
+
+  it('raises no lg-partial-regressed over redacted cumulative tool args', () => {
+    expect(codesOf(['toolArgs'], partialArgFrames)).toEqual([]);
+  });
+
+  it('still raises all of them when nothing is redacted', () => {
+    expect(codesOf([], toolArgFrames)).toEqual(['lg-tool-args-invalid']);
+    expect(codesOf([], partialFrames([R(5), R(11), R(12)]))).toEqual(['lg-partial-regressed', 'lg-complete-mismatch']);
+    expect(codesOf([], reasoningFrames)).toEqual(['lg-partial-regressed']);
+    expect(codesOf([], partialArgFrames)).toEqual(['lg-partial-regressed', 'lg-tool-args-invalid']);
+  });
+
+  it('declines only the claims the redacted group destroyed', () => {
+    // `text` redacted says nothing about tool args, and vice versa.
+    expect(codesOf(['text'], toolArgFrames)).toEqual(['lg-tool-args-invalid']);
+    expect(codesOf(['toolArgs'], partialFrames([R(5), R(11), R(12)]))).toEqual([
+      'lg-partial-regressed',
+      'lg-complete-mismatch',
     ]);
   });
 });

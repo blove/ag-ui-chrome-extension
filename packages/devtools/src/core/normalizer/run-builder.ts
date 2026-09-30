@@ -687,11 +687,16 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
    * the `messages` tuple is a JSON array.
    */
   function foldLangGraph(conn: ConnEntry, record: EventRecord): void {
-    conn.langGraph ??= createLangGraphExpander(conn.connId, {
-      ...(conn.method !== undefined ? { method: conn.method } : {}),
-      ...(conn.url !== undefined ? { url: conn.url } : {}),
-      input: conn.input,
-    });
+    conn.langGraph ??= createLangGraphExpander(
+      conn.connId,
+      {
+        ...(conn.method !== undefined ? { method: conn.method } : {}),
+        ...(conn.url !== undefined ? { url: conn.url } : {}),
+        input: conn.input,
+      },
+      // L17: the source's redacted groups, so the expander declines what they destroyed.
+      { redacted },
+    );
     const expansion = conn.langGraph.push({
       seq: record.seq,
       ...(record.sseEvent !== undefined ? { sseEvent: record.sseEvent } : {}),
