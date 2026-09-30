@@ -1182,6 +1182,30 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     expect(runs[0]?.issues.map((raised) => [raised.code, raised.seq])).toEqual([['lg-no-final-values', 2]]);
   });
 
+  /** c1 streams the start of m1 and drops; c2 joins r-1 and streams the rest, ending m1 at 30. */
+  function droppedThenJoined(c1ClosesAt: 'before-join' | 'at-end'): RunBuilder {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hel')));
+    if (c1ClosesAt === 'before-join') builder.closeConnection('c1', 25); // live: the drop is seen first
+    builder.addRequest('c2', 'GET', 'http://localhost:2024/threads/t-1/runs/r-1/stream', undefined);
+    builder.addRecord({ ...lgRecord(3, 'messages', chunk('m1', 'lo', { chunk_position: 'last' })), connId: 'c2' });
+    builder.addRecord({ ...lgRecord(4, 'values', { messages: [] }), connId: 'c2' });
+    // import (`loadJsonl`): every close after every frame, each at its connection's last frame
+    if (c1ClosesAt === 'at-end') builder.closeConnection('c1', 20);
+    builder.closeConnection('c2', 60);
+    return builder;
+  }
+
+  it.each(['before-join', 'at-end'] as const)(
+    'a message the join ended keeps the join’s end, whenever the dropped connection closes (S8: c1 closes %s)',
+    (c1ClosesAt) => {
+      const [run] = droppedThenJoined(c1ClosesAt).runs();
+      expect(run?.outcome).toBe('finished');
+      expect(run?.messages.get('m1')).toMatchObject({ content: 'Hello', closed: true, endedAtMs: 30 });
+    },
+  );
+
   /** c1 has streamed the start of r-1 and is still open; c2 joins it. */
   function joinedWhileStreaming(): RunBuilder {
     const builder = lgBuilder();

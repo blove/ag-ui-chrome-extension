@@ -737,7 +737,7 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     if (!conn.runIds.includes(top.run.runId) && !finish.sawRunEnd) return;
     for (const { runKey, event } of finish.events) {
       const entry = langGraphEntry(conn, runKey);
-      if (entry === undefined) continue;
+      if (entry === undefined || endedElsewhere(entry, event)) continue;
       const seq = entry.run.recordSeqs.at(-1) ?? conn.lastLangGraphSeq ?? 0;
       const record: EventRecord = { kind: 'event', seq, tMs, connId: conn.connId, raw: undefined, event, issues: [] };
       foldEvent(entry, event, record, false, false, false);
@@ -746,6 +746,30 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     for (const runKey of finish.interrupted) {
       const entry = langGraphEntry(conn, runKey);
       if (entry !== undefined) entry.run.outcome = 'interrupted';
+    }
+  }
+
+  /**
+   * A close-time END for a message or tool call the run already holds closed. This connection's
+   * expander never ended it itself, so another connection did: a join stream that continued it
+   * past this connection's drop (S8), and its real end stands. An import closes every connection
+   * after every frame, each at its own last frame, so without this the drop would restamp the
+   * join's end with an earlier time. Live, the drop closes first: this END lands, and the join's
+   * real END, from a frame, restamps it later.
+   */
+  function endedElsewhere(entry: RunEntry, event: AguiEvent): boolean {
+    switch (event.type) {
+      case 'TEXT_MESSAGE_END':
+      case 'REASONING_MESSAGE_END': {
+        const messageId = str(event.messageId);
+        return messageId !== undefined && entry.run.messages.get(messageId)?.closed === true;
+      }
+      case 'TOOL_CALL_END': {
+        const toolCallId = str(event.toolCallId);
+        return toolCallId !== undefined && entry.run.toolCalls.get(toolCallId)?.closed === true;
+      }
+      default:
+        return false;
     }
   }
 

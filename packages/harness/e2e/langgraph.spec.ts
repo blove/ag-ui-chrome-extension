@@ -126,17 +126,7 @@ function countsOf(frames: readonly LangGraphFrame[]): Record<string, number> {
   return counts;
 }
 
-/**
- * What the two folds must agree on.
- *
- * A message's `endedAtMs` is left out, and deliberately. When a CONNECTION close is what ends a
- * message — a LangGraph stream that drops mid-message, as `lg-join`'s POST does — the two folds
- * anchor that close differently by construction: `reconstruct` models an import, which has no
- * close lines and closes each connection at its last frame, while a late panel is handed the
- * worker's real `conn-close` time, a fraction of a millisecond later (measured: 171.1 vs 171.4).
- * Everything else about the message — content, which frames built it, when it started, that it
- * is closed — is compared.
- */
+/** What the two folds must agree on. */
 function project(run: Run): unknown {
   return {
     runId: run.runId,
@@ -144,7 +134,7 @@ function project(run: Run): unknown {
     threadId: run.threadId,
     outcome: run.outcome,
     dialect: run.dialect,
-    messages: [...run.messages.values()].map((message) => ({ ...message, endedAtMs: undefined })),
+    messages: [...run.messages.values()],
     toolCalls: [...run.toolCalls.values()],
     recordSeqs: run.recordSeqs,
     issues: run.issues.map((issue) => [issue.code, issue.seq]),
