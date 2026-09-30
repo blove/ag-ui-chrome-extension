@@ -14,35 +14,54 @@
 
 ## The rules (L16)
 
-Group ownership of a LangChain message (`redactLcMessage(message, groups)`; `type` read with `roleOf`):
+As shipped (`packages/devtools/src/core/jsonl/redact.ts` is the source of truth). The first draft of these tables was refined in review; the refinements are marked *(review)*. "In full" means redacted deep as soon as ANY group is selected — the interim rule, surviving exactly for what cannot be attributed to one group. A "structure slot" keeps its value only while it is a scalar (string, number, boolean, null); an object or list there is redacted in full *(review)*.
+
+Group ownership of a LangChain message (`redactLcMessage(message, groups)`; `type` read with `roleOf`; a tool message is `type` tool, the legacy `function` type, or `role` `tool`/`function`):
 
 | Field | Owner |
 |---|---|
 | `content` as a string | `toolResults` if the message is a tool message, else `text` |
-| `content` block `{type:'text', text}` → `text` | `toolResults` for a tool message, else `text` |
-| `content` block `{type:'reasoning', summary[].text / reasoning}`, `{type:'thinking', thinking}` | `reasoning` |
-| any other `content` block | redacted in full when any group is selected |
-| `tool_call_chunks[].args`, `tool_calls[].args`, `invalid_tool_calls[].args` | `toolArgs` |
-| `artifact` (tool messages) | `toolResults` |
-| `additional_kwargs` | redacted in full when any group is selected (holds provider-specific reasoning and function-call arguments) |
-| `type`, `id`, `name`, `tool_call_id`, `status`, `chunk_position`, `tool_calls[].name/id/type`, `tool_call_chunks[].name/id/index/type`, `response_metadata`, `usage_metadata` | kept — structure and developer-authored |
+| `content` list: a bare string element, or block `{type:'text', text}` → `text` | `toolResults` for a tool message, else `text`; the block's `type`/`index`/`id` are structure slots, any other block key in full |
+| `content` block `{type:'reasoning', reasoning, summary[].text}`, `{type:'thinking', thinking}` | `reasoning` |
+| any other `content` block (image, file, tool-use, `redacted_thinking`), or `content` that is neither string nor list | in full |
+| `tool_calls[].args`, `tool_call_chunks[].args`, `invalid_tool_calls[].args` | `toolArgs`; the call's `name`/`type`/`index`/`id` are structure slots; any other call key in full |
+| `artifact` | `toolResults` on a tool message; in full otherwise |
+| `name` on a human message (`type` human, or `role` `user`/`human`) | `text` — the user's own handle *(review)* |
+| `type`, `role`, `id`, `name` (non-human), `tool_call_id`, `status`, `chunk_position` | kept, as structure slots |
+| `response_metadata` | only `finish_reason`, `stop_reason`, `model_name`, `model`, `model_provider`, `system_fingerprint`, `service_tier`, `id` kept (structure slots); every other key in full — provider fields such as `logprobs` carry content *(review: allowlist)* |
+| `usage_metadata` | numbers, booleans, nulls kept at any depth; any string redacted *(review)* |
+| `additional_kwargs`, any other key | in full |
 
-Per event mode (the mode part of `sseEvent`, namespaced or not):
+Per event mode (the mode part of `sseEvent`, namespaced or not); a payload of the wrong shape for its mode is redacted wholesale:
 
 | Mode | Rule |
 |---|---|
-| `metadata` | kept |
-| `messages` | `[chunk, meta]`: chunk by `redactLcMessage`; meta: keys starting `langgraph_` and `run_id`, `thread_id`, `graph_id`, `assistant_id`, `checkpoint_ns`, `created_by`, `ls_provider`, `ls_model_name`, `ls_model_type`, `ls_temperature`, `ls_integration` kept; every other meta key redacted deep when any group is selected (it can carry config metadata the client sent) |
+| `metadata` | only `run_id`, `attempt`, `thread_id`, `assistant_id` kept (structure slots); any other key in full *(review)* |
+| `messages` | `[chunk, meta]`: chunk by `redactLcMessage`; meta: keys starting `langgraph_` (but not `langgraph_auth*` — the authenticated user, copied from `configurable` *(review)*) and `run_id`, `thread_id`, `graph_id`, `assistant_id`, `checkpoint_ns`, `created_by`, `ls_provider`, `ls_model_name`, `ls_model_type`, `ls_temperature`, `ls_integration` kept; every other meta key in full; any further tuple element in full |
 | `messages/partial`, `messages/complete` | each element by `redactLcMessage` |
-| `messages/metadata` | each value's `metadata` by the meta rule |
-| `values`, `updates`, `checkpoints` | with `state`: the whole payload redacted deep (keys kept — spec L16 notes state keys are structure). Without `state`: messages found at `values.messages` and `updates[node].messages` still go through `redactLcMessage`, so `text` reaches message text wherever it sits |
-| `custom` | redacted in full when any group is selected |
-| `error` | `error` (the exception class) kept; `message` redacted when any group is selected (it can echo input) |
-| `debug`, `tasks`, `events`, `tools`, `feedback`, unknown | redacted in full when any group is selected (fail closed) |
-
-Request body (dialect `langgraph`): settings keys kept as since #46; `input.messages[]` by `redactLcMessage`; the rest of `input` under `state`; `command.resume` under `text` (it is the user's answer to an interrupt); `command.update` under `state`; `command.goto` kept; `config`, `context`, `metadata`, `checkpoint`, `webhook` and any unknown key redacted in full when any group is selected.
+| `messages/metadata` | each value's `metadata` by the meta rule; its other keys in full |
+| `values`, `updates` | graph state (`redactState`): keys survive (spec L16: state keys are structure); with `state` every leaf is redacted and every message in it goes through `redactLcMessage` with ALL groups. Without `state`, leaves are kept and messages — found by shape anywhere in state, and anything under a `messages` key — still go through `redactLcMessage` with the selected groups. An element under `messages` that is not an object is in full |
+| `checkpoints` | `values` as graph state; `next` node names kept (structure slots); `config`, `metadata`, `tasks` and any other key in full |
+| `error` | `error` kept only while it is a string (the exception class) *(review)*; `message` and every other key in full |
+| `custom`, `debug`, `tasks`, `events`, `tools`, `feedback`, unknown | in full (fail closed) |
 
 `__interrupt__` values (the question put to the user) are owned by `state` (they are graph state).
+
+Request body (dialect `langgraph`, `redactLangGraphBody`); a body that is not an object is redacted wholesale:
+
+| Key | Rule |
+|---|---|
+| settings: `assistant_id`, `stream_mode`, `stream_subgraphs`, `stream_resumable`, `multitask_strategy`, `on_completion`, `on_disconnect`, `if_not_exists`, `after_seconds`, `durability`, `checkpoint_during`, `interrupt_before`, `interrupt_after`, `feedback_keys`, `checkpoint_id` | kept, as structure slots (or lists of them) |
+| `input.messages` | by `redactLcMessage` (a list, or one message; a non-object message in full) |
+| any other `input` key | owned by `text` AND `state` — the graph's input schema is often the user's own words (a RAG graph's `question`) *(review)*: with `text`, in full; otherwise as graph state |
+| `input` that is not an object | in full |
+| `command.resume` | `text` (the user's answer to an interrupt) |
+| `command.update` | graph state |
+| `command.goto` | node names kept; a `Send` (`{node, input}`/`arg`) keeps `node` and its input is graph state *(review)*; other `goto` shapes in full |
+| any other `command` key | in full |
+| `config`, `context`, `metadata`, `checkpoint`, `webhook`, any unknown key | in full |
+
+AG-UI request bodies (`redactInput`): `threadId`, `runId`, `parentRunId`, `tools` kept; `messages` by field (`content` under `text`, or `toolResults` on a tool message; `toolCalls[].function.arguments` under `toolArgs`); `state`, `context`, `forwardedProps` under `state`; any OTHER top-level key, and a body that is not an object, in full *(review: these used to be kept)*.
 
 ## Parity (L17's companion)
 
