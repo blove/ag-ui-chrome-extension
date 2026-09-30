@@ -33,6 +33,7 @@ function langGraphState(frames: readonly LangGraphTestFrame[], selectedSeq: numb
     source: { kind: 'imported', filename: 'lg.agui.jsonl', importedAtMs: 0 },
     runs: loaded.runs,
     records: loaded.records,
+    requests: loaded.requests,
     issues: loaded.issues,
     selectedSeq,
   };
@@ -205,10 +206,26 @@ describe('EventDetail', () => {
     const records: CaptureRecord[] = [
       { kind: 'event', seq: 2, tMs: 5, connId: 'c1', raw: '[{oops', event: null, sseEvent: 'messages', issues: [] },
     ];
+    const requests = [
+      { connId: 'c1', tMs: 0, method: 'POST', url: 'http://localhost:2024/threads/t/runs/stream', input: {} },
+    ];
+    render(<EventDetail store={createPanelStore({ ...initialPanelState(), records, requests, selectedSeq: 2 })} />);
+    expect(
+      screen.getByText('This frame could not be decoded into an event. The bytes are under raw, below.'),
+    ).toBeTruthy();
+  });
+
+  it('leaves a named AG-UI frame whose payload is not an object as undecodable, with no Derived', () => {
+    // An AG-UI server may name its frames; the LangGraph reading of an array is for LangGraph only.
+    const records: CaptureRecord[] = [
+      { kind: 'event', seq: 1, tMs: 0, connId: 'c1', raw: { type: 'RUN_STARTED', runId: 'r', threadId: 't' }, event: { type: 'RUN_STARTED', runId: 'r', threadId: 't' }, sseEvent: 'RUN_STARTED', issues: [] },
+      { kind: 'event', seq: 2, tMs: 5, connId: 'c1', raw: [{ delta: 'Hi' }], event: null, sseEvent: 'TEXT_MESSAGE_CONTENT', issues: [] },
+    ];
     render(<EventDetail store={createPanelStore({ ...initialPanelState(), records, selectedSeq: 2 })} />);
     expect(
       screen.getByText('This frame could not be decoded into an event. The bytes are under raw, below.'),
     ).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Derived' })).toBeNull();
   });
 
   describe('Derived — what a LangGraph frame was read as (L14)', () => {
@@ -285,6 +302,7 @@ describe('EventDetail', () => {
         ...initialPanelState(),
         runs: loaded.runs,
         records: loaded.records,
+        requests: loaded.requests,
         issues: loaded.issues,
         selectedSeq: 3,
       });

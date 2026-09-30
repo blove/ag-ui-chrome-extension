@@ -6,6 +6,7 @@
  * a 40kB tool-call argument blob would break the fixed row height virtualization depends on.
  */
 import type { AguiEvent, CaptureRecord } from '../../core/model/types';
+import type { Dialect } from '../../core/normalizer/dialect';
 
 /** Contract cap: a summary must fit one list row. Never exceeded, including the ellipsis. */
 const MAX_SUMMARY_CHARS = 80;
@@ -75,8 +76,12 @@ const VALUE_KEYS = [
  * One-line summary of an event for a list row, e.g. `m_1 · "Hello"` — never longer than 80
  * chars. The event *type* is a separate column (design §3), so it is deliberately not
  * repeated here.
+ *
+ * `dialect` is the record's connection's (`connectionDialects`). Only a LangGraph connection's
+ * frames take the LangGraph readings below: an AG-UI server may name its frames too, and its rows
+ * must read exactly as they did before LangGraph existed.
  */
-export function summarizeEvent(record: CaptureRecord): string {
+export function summarizeEvent(record: CaptureRecord, dialect: Dialect = 'agui'): string {
   if (record.kind === 'keepalive') {
     const comment = collapse(record.comment);
     return truncate(comment === '' ? 'keepalive' : `keepalive · ${comment}`, MAX_SUMMARY_CHARS);
@@ -85,7 +90,7 @@ export function summarizeEvent(record: CaptureRecord): string {
   const event = record.event;
   // A LangGraph frame (L14) names itself on the wire, and its payload need not be an AG-UI event
   // or even an object: a `messages` tuple is an array, and decoded fine.
-  if (record.sseEvent !== undefined) {
+  if (dialect === 'langgraph') {
     if (event === null && typeof record.raw !== 'string' && record.raw !== undefined) {
       return truncate(summarizeLangGraphValue(record.raw), MAX_SUMMARY_CHARS);
     }

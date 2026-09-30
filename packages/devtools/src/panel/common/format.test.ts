@@ -257,41 +257,43 @@ describe('summarizeEvent — LangGraph frames say what they carry', () => {
     return { kind: 'event', seq: 1, tMs: 0, connId: 'c_1', raw, event, sseEvent, issues: [] };
   }
 
+  const summarize = (record: CaptureRecord): string => summarizeEvent(record, 'langgraph');
+
   const tuple = (chunk: Record<string, unknown>): unknown => [
     { type: 'AIMessageChunk', tool_call_chunks: [], ...chunk },
     { langgraph_node: 'agent' },
   ];
 
   it('summarizes a text chunk like an AG-UI content row: id, then the quoted text', () => {
-    expect(summarizeEvent(lgRecord('messages', tuple({ id: 'm1', content: 'Hel\nlo' })))).toBe('m1 · "Hel lo"');
+    expect(summarize(lgRecord('messages', tuple({ id: 'm1', content: 'Hel\nlo' })))).toBe('m1 · "Hel lo"');
     expect(
-      summarizeEvent(lgRecord('messages', tuple({ id: 'm1', content: [{ type: 'text', index: 1, text: 'Step' }] }))),
+      summarize(lgRecord('messages', tuple({ id: 'm1', content: [{ type: 'text', index: 1, text: 'Step' }] }))),
     ).toBe('m1 · "Step"');
   });
 
   it('names a reasoning chunk as reasoning', () => {
     const reasoning = [{ type: 'reasoning', index: 0, summary: [{ index: 0, type: 'summary_text', text: ' need' }] }];
-    expect(summarizeEvent(lgRecord('messages', tuple({ id: 'm1', content: reasoning })))).toBe('m1 · reasoning "need"');
+    expect(summarize(lgRecord('messages', tuple({ id: 'm1', content: reasoning })))).toBe('m1 · reasoning "need"');
   });
 
   it('names a tool-call chunk by its tool and args', () => {
     const chunks = [{ index: 0, id: 'call_1', name: 'get_weather', args: '{"ci' }];
-    expect(summarizeEvent(lgRecord('messages', tuple({ id: 'm2', content: '', tool_call_chunks: chunks })))).toBe(
+    expect(summarize(lgRecord('messages', tuple({ id: 'm2', content: '', tool_call_chunks: chunks })))).toBe(
       'm2 · get_weather · tool call args "{"ci"',
     );
   });
 
   it('says an empty chunk is empty', () => {
-    expect(summarizeEvent(lgRecord('messages', tuple({ id: 'm1', content: [] })))).toBe('m1 · (empty chunk)');
+    expect(summarize(lgRecord('messages', tuple({ id: 'm1', content: [] })))).toBe('m1 · (empty chunk)');
   });
 
   it('summarizes a named object frame by its keys', () => {
-    expect(summarizeEvent(lgRecord('metadata', { run_id: 'r-1', attempt: 1 }))).toBe('{ run_id, attempt }');
-    expect(summarizeEvent(lgRecord('values|sub:1', { messages: [] }))).toBe('{ messages }');
+    expect(summarize(lgRecord('metadata', { run_id: 'r-1', attempt: 1 }))).toBe('{ run_id, attempt }');
+    expect(summarize(lgRecord('values|sub:1', { messages: [] }))).toBe('{ messages }');
   });
 
   it('keeps "unparsed payload" for a frame that did not parse', () => {
-    expect(summarizeEvent(lgRecord('messages', '[{oops'))).toBe('unparsed payload');
+    expect(summarize(lgRecord('messages', '[{oops'))).toBe('unparsed payload');
   });
 
   it('never says unparsed for a frame that decoded, and never exceeds 80 characters', () => {
@@ -302,9 +304,17 @@ describe('summarizeEvent — LangGraph frames say what they carry', () => {
       lgRecord('messages/partial', [{ type: 'ai', id: 'm1', content: 'Hi' }]),
     ];
     for (const record of records) {
-      const summary = summarizeEvent(record);
+      const summary = summarize(record);
       expect(summary).not.toMatch(/unparsed/);
       expect(summary.length).toBeLessThanOrEqual(80);
     }
+  });
+
+  it('leaves a named AG-UI frame exactly as it was: the LangGraph readings are for LangGraph connections', () => {
+    // An AG-UI server may name its frames (`event: TEXT_MESSAGE_CONTENT`). A payload that is not
+    // an event there is still not one, and a typeless object still reads by its fields.
+    expect(summarizeEvent(lgRecord('TEXT_MESSAGE_CONTENT', [{ id: 'm1', content: 'Hi' }]))).toBe('unparsed payload');
+    expect(summarizeEvent(lgRecord('TEXT_MESSAGE_CONTENT', { messageId: 'm1', delta: 'Hi' }))).toBe('m1 · "Hi"');
+    expect(summarizeEvent(lgRecord('TEXT_MESSAGE_CONTENT', { messageId: 'm1', delta: 'Hi' }), 'agui')).toBe('m1 · "Hi"');
   });
 });

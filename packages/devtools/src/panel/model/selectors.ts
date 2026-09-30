@@ -99,6 +99,12 @@ export function selectedRecord(s: PanelState): CaptureRecord | undefined {
  * request line and the first event record — so Session can never name a protocol the Timeline and
  * Runs tabs did not fold the connection as. Every connection that has a request line or an event
  * record, requests first, then in record order.
+ *
+ * The builder decides once, at a connection's first event record, and keeps its answer; this
+ * reads the records the panel still HOLDS. A live capture trims its oldest records, and a request
+ * line can land after the first record, so the two can drift apart for a LangGraph server behind a
+ * proxy path (no URL match, only the leading `metadata` frame says so). A run the builder folded as
+ * LangGraph therefore names its own connection LangGraph whatever the held records now say.
  */
 export function connectionDialects(s: PanelState): Map<string, Dialect> {
   const requests = new Map<string, { method: string; url: string }>();
@@ -122,6 +128,9 @@ export function connectionDialects(s: PanelState): Map<string, Dialect> {
           : { ...(first.sseEvent !== undefined ? { sseEvent: first.sseEvent } : {}), payload: first.raw },
       ),
     );
+  }
+  for (const run of s.runs) {
+    if (run.dialect === 'langgraph') dialects.set(run.connId, 'langgraph');
   }
   return dialects;
 }

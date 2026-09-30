@@ -2,7 +2,7 @@ import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
 import type { AguiEvent, CaptureRecord, Issue, PatchFailure } from '../../../core/model/types';
 import { formatDuration, truncate } from '../../common/format';
-import { issuesBySeq, selectedRecord } from '../../model/selectors';
+import { connectionDialects, issuesBySeq, selectedRecord } from '../../model/selectors';
 import type { PanelState } from '../../model/panel-types';
 import type { PanelStore } from '../../model/store';
 import { usePanelState } from '../../model/use-panel-state';
@@ -76,7 +76,7 @@ function Verdict({ issues, state }: { issues: Issue[]; state: PanelState }): JSX
   );
 }
 
-function Payload({ record }: { record: CaptureRecord }): JSX.Element {
+function Payload({ record, langGraph }: { record: CaptureRecord; langGraph: boolean }): JSX.Element {
   if (record.kind === 'keepalive') {
     return (
       <section class="agui-detail__payload" aria-label="Payload">
@@ -94,8 +94,9 @@ function Payload({ record }: { record: CaptureRecord }): JSX.Element {
    * `event` is null for any payload that is not a JSON object, which is not the same as one that
    * failed to parse: a parse failure keeps the frame TEXT as `raw`. A LangGraph `messages` frame
    * is a JSON array and decoded fine, so it is shown as what it decoded to, under its SSE name.
+   * Only on a LangGraph connection: an AG-UI frame that is not an object is still not an event.
    */
-  if (event === null && record.sseEvent !== undefined && typeof record.raw !== 'string' && record.raw !== undefined) {
+  if (langGraph && event === null && record.sseEvent !== undefined && typeof record.raw !== 'string' && record.raw !== undefined) {
     return (
       <section class="agui-detail__payload" aria-label="Payload">
         <dl class="agui-detail__fields">
@@ -184,17 +185,12 @@ function Derived({ record, state }: { record: CaptureRecord; state: PanelState }
 }
 
 /**
- * Only a frame on a LangGraph connection was read as something other than itself. A join stream
- * (S8) is its own connection folding onto a run another connection opened, so a run holding the
- * frame's seq counts too, not only a run opened on the frame's connection.
+ * Only a frame on a LangGraph connection was read as something other than itself. Per connection,
+ * by the rule the builder folds with (`connectionDialects`), so a join stream (S8) — its own
+ * connection, folding onto a run another connection opened — counts by its own URL.
  */
 function isLangGraphFrame(record: CaptureRecord, state: PanelState): boolean {
-  if (record.kind !== 'event' || record.sseEvent === undefined) return false;
-  return state.runs.some(
-    (run) =>
-      run.dialect === 'langgraph' &&
-      (run.connId === record.connId || run.recordSeqs.includes(record.seq)),
-  );
+  return record.kind === 'event' && connectionDialects(state).get(record.connId) === 'langgraph';
 }
 
 export function EventDetail({ store }: EventDetailProps): JSX.Element {
@@ -218,6 +214,7 @@ export function EventDetail({ store }: EventDetailProps): JSX.Element {
 
   // Annotation reads the seq index, never `record.issues`, which is empty on the import path.
   const issues = issuesBySeq(state).get(record.seq) ?? [];
+  const langGraph = isLangGraphFrame(record, state);
 
   return (
     <section class="agui-detail" aria-label="Event detail">
@@ -228,8 +225,8 @@ export function EventDetail({ store }: EventDetailProps): JSX.Element {
           tab, so this is the only place a validator finding is explained; derived reads the
           payload, so it follows it. */}
       <Verdict issues={issues} state={state} />
-      <Payload record={record} />
-      {isLangGraphFrame(record, state) ? <Derived record={record} state={state} /> : null}
+      <Payload record={record} langGraph={langGraph} />
+      {langGraph ? <Derived record={record} state={state} /> : null}
       <section class="agui-detail__raw" aria-label="Raw frame">
         <button
           type="button"

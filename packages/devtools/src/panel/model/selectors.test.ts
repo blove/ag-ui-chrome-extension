@@ -17,6 +17,8 @@ import {
   issuesBySeq,
   connectionDialects,
 } from './selectors';
+import { loadJsonl } from '../import/load-jsonl';
+import { aiChunk, langGraphJsonl } from '../../test/langgraph-capture';
 
 function eventRecord(seq: number, event: AguiEvent): CaptureRecord {
   return { kind: 'event', seq, tMs: seq * 10, connId: 'c1', raw: event, event, issues: [] };
@@ -268,5 +270,22 @@ describe('connectionDialects', () => {
 
   it('is empty for an empty capture', () => {
     expect(connectionDialects(initialPanelState()).size).toBe(0);
+  });
+
+  it('keeps a connection the builder folded as LangGraph, after its metadata frame was trimmed', () => {
+    // A proxied LangGraph server: no URL match, only the leading `metadata` frame said so, and a
+    // live capture has since trimmed it. The run the builder folded still names the connection.
+    const loaded = loadJsonl(
+      langGraphJsonl([{ event: 'metadata', data: { run_id: 'r-1' } }, aiChunk('m1', 'Hi')], {
+        url: 'http://localhost:3000/proxy/stream',
+      }),
+    );
+    const state: PanelState = {
+      ...initialPanelState(),
+      runs: loaded.runs,
+      records: loaded.records.slice(1),
+      requests: loaded.requests,
+    };
+    expect(connectionDialects(state).get('c1')).toBe('langgraph');
   });
 });
