@@ -10,26 +10,12 @@
  * so a redacted export produces a redacted fixture with no second policy path.
  */
 import type { JsonlHeader, JsonlLine } from '../../core/jsonl/codec';
+import { redactionNote } from '../../core/fixture/redaction-note';
 import { dialectsOfLines } from '../../core/normalizer/dialect';
 
 function headerOf(lines: readonly JsonlLine[]): JsonlHeader | null {
   const first = lines[0];
   return first !== undefined && first.kind === 'header' ? first : null;
-}
-
-/**
- * What was redacted, in words.
- *
- * A fixture is read far from the panel that produced it, by someone who did not choose the
- * redaction. Debugging against `«redacted: 412 chars»` while believing it is the model's real
- * output is a specific and costly way to waste an afternoon, so the file says so at the top.
- */
-function redactionNote(header: JsonlHeader | null): string {
-  const groups = header?.redacted ?? [];
-  return groups.length === 0
-    ? 'Captured verbatim — nothing was redacted.'
-    : `PARTIALLY REDACTED (requirements §11 groups redacted: ${groups.join(', ')}). Payload values ` +
-        'below are `«redacted: N chars»` placeholders: sizes and structure are real, contents are not.';
 }
 
 /**

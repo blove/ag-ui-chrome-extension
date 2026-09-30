@@ -45,3 +45,8 @@ export function exportFilename(url: string, iso: string): string {
 export function fixtureFilename(url: string, iso: string): string {
   return `agui-${hostOf(url)}-${stamp(iso)}.fixture.ts`;
 }
+
+/** T6's Threadplane replay test. `.spec.ts`, so Threadplane's Vitest picks it up where it is dropped. */
+export function threadplaneFilename(url: string, iso: string): string {
+  return `threadplane-${hostOf(url)}-${stamp(iso)}.spec.ts`;
+}
