@@ -40,7 +40,8 @@ function worstSeverity(issues: Issue[]): IssueSeverity | undefined {
 /** `CaptureRecord` is a union on `kind`; only the `event` arm has an `event` to read a type off. */
 function typeLabel(record: CaptureRecord): string {
   if (record.kind === 'keepalive') return 'keepalive';
-  return record.event === null ? 'unparsed' : record.event.type;
+  // A LangGraph frame has no AG-UI `type` in its payload: its type is the SSE event name.
+  return typeof record.event?.type === 'string' ? record.event.type : (record.sseEvent ?? 'unparsed');
 }
 
 interface EventRowProps {

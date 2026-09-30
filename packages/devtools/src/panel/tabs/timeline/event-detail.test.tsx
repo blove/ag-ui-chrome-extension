@@ -5,7 +5,7 @@ import { render, screen, fireEvent, within } from '@testing-library/preact';
 // not a filesystem URL, so the node-style read resolves to the wrong path.
 import malformedJsonl from '../../../test/fixtures/malformed.agui.jsonl?raw';
 import happyJsonl from '../../../test/fixtures/happy-run.agui.jsonl?raw';
-import type { CaptureRecord } from '../../../core/model/types';
+import type { AguiEvent, CaptureRecord } from '../../../core/model/types';
 import { loadJsonl } from '../../import/load-jsonl';
 import { initialPanelState, type PanelState } from '../../model/panel-types';
 import { createPanelStore } from '../../model/store';
@@ -143,5 +143,25 @@ describe('EventDetail', () => {
     ).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'raw' }));
     expect(screen.getByRole('region', { name: 'Raw frame' }).textContent).toContain('data: {oops');
+  });
+
+  it('names a LangGraph frame by its SSE event name in the type field', () => {
+    const records: CaptureRecord[] = [
+      {
+        kind: 'event',
+        seq: 3,
+        tMs: 5,
+        connId: 'c1',
+        raw: { messages: [] },
+        event: { messages: [] } as unknown as AguiEvent,
+        sseEvent: 'values',
+        issues: [],
+      },
+    ];
+    const store = createPanelStore({ ...initialPanelState(), records, selectedSeq: 3 });
+    render(<EventDetail store={store} />);
+
+    const payload = screen.getByRole('region', { name: 'Payload' });
+    expect(within(payload).getByText('type').nextElementSibling?.textContent?.trim()).toBe('values');
   });
 });

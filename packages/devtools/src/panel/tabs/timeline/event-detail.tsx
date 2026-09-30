@@ -105,7 +105,9 @@ function Payload({ record }: { record: CaptureRecord }): JSX.Element {
             each field a stable key without a keyless fragment. */}
         <div class="agui-detail__field">
           <dt>type</dt>
-          <dd>{event.type}</dd>
+          <dd>
+            {typeof event.type === 'string' ? event.type : (record.sseEvent ?? 'unparsed')}
+          </dd>
         </div>
         {fields.map(([key, value]) => (
           <div class="agui-detail__field" key={key}>
