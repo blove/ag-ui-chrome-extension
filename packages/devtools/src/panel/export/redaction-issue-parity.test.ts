@@ -17,7 +17,7 @@
  *    rule's evidence. A rule that goes quiet for any other reason has stopped working.
  *
  * As measured on 2026-08-15, exactly one rule falls in the second half — `tool-args-not-json`
- * under `toolArgs`. `state-patch-failed` is NOT affected in either direction: `redactPatchOp`
+ * under `toolArgs`. `state-patch-failed` is NOT affected in either direction: `redactPatch`
  * preserves paths and op names, so the same ops fail at the same positions for the same reasons.
  */
 import { describe, expect, test } from 'vitest';
@@ -125,6 +125,47 @@ const WIDE_JSONL = [
     { type: 'STATE_DELTA', delta: [{ op: 'replace', path: '/counter', value: 9 }] },
     { type: 'STATE_SNAPSHOT', snapshot: { counter: 9, who: 'Ada' } },
     { type: 'STATE_DELTA', delta: [{ op: 'add', path: '/gone/child', value: 1 }] },
+    // LangGraph PR 4: the fields `redact.ts` now redacts per field rather than passing through —
+    // a snapshot's messages by role, the deprecated THINKING content (including an EMPTY delta,
+    // which `redactString` must keep empty), an activity patch, CUSTOM, RAW, and a `rawEvent` on
+    // an event whose own payload a group owns.
+    {
+      type: 'MESSAGES_SNAPSHOT',
+      messages: [
+        { id: 'u1', role: 'user', content: 'go' },
+        {
+          id: 'a1',
+          role: 'assistant',
+          content: 'calling',
+          toolCalls: [
+            { id: 'tc_x', type: 'function', function: { name: 'f', arguments: '{"a":1}' } },
+          ],
+        },
+        { id: 'r1', role: 'tool', toolCallId: 'tc_x', content: 'ok', error: 'e' },
+        { id: 'rs1', role: 'reasoning', content: 'hmm', encryptedValue: 'x' },
+        { id: 'm_a', role: 'activity', activityType: 'progress', content: { pct: 10 } },
+      ],
+    },
+    { type: 'THINKING_TEXT_MESSAGE_START' },
+    { type: 'THINKING_TEXT_MESSAGE_CONTENT', delta: 'pondering' },
+    { type: 'THINKING_TEXT_MESSAGE_CONTENT', delta: '' },
+    { type: 'THINKING_TEXT_MESSAGE_END' },
+    {
+      type: 'ACTIVITY_DELTA',
+      messageId: 'm_a',
+      activityType: 'progress',
+      patch: [{ op: 'replace', path: '/pct', value: 50 }],
+    },
+    { type: 'CUSTOM', name: 'app.event', value: { note: 'n' } },
+    { type: 'RAW', source: 'provider', event: { chunk: 'c' } },
+    {
+      type: 'TOOL_CALL_RESULT',
+      messageId: 'm_res2',
+      toolCallId: 'tc_1',
+      role: 'tool',
+      content: 'again',
+      rawEvent: { upstream: 'again' },
+    },
     // Task 6b follow-up: `redact.ts` now fails closed on payloads it cannot classify as AG-UI
     // events. These three run that wholesale-redaction path through the SAME validator-parity
     // sweep as every known-type rule above, so a rule that IS live over this fixture — e.g.
@@ -207,7 +248,7 @@ describe('redaction withdraws exactly one claim, and only where it destroyed the
 
   test('state-patch-failed is untouched by redaction, in both directions', () => {
     // Measured by the State milestone and re-measured here, because an earlier hypothesis said
-    // otherwise and the data disproved it. `redactPatchOp` preserves `op` and `path`, and those
+    // otherwise and the data disproved it. `redactPatch` preserves `op` and `path`, and those
     // are what decides whether a patch applies — so the same ops fail at the same positions for
     // the same reasons, redacted or not.
     for (const [, text] of CAPTURES) {
