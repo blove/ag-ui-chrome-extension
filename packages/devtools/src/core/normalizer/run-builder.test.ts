@@ -972,7 +972,7 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     const frames = [
       lgRecord(1, 'metadata', { run_id: 'r-1' }),
       lgRecord(2, 'debug', { step: 1 }), // no synthetic event
-      lgRecord(3, 'messages|sub:1', chunk('s1', 'sub')), // namespaced: no synthetic event yet
+      lgRecord(3, 'messages/metadata', { m1: { metadata: {} } }), // no synthetic event
       lgRecord(4, 'messages', chunk('m1', 'Hi')), // several synthetic events
       lgRecord(5, 'metadata', { run_id: 'r-1' }), // a repeated metadata: no synthetic event
       lgRecord(6, 'error', { error: 'E', message: 'boom' }),
@@ -988,7 +988,7 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     expect(run?.metrics.eventCountByType).toEqual({
       metadata: 2,
       debug: 1,
-      'messages|sub:1': 1,
+      'messages/metadata': 1,
       messages: 1,
       error: 1,
       values: 1,
@@ -1019,6 +1019,67 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     const [run] = builder.runs();
     expect(run).toMatchObject({ runId: 'r-1', threadId: 't-9', dialect: 'langgraph', outcome: 'interrupted', endedAtMs: 30 });
     expect(builder.allIssues()).toEqual([]);
+  });
+
+  it('folds a subgraph into a child run that does not take over the connection', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages|research:t1', chunk('s1', 'Looking', { chunk_position: 'last' })));
+    builder.addRecord(lgRecord(3, 'messages', chunk('m1', 'Answer', { chunk_position: 'last' })));
+    builder.addRecord(lgRecord(4, 'values', { messages: [] }));
+    builder.closeConnection('c1', 50);
+
+    const runs = builder.runs();
+    expect(runs.map((run) => run.runId)).toEqual(['r-1', 'r-1/research:t1']);
+    const [top, child] = runs;
+    expect(child).toMatchObject({ parentRunId: 'r-1', threadId: 't-1', dialect: 'langgraph', outcome: 'finished' });
+    expect(child?.recordSeqs).toEqual([2]);
+    expect(child?.messages.get('s1')?.content).toBe('Looking');
+    expect(child?.metrics.eventCountByType).toEqual({ 'messages|research:t1': 1 });
+    // The top-level message after the subgraph still lands on the top-level run.
+    expect(top?.recordSeqs).toEqual([1, 3, 4]);
+    expect(top?.messages.get('m1')?.content).toBe('Answer');
+    expect(top?.outcome).toBe('finished');
+  });
+
+  it('records a child the parent’s failure cut off as aborted', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages|sub:1', chunk('s1', 'x')));
+    builder.addRecord(lgRecord(3, 'error', { error: 'E', message: 'boom' }));
+    builder.closeConnection('c1', 40);
+    expect(builder.runs().map((run) => [run.runId, run.outcome])).toEqual([
+      ['r-1', 'error'],
+      ['r-1/sub:1', 'aborted'],
+    ]);
+  });
+
+  it('marks each interrupted run interrupted', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'updates|sub:1', { __interrupt__: [{ value: 'ok?' }] }));
+    builder.addRecord(lgRecord(3, 'values', { __interrupt__: [{ value: 'ok?' }] }));
+    builder.closeConnection('c1', 40);
+    expect(builder.runs().map((run) => run.outcome)).toEqual(['interrupted', 'interrupted']);
+  });
+
+  it('a join stream continues its run: an abort is upgraded by the join’s finish (S8)', () => {
+    const builder = lgBuilder(); // c1: POST /threads/t-1/runs/stream, asked for values
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hel')));
+    builder.addRequest('c2', 'GET', 'http://localhost:2024/threads/t-1/runs/r-1/stream', undefined);
+    builder.addRecord({ ...lgRecord(3, 'messages', chunk('m1', 'lo', { chunk_position: 'last' })), connId: 'c2' });
+    builder.addRecord({ ...lgRecord(4, 'values', { messages: [] }), connId: 'c2' });
+    builder.closeConnection('c1', 50); // the dropped connection: no final values
+    builder.closeConnection('c2', 60);
+
+    const runs = builder.runs();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.outcome).toBe('finished');
+    expect(runs[0]?.messages.get('m1')?.content).toBe('Hello');
+    expect(runs[0]?.recordSeqs).toEqual([1, 2, 3, 4]);
+    // Anchored to the dropped connection's own last frame, not the run's.
+    expect(runs[0]?.issues.map((raised) => [raised.code, raised.seq])).toEqual([['lg-no-final-values', 2]]);
   });
 
   it('leaves an AG-UI connection exactly as it was: no dialect, AG-UI types counted', () => {
