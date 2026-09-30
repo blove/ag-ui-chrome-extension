@@ -9,9 +9,13 @@ export interface LangGraphTestFrame {
 
 export interface LangGraphCaptureOptions {
   readonly connId?: string;
+  /** `POST` by default; a join stream is a `GET`, the only verb its `/runs/:id/stream` route has. */
+  readonly method?: string;
   readonly url?: string;
   readonly body?: unknown;
   readonly header?: boolean;
+  /** The first frame's seq: a second connection in one capture continues the first's numbering. */
+  readonly firstSeq?: number;
 }
 
 export const DEFAULT_LG_URL = 'http://localhost:2024/threads/t-1/runs/stream';
@@ -40,12 +44,14 @@ export function langGraphJsonl(frames: readonly LangGraphTestFrame[], options: L
     kind: 'request',
     connId,
     tMs: 0,
-    method: 'POST',
+    method: options.method ?? 'POST',
     url: options.url ?? DEFAULT_LG_URL,
-    input: options.body ?? DEFAULT_LG_BODY,
+    // An explicit `body: null` is kept: a join stream's GET has no body.
+    input: 'body' in options ? options.body : DEFAULT_LG_BODY,
   });
+  const firstSeq = options.firstSeq ?? 1;
   frames.forEach((frame, i) => {
-    const seq = i + 1;
+    const seq = firstSeq + i;
     lines.push({ kind: 'event', connId, seq, tMs: seq * 10, ...(frame.event !== '' ? { sseEvent: frame.event } : {}), event: frame.data });
   });
   return lines.map((line) => JSON.stringify(line)).join('\n');
