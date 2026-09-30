@@ -155,7 +155,7 @@ function sliceUnits(text: string, max: number): string {
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
-function truncate(text: string, max: number): string {
+export function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   let cut = text.slice(0, max - 1);
   const lastUnit = cut.charCodeAt(cut.length - 1);

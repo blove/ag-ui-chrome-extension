@@ -1,7 +1,7 @@
 import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
-import type { CaptureRecord, Issue, PatchFailure } from '../../../core/model/types';
-import { formatDuration } from '../../common/format';
+import type { AguiEvent, CaptureRecord, Issue, PatchFailure } from '../../../core/model/types';
+import { formatDuration, truncate } from '../../common/format';
 import { issuesBySeq, selectedRecord } from '../../model/selectors';
 import type { PanelState } from '../../model/panel-types';
 import type { PanelStore } from '../../model/store';
@@ -120,6 +120,62 @@ function Payload({ record }: { record: CaptureRecord }): JSX.Element {
   );
 }
 
+/** The id a synthetic event acts on, if it names one. */
+function derivedTarget(event: AguiEvent): string | undefined {
+  for (const key of ['messageId', 'toolCallId', 'stepName'] as const) {
+    const value = event[key];
+    if (typeof value === 'string') return value;
+  }
+  return undefined;
+}
+
+/**
+ * What a LangGraph frame was read as (L14): the synthetic AG-UI events it folded into, gathered
+ * across every run — a frame can cause events on a run it does not belong to (S3) — in run order.
+ * The panel made these, so the lead-in says so: nothing here was on the wire.
+ */
+function Derived({ record, state }: { record: CaptureRecord; state: PanelState }): JSX.Element {
+  const events = state.runs.flatMap((run) => run.derived?.get(record.seq) ?? []);
+  return (
+    <section class="agui-detail__derived" aria-label="Derived">
+      {events.length === 0 ? (
+        <p>Shown as it arrived — this frame is not read as any AG-UI event.</p>
+      ) : (
+        <>
+          <p>Read as these AG-UI events — derived by the panel, not sent on the wire:</p>
+          <ol>
+            {events.map((event, i) => {
+              const target = derivedTarget(event);
+              const delta = typeof event.delta === 'string' ? event.delta : undefined;
+              return (
+                <li key={i}>
+                  <code>{event.type}</code>
+                  {target === undefined ? '' : ` ${target}`}
+                  {delta === undefined ? '' : ` "${truncate(delta, 80)}"`}
+                </li>
+              );
+            })}
+          </ol>
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Only a frame on a LangGraph connection was read as something other than itself. A join stream
+ * (S8) is its own connection folding onto a run another connection opened, so a run holding the
+ * frame's seq counts too, not only a run opened on the frame's connection.
+ */
+function isLangGraphFrame(record: CaptureRecord, state: PanelState): boolean {
+  if (record.kind !== 'event' || record.sseEvent === undefined) return false;
+  return state.runs.some(
+    (run) =>
+      run.dialect === 'langgraph' &&
+      (run.connId === record.connId || run.recordSeqs.includes(record.seq)),
+  );
+}
+
 export function EventDetail({ store }: EventDetailProps): JSX.Element {
   const state = usePanelState(store);
   const [showRaw, setShowRaw] = useState(false);
@@ -147,10 +203,12 @@ export function EventDetail({ store }: EventDetailProps): JSX.Element {
       <h2 class="agui-detail__title">
         seq {record.seq} · {formatDuration(record.tMs)} · {record.connId}
       </h2>
-      {/* Order is load-bearing: verdict, then payload, then raw. P2 has no Issues tab, so this
-          is the only place a validator finding is explained. */}
+      {/* Order is load-bearing: verdict, then payload, then derived, then raw. P2 has no Issues
+          tab, so this is the only place a validator finding is explained; derived reads the
+          payload, so it follows it. */}
       <Verdict issues={issues} state={state} />
       <Payload record={record} />
+      {isLangGraphFrame(record, state) ? <Derived record={record} state={state} /> : null}
       <section class="agui-detail__raw" aria-label="Raw frame">
         <button
           type="button"
