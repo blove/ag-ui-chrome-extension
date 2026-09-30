@@ -1,4 +1,3 @@
-// packages/devtools/src/core/normalizer/langgraph/names.test.ts
 import { describe, expect, it } from 'vitest';
 
 import { isKnownMode, parseEventName } from './names';

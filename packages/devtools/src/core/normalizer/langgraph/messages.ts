@@ -1,4 +1,3 @@
-// packages/devtools/src/core/normalizer/langgraph/messages.ts
 /**
  * Reading LangChain messages as LangGraph Platform serializes them.
  *
@@ -15,6 +14,11 @@ function nonEmpty(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
+/**
+ * The role a message `type` names, from either serialization. Only the four roles the expander
+ * translates are recognised; every other LangChain type — `ChatMessage` / `generic`,
+ * `FunctionMessage` / `function`, `RemoveMessage` / `remove` — is `other`, deliberately.
+ */
 export function roleOf(type: unknown): MessageRole {
   if (typeof type !== 'string') return 'other';
   let role = type;
@@ -31,9 +35,15 @@ export interface ContentParts {
 /**
  * The text and the reasoning a message's `content` carries.
  *
- * `content` is a string, or a list of blocks: `{type:'text', text}`, OpenAI's
- * `{type:'reasoning', summary:[{text}]}`, Anthropic's `{type:'thinking', thinking}`. Anything
- * else (images, tool-use blocks) carries neither and is skipped.
+ * `content` is a string, or a list of blocks:
+ * - `{type:'text', text}` — text;
+ * - `{type:'reasoning', summary:[{text}]}` — OpenAI Responses; a summary entry without a string
+ *   `text` contributes nothing;
+ * - `{type:'reasoning', reasoning}` — LangChain's standard reasoning block;
+ * - `{type:'thinking', thinking}` — Anthropic.
+ *
+ * Anything else (images, tool-use blocks, Anthropic `redacted_thinking`) carries neither and is
+ * skipped.
  */
 export function contentParts(content: unknown): ContentParts {
   if (typeof content === 'string') return { text: content, reasoning: '' };
@@ -67,6 +77,14 @@ export interface ToolCallChunk {
   readonly args: string;
 }
 
+/**
+ * The `tool_call_chunks` of one message chunk.
+ *
+ * A chunk without a usable `index` (absent, `null`, or not a non-negative integer) falls back to
+ * its position in this list. That is right for the common one-call-per-chunk stream, but the
+ * position is local to this chunk: two parallel calls that both omit `index` each land on 0, so a
+ * consumer merging across chunks must also split on a change of `id`.
+ */
 export function toolCallChunks(value: unknown): ToolCallChunk[] {
   if (!Array.isArray(value)) return [];
   const chunks: ToolCallChunk[] = [];
@@ -74,8 +92,9 @@ export function toolCallChunks(value: unknown): ToolCallChunk[] {
     if (!isObject(entry)) return;
     const id = nonEmpty(entry.id);
     const name = nonEmpty(entry.name);
+    const index = entry.index;
     chunks.push({
-      index: typeof entry.index === 'number' ? entry.index : position,
+      index: typeof index === 'number' && Number.isInteger(index) && index >= 0 ? index : position,
       ...(id !== undefined ? { id } : {}),
       ...(name !== undefined ? { name } : {}),
       args: typeof entry.args === 'string' ? entry.args : '',

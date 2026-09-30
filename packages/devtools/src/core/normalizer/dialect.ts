@@ -1,4 +1,3 @@
-// packages/devtools/src/core/normalizer/dialect.ts
 /**
  * Which wire protocol a connection speaks (spec L4, L5).
  *
@@ -28,7 +27,8 @@ export function dialectOf(
   request: DialectRequest | undefined,
   first: DialectFirstFrame | undefined,
 ): Dialect {
-  // The URL is the strongest signal, and it is known before any byte of the response.
+  // The URL is the strongest signal, and it is known before any byte of the response. No body is
+  // passed: it only matters to the single-route info arm, never to a `langgraph-run` match.
   if (request !== undefined && routeHint(request.url, request.method)?.kind === 'langgraph-run') {
     return 'langgraph';
   }

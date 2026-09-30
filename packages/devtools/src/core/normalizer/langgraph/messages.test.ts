@@ -1,4 +1,3 @@
-// packages/devtools/src/core/normalizer/langgraph/messages.test.ts
 import { describe, expect, it } from 'vitest';
 
 import { contentParts, roleOf, toolCallChunks } from './messages';
@@ -17,6 +16,10 @@ describe('roleOf', () => {
 
   it('is other for anything unrecognised', () => {
     expect(roleOf('remove')).toBe('other');
+    expect(roleOf('RemoveMessage')).toBe('other');
+    expect(roleOf('ChatMessage')).toBe('other');
+    expect(roleOf('FunctionMessage')).toBe('other');
+    expect(roleOf('generic')).toBe('other');
     expect(roleOf(undefined)).toBe('other');
     expect(roleOf(3)).toBe('other');
   });
@@ -36,6 +39,15 @@ describe('contentParts', () => {
         { type: 'thinking', thinking: 'ing' },
       ]),
     ).toEqual({ text: 'Hello', reasoning: 'Thinking' });
+  });
+
+  it('reads a standard reasoning block, and skips a summary entry without text', () => {
+    expect(
+      contentParts([
+        { type: 'reasoning', reasoning: 'Plan' },
+        { type: 'reasoning', summary: [{ type: 'summary_text' }, { type: 'summary_text', text: 'ned' }] },
+      ]),
+    ).toEqual({ text: '', reasoning: 'Planned' });
   });
 
   it('ignores blocks it does not understand, and non-content', () => {
@@ -63,6 +75,11 @@ describe('toolCallChunks', () => {
       { index: 0, id: 'a', args: '' },
       { index: 1, id: 'b', args: '' },
     ]);
+  });
+
+  it('falls back to array position for an index that is not a non-negative integer', () => {
+    const chunks = toolCallChunks([{ index: null }, { index: Number.NaN }, { index: -1 }, { index: 1.5 }]);
+    expect(chunks.map((chunk) => chunk.index)).toEqual([0, 1, 2, 3]);
   });
 
   it('is empty for anything that is not a list', () => {

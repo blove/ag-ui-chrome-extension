@@ -1,4 +1,3 @@
-// packages/devtools/src/core/normalizer/langgraph/names.ts
 /**
  * LangGraph Platform SSE event names (spec §2).
  *

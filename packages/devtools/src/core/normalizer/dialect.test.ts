@@ -1,4 +1,3 @@
-// packages/devtools/src/core/normalizer/dialect.test.ts
 import { describe, expect, it } from 'vitest';
 
 import { dialectOf } from './dialect';
@@ -18,10 +17,15 @@ describe('dialectOf (L4)', () => {
     expect(dialectOf({ method: 'POST', url: 'http://h/my/proxy' }, first)).toBe('langgraph');
   });
 
-  it('is agui for a CopilotKit route, whatever the first frame says', () => {
-    // The route is the stronger signal and is checked first, but a CopilotKit route is not a
-    // LangGraph route, so it does not decide: the metadata fallback still applies.
+  it('is agui for a CopilotKit route carrying AG-UI frames', () => {
     expect(dialectOf({ method: 'POST', url: CK_URL }, { payload: { type: 'RUN_STARTED' } })).toBe('agui');
+  });
+
+  it('lets the first frame decide on a CopilotKit route, which is not a LangGraph route', () => {
+    // The route is checked first, but only a LangGraph route decides on its own; any other
+    // route falls through to the metadata check (spec L4).
+    const first = { sseEvent: 'metadata', payload: { run_id: 'r-1' } };
+    expect(dialectOf({ method: 'POST', url: CK_URL }, first)).toBe('langgraph');
   });
 
   it('is agui for an AG-UI server that names its events after the event type', () => {
