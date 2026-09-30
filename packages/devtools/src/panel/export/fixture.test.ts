@@ -143,6 +143,25 @@ describe('toFixtureModule — LangGraph connections (L18)', () => {
     expect(module).toContain('export default langGraphEvents;');
   });
 
+  test('points at the Threadplane test for a MockAgentTransport replay, now that §14.2 is built', () => {
+    const module = toFixtureModule(linesOf(lgText), 'lg.fixture.ts');
+    expect(module).not.toContain('will generate');
+    expect(module).toContain('Download Threadplane test');
+  });
+
+  test("an imported header's origin, capture time and redaction groups cannot end the header comment", () => {
+    const hostile = 'x\n*/ globalThis.pwned = 1; /*';
+    const text = happyJsonl.replace(/^\{[^\n]*\n/, (header) => {
+      const parsed = JSON.parse(header) as Record<string, unknown>;
+      return `${JSON.stringify({ ...parsed, url: hostile, capturedAt: hostile, redacted: ['text', hostile] })}\n`;
+    });
+    const module = toFixtureModule(linesOf(text), 'f.fixture.ts');
+    const comment = module.slice(0, module.indexOf('*/') + 2);
+    expect(comment).toContain('Origin: x * / globalThis.pwned = 1; /*');
+    expect(module.indexOf('globalThis.pwned')).toBeLessThan(comment.length);
+    expect(module.lastIndexOf('globalThis.pwned')).toBeLessThan(comment.length);
+  });
+
   test('an AG-UI capture has no LangGraph block at all', () => {
     const module = toFixtureModule(linesOf(), 'f.fixture.ts');
     expect(module).not.toContain('langGraphEvents');

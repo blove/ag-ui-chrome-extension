@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { exportFilename, fixtureFilename } from './filename';
+import { exportFilename, fixtureFilename, threadplaneFilename } from './filename';
 
 describe('exportFilename', () => {
   test('names the host and the moment the capture was taken', () => {
@@ -42,6 +42,14 @@ describe('fixtureFilename', () => {
   test('is a TypeScript module, because that is what a fixture export is', () => {
     expect(fixtureFilename('http://localhost:3000/', '2026-08-15T12:00:00.000Z')).toBe(
       'agui-localhost-3000-2026-08-15T12-00-00.000Z.fixture.ts',
+    );
+  });
+});
+
+describe('threadplaneFilename', () => {
+  test('is a spec file, so the test runner picks it up where it is dropped', () => {
+    expect(threadplaneFilename('http://127.0.0.1:2024', '2026-05-08T00:00:00.000Z')).toBe(
+      'threadplane-127.0.0.1-2024-2026-05-08T00-00-00.000Z.spec.ts',
     );
   });
 });

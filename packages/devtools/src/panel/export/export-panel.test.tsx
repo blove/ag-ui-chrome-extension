@@ -6,12 +6,14 @@ import { applyLoaded } from '../import/apply-loaded';
 import { loadJsonl } from '../import/load-jsonl';
 import { initialPanelState, type PanelState } from '../model/panel-types';
 import { createPanelStore, selectScope, type PanelStore } from '../model/store';
+import { aiChunk, langGraphJsonl } from '../../test/langgraph-capture';
 import { ExportPanel } from './export-panel';
 import type { ExportIo } from './download';
 
 interface Written {
   filename: string;
   text: string;
+  mime?: string;
 }
 
 function io(overrides: Partial<ExportIo> = {}): { io: ExportIo; files: Written[]; copies: string[] } {
@@ -21,8 +23,8 @@ function io(overrides: Partial<ExportIo> = {}): { io: ExportIo; files: Written[]
     files,
     copies,
     io: {
-      download: (filename, text) => {
-        files.push({ filename, text });
+      download: (filename, text, mime) => {
+        files.push({ filename, text, ...(mime !== undefined ? { mime } : {}) });
         return { ok: true };
       },
       copy: (text) => {
@@ -100,7 +102,7 @@ describe('ExportPanel: the empty capture', () => {
   test('disables every control with a stated reason instead of writing a zero-record file', () => {
     render(<ExportPanel store={createPanelStore(initialPanelState())} io={io().io} />);
 
-    for (const name of [/Download capture/, /Copy JSON/, /Download TypeScript fixture/]) {
+    for (const name of [/Download capture/, /Copy JSON/, /Download TypeScript fixture/, /Download Threadplane test/]) {
       expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true);
     }
     expect(screen.getByTestId('agui-export-blocked').textContent).toBe(
@@ -305,5 +307,61 @@ describe('ExportPanel: a live capture', () => {
       'agui-localhost-3000-2026-08-15T12-00-00.000Z.agui.jsonl',
     );
     expect(headerOf(harness.files[0]?.text ?? '').url).toBe('http://localhost:3000');
+  });
+});
+
+describe('ExportPanel: the Threadplane test (T6)', () => {
+  const human = { type: 'human', id: 'h1', content: 'SECRET-QUESTION' };
+  const langGraphCapture = langGraphJsonl(
+    [
+      { event: 'metadata', data: { run_id: 'run-1' } },
+      { event: 'values', data: { messages: [human] } },
+      aiChunk('a1', 'SECRET-ANSWER'),
+      { event: 'values', data: { messages: [human, { type: 'ai', id: 'a1', content: 'SECRET-ANSWER' }] } },
+    ],
+    { body: { assistant_id: 'agent', input: { messages: [{ type: 'human', content: 'SECRET-QUESTION' }] } } },
+  );
+
+  test('is enabled for a LangGraph capture and downloads a Threadplane spec', () => {
+    const harness = io();
+    render(<ExportPanel store={importedStore(langGraphCapture)} io={harness.io} />);
+
+    const button = screen.getByRole('button', { name: 'Download Threadplane test (.spec.ts)' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(screen.queryByTestId('agui-export-threadplane-reason')).toBeNull();
+    fireEvent.click(button);
+
+    expect(harness.files[0]?.filename).toBe('threadplane-localhost-2024-2026-09-30T12-00-00.000Z.spec.ts');
+    expect(harness.files[0]?.mime).toBe('text/typescript');
+    expect(harness.files[0]?.text).toContain('new MockAgentTransport');
+    expect(screen.getByRole('status').textContent).toBe('Threadplane test downloaded.');
+  });
+
+  test('is disabled for an AG-UI-only capture, with the reason stated', () => {
+    const harness = io();
+    render(<ExportPanel store={importedStore()} io={harness.io} />);
+
+    const button = screen.getByRole('button', { name: /Download Threadplane test/ }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    const reason =
+      'This capture has no LangGraph Platform connection — the Threadplane test replays LangGraph streams.';
+    expect(screen.getByTestId('agui-export-threadplane-reason').textContent).toBe(reason);
+
+    // The handler refuses too, as every export button's does.
+    fireEvent.click(button);
+    expect(harness.files).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe(reason);
+  });
+
+  test('the redaction checkboxes apply: a redacted spec holds no secret from the capture', () => {
+    const harness = io();
+    render(<ExportPanel store={importedStore(langGraphCapture)} io={harness.io} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Redact everything' }));
+    fireEvent.click(screen.getByRole('button', { name: /Download Threadplane test/ }));
+
+    const text = harness.files[0]?.text ?? '';
+    expect(text).toContain('PARTIALLY REDACTED');
+    expect(text).not.toContain('SECRET');
   });
 });

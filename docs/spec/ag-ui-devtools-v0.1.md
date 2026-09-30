@@ -72,10 +72,11 @@ compatibility target because it is the largest AG-UI client population.
 - Record → export `.agui.jsonl` → import and replay
 - Redacted bug-report bundle
 
-### Phase 2 — Threadplane (specified in §14, not built yet)
+### Phase 2 — Threadplane (specified in §14; §14.1 and §14.2 built)
 
 Angular signal graph, LangGraph-adapter normalization, `MockAgentTransport` fixture
-export, interrupt simulator, A2UI/json-render spec inspector.
+export, interrupt simulator, A2UI/json-render spec inspector. LangGraph normalization
+(§14.1) and the `MockAgentTransport` fixture export (§14.2) are built; the rest is not.
 
 ### Non-goals
 
@@ -471,11 +472,16 @@ namespaced variants like `messages|node:uuid` when `stream_subgraphs` is on. Map
 those into the same internal run model means one timeline covers both Threadplane
 adapters — and it makes the extension the only tool that shows a LangGraph stream and an
 AG-UI stream side by side in one format. Useful well beyond Threadplane.
+*Built: LangGraph captures normalize into the same run model — see
+[the design](../superpowers/specs/2026-09-29-langgraph-normalization-design.md).*
 
 **14.2 `MockAgentTransport` fixture export.** Captured run → a test file that replays it
 through Threadplane's transport seam. Threadplane's testing story already says "swap the
 transport, never mock `injectAgent()`" — this generates the swap. Prod bug to failing
 test in one click. Highest-value item on the list.
+*Built (2026-09-30): Export → **Download Threadplane test (.spec.ts)**; generated specs pass
+inside Threadplane via `pnpm verify:threadplane` — see
+[the design](../superpowers/specs/2026-09-30-threadplane-fixture-export-design.md).*
 
 **14.3 Signal graph.** *Requires a page-side hook.* Angular signals are not externally
 introspectable; there is no equivalent of the React DevTools global. This needs a small

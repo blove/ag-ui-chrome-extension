@@ -19,7 +19,8 @@
     "listing:assets": "tsx scripts/listing-assets.mts",
     "verify:listing": "tsx scripts/verify-listing-copy.ts",
     "verify:build": "tsx scripts/verify-build.ts",
-    "screenshot:panel": "tsx scripts/screenshot-panel.mts"
+    "screenshot:panel": "tsx scripts/screenshot-panel.mts",
+    "verify:threadplane": "tsx scripts/verify-threadplane.ts"
   },
   "dependencies": {
     "preact": "^10.29.8"
