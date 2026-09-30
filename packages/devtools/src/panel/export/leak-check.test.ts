@@ -248,16 +248,21 @@ function lcMessageOwners(message: unknown, extra: readonly RedactionGroup[], out
   const textGroup: RedactionGroup = kind === 'tool' || kind === 'ToolMessage' || kind === 'ToolMessageChunk' ? 'toolResults' : 'text';
   const plus = (group: RedactionGroup): RedactionGroup[] => [group, ...extra];
   if (typeof message.content === 'string') owns(message.content, plus(textGroup), out);
-  if (Array.isArray(message.content)) {
+  else if (Array.isArray(message.content)) {
     for (const block of message.content) {
-      if (!isObject(block)) continue;
-      if (block.type === 'text') owns(block.text, plus(textGroup), out);
+      // A bare string element is text, as LangChain reads it; any other non-object is unclassified.
+      if (typeof block === 'string') owns(block, plus(textGroup), out);
+      else if (!isObject(block)) owns(block, ANY, out);
+      else if (block.type === 'text') owns(block.text, plus(textGroup), out);
       else if (block.type === 'reasoning') {
         if (Array.isArray(block.summary)) for (const part of block.summary) if (isObject(part)) owns(part.text, plus('reasoning'), out);
         owns(block.reasoning, plus('reasoning'), out);
       } else if (block.type === 'thinking') owns(block.thinking, plus('reasoning'), out);
       else owns(block, ANY, out);
     }
+  } else {
+    // Content that is neither a string nor a list of blocks is not known to belong to one group.
+    owns(message.content, ANY, out);
   }
   for (const key of ['tool_call_chunks', 'tool_calls', 'invalid_tool_calls']) {
     const calls = message[key];
@@ -282,12 +287,17 @@ function stateOwners(state: unknown, out: Owned[]): void {
   }
 }
 
-/** The meta keys LangGraph itself writes; anything else came from the run's config. */
+/**
+ * The meta keys LangGraph itself writes; anything else came from the run's config. The
+ * authenticated user (`langgraph_auth_*`) is LangGraph-prefixed but is the platform copying the
+ * run's `configurable` in: who the user is, not how the graph ran.
+ */
 function lgMetaOwners(meta: unknown, out: Owned[]): void {
   if (!isObject(meta)) return;
   const own = new Set(['run_id', 'thread_id', 'graph_id', 'assistant_id', 'checkpoint_ns', 'created_by']);
   for (const [key, value] of Object.entries(meta)) {
-    if (!key.startsWith('langgraph_') && !key.startsWith('ls_') && !own.has(key)) owns(value, ANY, out);
+    const langGraphs = key.startsWith('langgraph_') && !key.startsWith('langgraph_auth');
+    if (!langGraphs && !key.startsWith('ls_') && !own.has(key)) owns(value, ANY, out);
   }
 }
 
@@ -296,14 +306,42 @@ function lgOwners(line: JsonlLine): Owned[] {
   const out: Owned[] = [];
   if (line.kind === 'request') {
     const body = line.input;
-    if (!isObject(body)) return out;
+    // A body that is not an object at all is content nobody classified.
+    if (!isObject(body)) {
+      owns(body, ANY, out);
+      return out;
+    }
     if (isObject(body.input)) {
       stateOwners(Object.fromEntries(Object.entries(body.input).filter(([key]) => key !== 'messages')), out);
-      if (Array.isArray(body.input.messages)) for (const message of body.input.messages) lcMessageOwners(message, [], out);
+      // The prompt, in any form `add_messages` accepts: a list, one message, or a bare string.
+      const messages = body.input.messages;
+      if (Array.isArray(messages)) for (const message of messages) lcMessageOwners(message, [], out);
+      else if (messages !== undefined) lcMessageOwners(messages, [], out);
+    } else {
+      owns(body.input, ANY, out);
     }
     if (isObject(body.command)) {
-      owns(body.command.resume, ['text'], out);
-      owns(body.command.update, ['state'], out);
+      for (const [key, value] of Object.entries(body.command)) {
+        if (key === 'resume') owns(value, ['text'], out);
+        else if (key === 'update') owns(value, ['state'], out);
+        else if (key === 'goto') {
+          // `goto` names nodes, or `Send`s a node its input: that input is state.
+          for (const each of Array.isArray(value) ? value : [value]) {
+            if (typeof each === 'string') continue;
+            if (!isObject(each)) {
+              owns(each, ANY, out);
+              continue;
+            }
+            for (const [sendKey, sendValue] of Object.entries(each)) {
+              if (sendKey === 'node' && typeof sendValue === 'string') continue;
+              if (sendKey === 'input' || sendKey === 'arg') stateOwners(sendValue, out);
+              else owns(sendValue, ANY, out);
+            }
+          }
+        } else owns(value, ANY, out);
+      }
+    } else {
+      owns(body.command, ANY, out);
     }
     for (const key of ['config', 'context', 'metadata', 'checkpoint', 'webhook']) owns(body[key], ANY, out);
     return out;
@@ -313,6 +351,12 @@ function lgOwners(line: JsonlLine): Owned[] {
   const mode = (line.sseEvent ?? '').split('|')[0];
   switch (mode) {
     case 'metadata':
+      // The run's identity; a key beyond it is one no reader here has classified.
+      if (isObject(payload)) {
+        for (const [key, value] of Object.entries(payload)) {
+          if (!['run_id', 'attempt', 'thread_id', 'assistant_id'].includes(key)) owns(value, ANY, out);
+        }
+      }
       break;
     case 'messages':
       if (Array.isArray(payload)) {
@@ -336,7 +380,10 @@ function lgOwners(line: JsonlLine): Owned[] {
       }
       break;
     case 'error':
-      if (isObject(payload)) owns(payload.message, ANY, out);
+      if (isObject(payload)) {
+        owns(payload.message, ANY, out);
+        if (typeof payload.error !== 'string') owns(payload.error, ANY, out);
+      }
       break;
     default:
       // `custom`, `debug`, `tasks`, anything unclassified: every group removes it.
@@ -950,13 +997,18 @@ describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns,
     reasoning: ['weighing the Contoso numbers privately'],
     toolArgs: ['{"account":"ACME-7731"}'],
     toolResults: ['revenue was 4.2M for ACME', 'artifact row with ACME ledger'],
-    state: ['state note about the Zurich account', 'approve the transfer to Zurich?'],
+    state: ['state note about the Zurich account', 'approve the transfer to Zurich?', 'the Send carries the Zurich ledger'],
   };
-  const EVERY: string[] = ['meta note the client sent', 'custom progress for ACME'];
+  const EVERY: string[] = [
+    'meta note the client sent',
+    'custom progress for ACME',
+    'a metadata key a newer server sent',
+    'user-42@example.com',
+  ];
 
   const CAPTURE = langGraphJsonl(
     [
-      { event: 'metadata', data: { run_id: 'r-lg', attempt: 1 } },
+      { event: 'metadata', data: { run_id: 'r-lg', attempt: 1, extra: 'a metadata key a newer server sent' } },
       {
         event: 'messages',
         data: [
@@ -966,7 +1018,12 @@ describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns,
             content: [{ type: 'reasoning', summary: [{ type: 'summary_text', text: 'weighing the Contoso numbers privately' }] }],
             tool_call_chunks: [],
           },
-          { langgraph_node: 'agent', langgraph_step: 1, user_note: 'meta note the client sent' },
+          {
+            langgraph_node: 'agent',
+            langgraph_step: 1,
+            user_note: 'meta note the client sent',
+            langgraph_auth_user_id: 'user-42@example.com',
+          },
         ],
       },
       aiChunk('m1', [{ type: 'text', text: 'the answer names Contoso' }], { chunk_position: 'last' }),
@@ -1006,6 +1063,7 @@ describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns,
       body: {
         assistant_id: 'agent',
         input: { messages: [{ type: 'human', id: 'h1', content: 'what is the Zanzibar merger price' }] },
+        command: { goto: [{ node: 'ledger', input: { ledger: 'the Send carries the Zurich ledger' } }] },
         stream_mode: ['values', 'messages-tuple', 'updates', 'custom'],
         stream_subgraphs: true,
       },

@@ -1573,6 +1573,100 @@ describe('redactLine — LangGraph Platform, field by field (L16)', () => {
     expect(JSON.stringify(message)).not.toContain('PROTO-SECRET');
   });
 
+  /*
+   * Review fixes (2026-09-30): each payload below shipped a user's or a model's content in a
+   * redacted export before.
+   */
+  const req = (input: unknown): JsonlRequest => ({
+    kind: 'request',
+    connId: 'c1',
+    tMs: 0,
+    method: 'POST',
+    url: 'http://localhost:2024/threads/t1/runs/stream',
+    input,
+  });
+  it('redacts a Send in command.goto as state, keeping node names', () => {
+    // `Command(goto=Send(node, input))`: the input is the state sent to that node, every word of it.
+    const body = {
+      command: {
+        goto: [
+          'summarise',
+          { node: 'research', input: { messages: [{ type: 'human', content: 'GOTO-PROMPT' }], topic: 'GOTO-STATE' } },
+        ],
+      },
+    };
+    for (const group of ALL_REDACTION_GROUPS) {
+      const out = JSON.stringify(run(req(body), [group]));
+      expect(out).toContain('"summarise"');
+      expect(out).toContain('"research"');
+      if (group === 'text' || group === 'state') expect(out).not.toContain('GOTO-PROMPT');
+      if (group === 'state') expect(out).not.toContain('GOTO-STATE');
+    }
+    const all = JSON.stringify(run(req(body), [...ALL_REDACTION_GROUPS]));
+    expect(all).not.toMatch(/GOTO-/);
+  });
+
+  it('redacts input.messages given as a bare string or a single message under text', () => {
+    // `add_messages` accepts a string as the prompt; not a list, but a message all the same.
+    expect(JSON.stringify(run(req({ input: { messages: 'STRING-PROMPT' } }), ['text']))).not.toContain('STRING-PROMPT');
+    expect(
+      JSON.stringify(run(req({ input: { messages: { role: 'user', content: 'ONE-PROMPT' } } }), ['text'])),
+    ).not.toContain('ONE-PROMPT');
+  });
+
+  it('finds OpenAI-format and non-object messages in state under text', () => {
+    // A node may return `{"messages": [{"role": "assistant", "content": ...}]}` — or tuples, or a
+    // string — and the `updates` frame carries its return value as-is.
+    const update = {
+      agent: {
+        messages: [{ role: 'assistant', content: 'ROLE-TEXT' }, ['assistant', 'TUPLE-TEXT'], 'BARE-TEXT'],
+        chat: [{ role: 'user', content: 'OTHER-KEY-TEXT' }],
+        note: 'STATE-NOTE',
+      },
+    };
+    const out = JSON.stringify(run(lg('updates', update), ['text']));
+    for (const secret of ['ROLE-TEXT', 'TUPLE-TEXT', 'BARE-TEXT', 'OTHER-KEY-TEXT']) expect(out).not.toContain(secret);
+    expect(out).toContain('STATE-NOTE');
+    expect(out).toContain('"role":"assistant"');
+  });
+
+  it('owns a FunctionMessage\'s content by toolResults, like a tool message', () => {
+    // LangChain's legacy FunctionMessage (`type: 'function'`) carries a function's result.
+    const fn = { type: 'function', name: 'lookup', content: 'FUNC-RESULT' };
+    expect(JSON.stringify(run(lg('messages', [fn, {}]), ['toolResults']))).not.toContain('FUNC-RESULT');
+    expect(JSON.stringify(run(lg('messages', [fn, {}]), ['text']))).toContain('FUNC-RESULT');
+    const role = { role: 'tool', tool_call_id: 'c', content: 'ROLE-RESULT' };
+    expect(JSON.stringify(run(lg('values', { messages: [role] }), ['toolResults']))).not.toContain('ROLE-RESULT');
+  });
+
+  it('keeps only the run identity of a metadata event', () => {
+    const out = run(lg('metadata', { run_id: 'r-1', attempt: 1, input: 'META-EXTRA' }), ['state']);
+    expect(out).toEqual({ run_id: 'r-1', attempt: 1, input: R('META-EXTRA') });
+  });
+
+  it('redacts the authenticated user LangGraph copies into messages metadata', () => {
+    // LangGraph Platform sets `langgraph_auth_user_id` in `configurable`; LangGraph copies
+    // configurable primitives into the metadata of every `messages` tuple.
+    const out = run(
+      lg('messages', [
+        { type: 'ai', content: 'x' },
+        { langgraph_node: 'agent', langgraph_auth_user_id: 'AUTH-USER', langgraph_auth_user: { email: 'AUTH-EMAIL' } },
+      ]),
+      ['reasoning'],
+    ) as unknown[];
+    expect(out[1]).toEqual({
+      langgraph_node: 'agent',
+      langgraph_auth_user_id: R('AUTH-USER'),
+      langgraph_auth_user: { email: R('AUTH-EMAIL') },
+    });
+  });
+
+  it('keeps an error event\'s `error` only when it is a class name', () => {
+    const out = run(lg('error', { error: { detail: 'ERR-OBJ' }, message: 'm' }), ['toolArgs']);
+    expect(JSON.stringify(out)).not.toContain('ERR-OBJ');
+    expect(run(lg('error', { error: 'ValueError', message: 'm' }), ['toolArgs'])).toEqual({ error: 'ValueError', message: R('m') });
+  });
+
   it('leaves AG-UI alone: a named matching frame and a RunAgentInput body are redacted as before', () => {
     const named = ev({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'secret' });
     named.sseEvent = 'TEXT_MESSAGE_CONTENT';

@@ -511,7 +511,26 @@ function redactToolCalls(calls: unknown, set: ReadonlySet<RedactionGroup>): unkn
 }
 
 /** Message keys that are structure or developer-authored, kept under every group. */
-const LC_MESSAGE_KEPT: ReadonlySet<string> = new Set(['type', 'id', 'name', 'tool_call_id', 'status', 'chunk_position']);
+const LC_MESSAGE_KEPT: ReadonlySet<string> = new Set(['type', 'role', 'id', 'name', 'tool_call_id', 'status', 'chunk_position']);
+
+/**
+ * `role` values of an OpenAI-format message dict (`{role, content}`), which LangGraph accepts as
+ * input and a node may return as-is in its update.
+ */
+const MESSAGE_ROLES: ReadonlySet<string> = new Set(['user', 'assistant', 'system', 'developer', 'tool', 'function', 'human', 'ai']);
+
+/**
+ * Whether a message's `content` is a tool's output: a tool message, or the legacy
+ * `FunctionMessage` (`type: 'function'`), whose content is the function's result just the same.
+ */
+function isToolResultMessage(message: Record<string, unknown>): boolean {
+  return (
+    roleOf(message.type) === 'tool' ||
+    /^function(Message(Chunk)?)?$/i.test(typeof message.type === 'string' ? message.type : '') ||
+    message.role === 'tool' ||
+    message.role === 'function'
+  );
+}
 
 /**
  * One LangChain message, as LangGraph Platform serializes it (a `messages` chunk, a cumulative
@@ -524,7 +543,7 @@ const LC_MESSAGE_KEPT: ReadonlySet<string> = new Set(['type', 'id', 'name', 'too
  */
 function redactLcMessage(message: unknown, set: ReadonlySet<RedactionGroup>): unknown {
   if (!isPlainObject(message)) return redactDeep(message);
-  const tool = roleOf(message.type) === 'tool';
+  const tool = isToolResultMessage(message);
   const textGroup: RedactionGroup = tool ? 'toolResults' : 'text';
   return mapEntries(message, (key, child) => {
     if (LC_MESSAGE_KEPT.has(key)) return child;
@@ -552,12 +571,14 @@ function redactLcMessage(message: unknown, set: ReadonlySet<RedactionGroup>): un
 }
 
 /**
- * Whether `value` is a LangChain message: a `type` naming a message role in either
- * serialization, and a `content`. Found wherever it sits in state, so `text` reaches message
- * text in any state key, not only `messages`.
+ * Whether `value` is a message: a `content` beside a `type` naming a LangChain message role in
+ * either serialization, or beside an OpenAI-format `role`. Found wherever it sits in state, so
+ * `text` reaches message text in any state key, not only `messages`.
  */
 function isLcMessage(value: Record<string, unknown>): boolean {
-  if (!('content' in value) || typeof value.type !== 'string') return false;
+  if (!('content' in value)) return false;
+  if (typeof value.role === 'string' && MESSAGE_ROLES.has(value.role)) return true;
+  if (typeof value.type !== 'string') return false;
   return roleOf(value.type) !== 'other' || /^(chat|generic|function|remove)$|Message(Chunk)?$/.test(value.type);
 }
 
@@ -572,9 +593,22 @@ function redactState(value: unknown, set: ReadonlySet<RedactionGroup>): unknown 
   if (Array.isArray(value)) return value.map((item) => redactState(item, set));
   if (isPlainObject(value)) {
     if (isLcMessage(value)) return redactLcMessage(value, set.has('state') ? ALL_GROUPS : set);
-    return mapEntries(value, (_, child) => redactState(child, set));
+    return mapEntries(value, (key, child) => (key === 'messages' ? redactMessagesKey(child, set) : redactState(child, set)));
   }
   return set.has('state') ? redactLeaf(value) : value;
+}
+
+/**
+ * A state's `messages` key: whatever sits there is messages, in any form `add_messages` accepts —
+ * a message object, a `[role, text]` tuple, a bare string. An element the shape test cannot read
+ * is still a message, so it is redacted in full under any group rather than kept as state.
+ */
+function redactMessagesKey(value: unknown, set: ReadonlySet<RedactionGroup>): unknown {
+  const each = (message: unknown): unknown =>
+    isPlainObject(message) ? redactLcMessage(message, set.has('state') ? ALL_GROUPS : set) : redactDeep(message);
+  if (Array.isArray(value)) return value.map(each);
+  if (value === null || value === undefined) return value;
+  return each(value);
 }
 
 /** `messages` meta keys that are LangGraph's own bookkeeping, not config the client sent. */
@@ -594,14 +628,22 @@ const LG_META_KEPT: ReadonlySet<string> = new Set([
 
 /**
  * A `messages` tuple's metadata. It merges the run's config metadata, which can carry whatever
- * the client sent, so only LangGraph's own keys survive.
+ * the client sent, so only LangGraph's own keys survive. Not `langgraph_auth_*`: LangGraph
+ * Platform puts the authenticated user in the run's `configurable`
+ * (`langgraph_auth_user_id`, `langgraph_auth_user`), and LangGraph copies configurable values into
+ * this metadata — that is who the user is, not how the graph ran.
  */
 function redactLgMeta(meta: unknown): unknown {
   if (!isPlainObject(meta)) return redactDeep(meta);
   return mapEntries(meta, (key, child) =>
-    key.startsWith('langgraph_') || LG_META_KEPT.has(key) ? child : redactDeep(child),
+    (key.startsWith('langgraph_') && !key.startsWith('langgraph_auth')) || LG_META_KEPT.has(key)
+      ? child
+      : redactDeep(child),
   );
 }
+
+/** A `metadata` event's keys: the run's identity. */
+const LG_RUN_METADATA_KEPT: ReadonlySet<string> = new Set(['run_id', 'attempt', 'thread_id', 'assistant_id']);
 
 /** A `checkpoints` payload: its `values` are state, `next` names nodes; config, metadata and tasks in full. */
 function redactCheckpoint(payload: Record<string, unknown>, set: ReadonlySet<RedactionGroup>): unknown {
@@ -619,9 +661,10 @@ function redactCheckpoint(payload: Record<string, unknown>, set: ReadonlySet<Red
 function redactLangGraphEvent(mode: string, payload: unknown, set: ReadonlySet<RedactionGroup>): unknown {
   switch (mode) {
     case 'metadata':
-      // `{run_id, attempt}`: the run's identity, nothing anyone typed.
+      // `{run_id, attempt}`: the run's identity, nothing anyone typed. Only those keys: a key a
+      // later server adds is one this module has never classified (fail closed).
       if (!isPlainObject(payload)) break;
-      return payload;
+      return mapEntries(payload, (key, child) => (LG_RUN_METADATA_KEPT.has(key) ? child : redactDeep(child)));
     case 'messages':
       if (!Array.isArray(payload)) break;
       return payload.map((item, i) => (i === 0 ? redactLcMessage(item, set) : i === 1 ? redactLgMeta(item) : redactDeep(item)));
@@ -644,9 +687,10 @@ function redactLangGraphEvent(mode: string, payload: unknown, set: ReadonlySet<R
       if (!isPlainObject(payload)) break;
       return redactCheckpoint(payload, set);
     case 'error':
-      // The exception class is the developer's; its message can echo the input.
+      // The exception class name is the developer's; its message can echo the input. An `error`
+      // that is not a class name (an object, say) is not known to be structure.
       if (!isPlainObject(payload)) break;
-      return mapEntries(payload, (key, child) => (key === 'error' ? child : redactDeep(child)));
+      return mapEntries(payload, (key, child) => (key === 'error' && typeof child === 'string' ? child : redactDeep(child)));
     default:
       // `custom` (anything the graph wrote), `debug`, `tasks`, `events`, `tools`, `feedback`,
       // and any mode this module has never seen: no one group owns them.
@@ -678,13 +722,28 @@ const LANGGRAPH_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   'checkpoint_id',
 ]);
 
+/**
+ * `command.goto`: a node name, a `Send` (`{node, input}` — the node and the state it is sent), or
+ * a list of either. Node names are kept; a `Send`'s input is graph state like `command.update`.
+ */
+function redactGoto(goto: unknown, set: ReadonlySet<RedactionGroup>): unknown {
+  if (typeof goto === 'string') return goto;
+  if (Array.isArray(goto)) return goto.map((each) => redactGoto(each, set));
+  if (!isPlainObject(goto)) return redactDeep(goto);
+  return mapEntries(goto, (key, child) => {
+    if (key === 'node' && typeof child === 'string') return child;
+    if (key === 'input' || key === 'arg') return redactState(child, set);
+    return redactDeep(child);
+  });
+}
+
 /** A run's `command`: `resume` is the user's answer to an interrupt, `update` is state, `goto` names nodes. */
 function redactCommand(command: unknown, set: ReadonlySet<RedactionGroup>): unknown {
   if (!isPlainObject(command)) return redactDeep(command);
   return mapEntries(command, (key, child) => {
     if (key === 'resume') return owned(child, 'text', set);
     if (key === 'update') return redactState(child, set);
-    if (key === 'goto') return child;
+    if (key === 'goto') return redactGoto(child, set);
     return redactDeep(child);
   });
 }
@@ -706,11 +765,12 @@ function redactLangGraphBody(input: unknown, set: ReadonlySet<RedactionGroup>): 
     if (LANGGRAPH_SETTINGS_KEYS.has(key)) return value;
     if (key === 'input') {
       if (!isPlainObject(value)) return redactDeep(value);
-      return mapEntries(value, (inputKey, child) =>
-        inputKey === 'messages' && Array.isArray(child)
-          ? child.map((message) => redactLcMessage(message, set))
-          : redactState(child, set),
-      );
+      // `input.messages` is the prompt in any form `add_messages` accepts: a list, one message, or
+      // a bare string — a non-list is still a message, never state.
+      return mapEntries(value, (inputKey, child) => {
+        if (inputKey !== 'messages') return redactState(child, set);
+        return Array.isArray(child) ? child.map((message) => redactLcMessage(message, set)) : redactLcMessage(child, set);
+      });
     }
     if (key === 'command') return redactCommand(value, set);
     return redactDeep(value);
