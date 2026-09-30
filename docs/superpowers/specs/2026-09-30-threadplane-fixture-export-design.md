@@ -86,6 +86,12 @@ Where the build differs from the decisions above:
   named records; and all of them when the port of the bridge throws on a malformed payload,
   since it does not follow Threadplane's error path for thrown exceptions. `interrupted` is
   always asserted (`toBeDefined()` / `toBeFalsy()`).
+- **Captured text never becomes code.** Data goes in through `JSON.stringify`; captured text in
+  a comment (connection id, method and URL, the header's origin, capture time and redaction
+  groups — none validated on import) goes through `core/fixture/comment-safe.ts`, which removes
+  line breaks and `*/`. The E7 fixture's header comment uses it too.
+- **The `@devtools/*` alias is scripts-only.** tsconfig gains it for `verify-threadplane.ts`;
+  Vite does not read `paths`, so `eslint.config.js` bans it under `src/`.
 - **T7 covers more than listed.** `pnpm verify:threadplane [dir]` (default
   `~/repos/angular-agent-framework`, or `THREADPLANE_DIR`) generates specs for `lg-reasoning`,
   the harness `lg-tools-subgraph`, `lg-interrupt` and `lg-join` (the POST and its join GET, two

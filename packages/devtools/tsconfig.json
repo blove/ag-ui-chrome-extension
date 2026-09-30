@@ -3,7 +3,8 @@
   "compilerOptions": {
     "types": ["chrome", "node"],
     // Only for scripts/verify-threadplane.ts (T7), which reads the harness's LangGraph scenarios:
-    // that file imports `@devtools/…` the way the harness resolves it. Nothing under src/ uses it.
+    // that file imports `@devtools/…` the way the harness resolves it. Vite does not read `paths`, so
+    // eslint.config.js bans the alias under src/ (NO_DEVTOOLS_ALIAS).
     "paths": {
       "@devtools/*": ["./src/*"]
     }

@@ -2,6 +2,18 @@ import js from '@eslint/js';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
+/*
+ * tsconfig.json's `@devtools/*` path alias exists only so scripts/verify-threadplane.ts can load the
+ * harness's scenario files, which import through it. Vite, Vitest and CRXJS do not read tsconfig
+ * `paths`, so an import through it under src/ would typecheck and then fail at test or build time.
+ * Kept in one constant because a flat-config `no-restricted-imports` REPLACES an earlier one for
+ * the same file — core/'s own entry below has to repeat it.
+ */
+const NO_DEVTOOLS_ALIAS = {
+  group: ['@devtools', '@devtools/*'],
+  message: 'The @devtools/* alias is for scripts/ only; Vite does not resolve it. Use a relative import under src/.',
+};
+
 export default tseslint.config(
   {
     ignores: [
@@ -16,6 +28,10 @@ export default tseslint.config(
     languageOptions: {
       globals: { ...globals.browser, ...globals.webextensions },
     },
+  },
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    rules: { 'no-restricted-imports': ['error', { patterns: [NO_DEVTOOLS_ALIAS] }] },
   },
   {
     // Design §3 / D10: core/ is Chrome-free so it runs under Node in Vitest and can be
@@ -96,6 +112,7 @@ export default tseslint.config(
               group: ['**/sw/**', '**/relay/**', '**/inject/**', '**/panel/**'],
               message: 'core/ must not import from Chrome-facing surfaces. Pass plain data into core/ instead.',
             },
+            NO_DEVTOOLS_ALIAS,
           ],
         },
       ],

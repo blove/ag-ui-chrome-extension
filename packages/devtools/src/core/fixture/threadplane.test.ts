@@ -36,6 +36,16 @@ function caseOf(text: string, connId: string): string {
   return text.slice(start, end);
 }
 
+/** Every identifier the TypeScript scanner sees outside comments, strings and templates' text. */
+function codeIdentifiers(source: string): string[] {
+  const scanner = ts.createScanner(ts.ScriptTarget.ES2022, true, ts.LanguageVariant.Standard, source);
+  const out: string[] = [];
+  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
+    if (kind === ts.SyntaxKind.Identifier) out.push(scanner.getTokenText());
+  }
+  return out;
+}
+
 describe('toThreadplaneSpec (T2, T3, T5)', () => {
   test('the whole file for a small capture, as pinned in __golden__/small.spec.ts.txt', () => {
     expect(spec(langGraphJsonl(smallFrames))).toBe(golden);
@@ -129,6 +139,32 @@ describe('toThreadplaneSpec (T2, T3, T5)', () => {
     const text = langGraphJsonl(smallFrames).replace('"url":"http://localhost:2024"', '"url":"http://x/*/y"');
     const out = spec(text);
     expect(out).toContain(' * Origin: http://x/* /y');
+  });
+
+  test('no captured string can become code: hostile connId, URL, method, run id and redaction groups stay inert', () => {
+    const hostile = 'x\n globalThis.pwned = 1; // */ globalThis.pwned = 2; /* ` ${globalThis.pwned} \u2028 globalThis.pwned = 3; "\'';
+    const body = langGraphJsonl([{ event: 'metadata', data: { run_id: hostile } }, aiChunk('a1', hostile)], {
+      connId: hostile,
+      method: hostile,
+      url: `http://localhost:2024/${hostile}`,
+      body: { assistant_id: hostile, input: { messages: [{ type: 'human', content: hostile }] } },
+    }).replace(
+      '"redacted":[]',
+      `"redacted":${JSON.stringify(['text', hostile])}`,
+    ).replace('"capturedAt":"2026-09-30T12:00:00.000Z"', `"capturedAt":${JSON.stringify(hostile)}`);
+    const out = toThreadplaneSpec(linesOf(body), { filename: FILENAME }) ?? '';
+
+    expect(codeIdentifiers(out)).not.toContain('pwned');
+    const { diagnostics } = ts.transpileModule(out, {
+      reportDiagnostics: true,
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+    });
+    expect((diagnostics ?? []).filter((d) => d.category === ts.DiagnosticCategory.Error)).toEqual([]);
+  });
+
+  test('a header field of the wrong type in an imported file does not throw', () => {
+    const body = langGraphJsonl(smallFrames).replace('"url":"http://localhost:2024"', '"url":42');
+    expect(spec(body)).toContain(' * Origin: 42');
   });
 
   test('the output is TypeScript that parses without errors', () => {

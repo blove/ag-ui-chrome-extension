@@ -1,5 +1,6 @@
 import type { JsonlHeader, JsonlLine, JsonlRequest } from '../jsonl/codec';
 import { dialectsOfLines } from '../normalizer/dialect';
+import { commentSafe } from './comment-safe';
 import { redactionNote } from './redaction-note';
 import { expectationsFor, type ThreadplaneExpectations, type ThreadplaneSubmission } from './threadplane-expect';
 import { frameOf, TO_STREAM_EVENT_SOURCE, type ThreadplaneFrame } from './threadplane-normalizer';
@@ -127,14 +128,6 @@ function lastAssistantText(agent: ReturnType<typeof injectAgent>): string | unde
 `;
 
 /**
- * Captured text placed inside a comment. A URL is whatever the page used, so a `*\/` or a line
- * break in one must not end the comment and turn the rest of it into code.
- */
-function commentSafe(text: string): string {
-  return text.replace(/\*\//g, '* /').replace(/[\r\n\u2028\u2029]+/g, ' ');
-}
-
-/**
  * The frames as an array literal whose every element is cast to `CapturedFrame`. Without the
  * casts TypeScript infers the literal's type as the union of every frame's shape before checking
  * it against the annotation, and a real capture's thousand-odd frames exceed what it will
@@ -183,7 +176,7 @@ export function toThreadplaneSpec(lines: readonly JsonlLine[], options: Threadpl
     const emitsRequest = submission.readsRequest || assistantId !== "'agent'";
     const origin = connection.request === undefined ? 'no request line was captured' : commentSafe(`${connection.request.method} ${connection.request.url}`);
 
-    constants.push(`// Connection ${connection.connId}: ${origin}.`);
+    constants.push(`// Connection ${commentSafe(connection.connId)}: ${origin}.`);
     if (emitsRequest) constants.push(`const ${requestName} = ${JSON.stringify(body, null, 2)};`);
     else if (connection.request !== undefined) constants.push('// The captured request carries no input or resume, so the replay submits {}.');
     constants.push(`const ${framesName}: CapturedFrame[] = ${framesLiteral(connection.frames)};`);
@@ -218,7 +211,7 @@ export function toThreadplaneSpec(lines: readonly JsonlLine[], options: Threadpl
  * Origin: ${commentSafe(header?.url ?? 'unknown')}
  * Captured: ${commentSafe(header?.capturedAt ?? 'unknown')}
  *
- * ${redactionNote(header)}
+ * ${commentSafe(redactionNote(header))}
  *
  * Each \`it\` replays one captured connection, frame for frame, through @threadplane/langgraph's
  * MockAgentTransport. These assertions are what the capture shows — change them to the behaviour
