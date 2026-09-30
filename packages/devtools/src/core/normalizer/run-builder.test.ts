@@ -1244,6 +1244,45 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     expect(ancestor?.totalStreamBytes).toBe(0);
   });
 
+  const derivedTypes = (derived: Map<number, AguiEvent[]> | undefined, seq: number): string[] | undefined =>
+    derived?.get(seq)?.map((event) => event.type);
+
+  it('records what each frame was read as, keyed by its seq, without the close-time events (L14)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hi')));
+    builder.addRecord(lgRecord(3, 'values', { messages: [] }));
+    builder.closeConnection('c1', 40);
+
+    const [run] = builder.runs();
+    expect(derivedTypes(run?.derived, 1)).toEqual(['RUN_STARTED']);
+    expect(derivedTypes(run?.derived, 2)).toEqual(['TEXT_MESSAGE_START', 'TEXT_MESSAGE_CONTENT']);
+    expect(derivedTypes(run?.derived, 3)).toEqual(['TEXT_MESSAGE_END', 'STATE_SNAPSHOT']);
+    // RUN_FINISHED comes from the connection closing: no frame caused it.
+    const all = [...(run?.derived?.values() ?? [])].flat().map((event) => event.type);
+    expect(all).not.toContain('RUN_FINISHED');
+  });
+
+  it('gives a frame that was read as nothing no derived entry', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages/metadata', { m1: { metadata: {} } }));
+    builder.closeConnection('c1', 30);
+    expect(builder.runs()[0]?.derived?.has(2)).toBe(false);
+  });
+
+  it('records on a child what a top-level error frame closed there, although the frame is not the child’s (S3, L14)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages|sub:1', chunk('s1', 'x')));
+    builder.addRecord(lgRecord(3, 'error', { error: 'E', message: 'boom' }));
+    builder.closeConnection('c1', 40);
+    const [, child] = builder.runs();
+    expect(child?.recordSeqs).not.toContain(3);
+    expect(derivedTypes(child?.derived, 3)).toContain('TEXT_MESSAGE_END');
+    expect(child?.derived?.get(3)?.find((event) => event.type === 'TEXT_MESSAGE_END')).toMatchObject({ messageId: 's1' });
+  });
+
   it('leaves an AG-UI connection exactly as it was: no dialect, AG-UI types counted', () => {
     const builder = createRunBuilder();
     const record = (seq: number, event: AguiEvent): CaptureRecord => ({
@@ -1254,6 +1293,7 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     builder.closeConnection('a1', 3);
     const [run] = builder.runs();
     expect(run?.dialect).toBeUndefined();
+    expect(run?.derived).toBeUndefined();
     expect(run?.metrics.eventCountByType).toEqual({ RUN_STARTED: 1, RUN_FINISHED: 1 });
   });
 });
