@@ -33,7 +33,7 @@ function drive(frames: Array<[string, unknown]>, request: LangGraphRequest = REQ
     const out = expander.push({ seq: i + 1, sseEvent, payload });
     events.push(...unwrap(out.events));
     keys.push(...out.events.map((expanded) => expanded.runKey));
-    codes.push(...out.issues.map((issue): [string, number] => [issue.code, issue.seq]));
+    codes.push(...out.issues.map(({ issue }): [string, number] => [issue.code, issue.seq]));
   });
   return { expander, events, keys, codes };
 }
@@ -145,7 +145,8 @@ describe('createLangGraphExpander', () => {
     ]);
     const done = expander.finish(3);
     expect(types(unwrap(done.events))).toEqual(['TEXT_MESSAGE_END']);
-    expect(done.issues.map((issue) => [issue.code, issue.seq])).toEqual([['lg-no-final-values', 3]]);
+    // Anchored to the connection's last top-level frame (S6).
+    expect(done.issues.map(({ runKey, issue }) => [runKey, issue.code, issue.seq])).toEqual([['', 'lg-no-final-values', 3]]);
   });
 
   it('finishes a run that did not ask for values, since there is nothing to wait for', () => {
@@ -233,7 +234,7 @@ describe('createLangGraphExpander', () => {
     ]);
     // The args are checked once the call has ended for good, not at the mid-call switch.
     expect(codes).toEqual([]);
-    expect(done.issues.filter((issue) => issue.code === 'lg-tool-args-invalid')).toEqual([]);
+    expect(done.issues.filter(({ issue }) => issue.code === 'lg-tool-args-invalid')).toEqual([]);
   });
 
   it('still reports invalid args of a call whose message was switched away from and never resumed', () => {
@@ -243,8 +244,9 @@ describe('createLangGraphExpander', () => {
       ['messages', ai('m2', 'Hello')],
     ]);
     expect(codes).toEqual([]);
-    const argIssues = expander.finish(4).issues.filter((issue) => issue.code === 'lg-tool-args-invalid');
-    expect(argIssues.map((issue) => issue.seq)).toEqual([4]);
+    const argIssues = expander.finish(4).issues.filter(({ issue }) => issue.code === 'lg-tool-args-invalid');
+    // Anchored to its run's last frame on this connection, not to the close.
+    expect(argIssues.map(({ runKey, issue }) => [runKey, issue.seq])).toEqual([['', 3]]);
   });
 
   it('gives a tool result the synthetic id of the call its wire id arrived late on (L8)', () => {
@@ -336,7 +338,7 @@ describe('createLangGraphExpander', () => {
     const expander = createLangGraphExpander('c1', REQUEST);
     expander.push({ seq: 1, sseEvent: 'metadata', payload: { run_id: 'r-1' } });
     const out = expander.push({ seq: 2, payload: { a: 1 } });
-    expect(out.issues.map((raised) => [raised.code, raised.message])).toEqual([
+    expect(out.issues.map(({ issue: raised }) => [raised.code, raised.message])).toEqual([
       ['lg-unknown-event', '"message" is not an event LangGraph Platform emits'],
     ]);
   });
@@ -432,6 +434,51 @@ describe('createLangGraphExpander — subgraphs (L11)', () => {
     ]);
     const done = expander.finish(3);
     expect(done.events.map((expanded) => expanded.event.type)).toEqual(['TEXT_MESSAGE_END']);
-    expect(done.issues.map((raised) => raised.code)).toEqual(['lg-no-final-values']);
+    expect(done.issues.map(({ issue }) => issue.code)).toEqual(['lg-no-final-values']);
+  });
+
+  it('an error in a child cuts off its subgraphs; later frames under it go to the errored child (S5)', () => {
+    const { events, keys, expander } = drive([
+      ['metadata', { run_id: 'r-1' }],
+      ['messages|a:1|b:2', ai('s1', 'x')],
+      ['error|a:1', { error: 'E', message: 'child boom' }],
+    ]);
+    expect(events.slice(-2)).toEqual([
+      { type: 'TEXT_MESSAGE_END', messageId: 's1' },
+      { type: 'RUN_ERROR', message: 'child boom', code: 'E' },
+    ]);
+    expect(keys.slice(-2)).toEqual(['a:1|b:2', 'a:1']);
+    const later = expander.push({ seq: 4, sseEvent: 'messages|a:1|b:2', payload: ai('s1', 'y') });
+    expect([later.runKey, later.events]).toEqual(['a:1', []]);
+    const opened = expander.push({ seq: 5, sseEvent: 'values|a:1|c:3', payload: { x: 1 } });
+    expect([opened.runKey, opened.events]).toEqual(['a:1', []]);
+    expander.push({ seq: 6, sseEvent: 'values', payload: { x: 1 } });
+    const done = expander.finish(6);
+    expect(done.events.map((expanded) => [expanded.runKey, expanded.event.type])).toEqual([['', 'RUN_FINISHED']]);
+  });
+
+  it('says which run each issue belongs to, anchored to that run’s last frame', () => {
+    const { expander } = drive([
+      ['metadata', { run_id: 'r-1' }],
+      ['messages|a:1', ai('s1', [], { tool_call_chunks: [{ index: 0, id: 'call_a', name: 'f', args: '{bad' }] })],
+      ['values', { x: 1 }],
+    ]);
+    expect(expander.finish(3).issues.map(({ runKey, issue }) => [runKey, issue.code, issue.seq])).toEqual([
+      ['a:1', 'lg-tool-args-invalid', 2],
+    ]);
+  });
+
+  it('a top-level error reports a child’s bad args on the child', () => {
+    const expander = createLangGraphExpander('c1', REQUEST);
+    expander.push({ seq: 1, sseEvent: 'metadata', payload: { run_id: 'r-1' } });
+    expander.push({
+      seq: 2,
+      sseEvent: 'messages|a:1',
+      payload: ai('s1', [], { tool_call_chunks: [{ index: 0, id: 'call_a', name: 'f', args: '{bad' }] }),
+    });
+    const out = expander.push({ seq: 3, sseEvent: 'error', payload: { error: 'E', message: 'boom' } });
+    expect(out.issues.map(({ runKey, issue }) => [runKey, issue.code, issue.seq])).toEqual([
+      ['a:1', 'lg-tool-args-invalid', 2],
+    ]);
   });
 });

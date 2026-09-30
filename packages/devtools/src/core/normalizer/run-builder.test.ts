@@ -1062,6 +1062,84 @@ describe('run builder — LangGraph connections (L4, L10, L13)', () => {
     expect(top?.runId).toBe('lg:c1');
     expect(top?.issues.map((raised) => [raised.code, raised.seq, raised.runId])).toEqual([['lg-no-metadata', 1, 'lg:c1']]);
     expect(child?.issues).toEqual([]);
+    // The frame is the child's alone: opening the top-level run does not make it the top's (S3).
+    expect(top?.recordSeqs).toEqual([2]);
+    expect(child?.recordSeqs).toEqual([1]);
+  });
+
+  it('a frame belongs to one run: a top-level error closes a child without joining it (S3)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages|sub:1', chunk('s1', 'x')));
+    builder.addRecord(lgRecord(3, 'error', { error: 'E', message: 'boom' }));
+    builder.closeConnection('c1', 40);
+    const [top, child] = builder.runs();
+    expect(top?.recordSeqs).toEqual([1, 3]);
+    expect(child?.recordSeqs).toEqual([2]);
+    // Closed by the error frame: stamped with its seq, but not a member of the child's records.
+    expect(child?.messages.get('s1')).toMatchObject({ closed: true, endedAtMs: 30 });
+    expect(child?.metrics.eventCountByType).toEqual({ 'messages|sub:1': 1 });
+  });
+
+  it('an ancestor opened by a nested frame holds no records, even after close (S3)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'values|a:1|b:2', { x: 1 }));
+    builder.addRecord(lgRecord(3, 'values', { messages: [] }));
+    builder.closeConnection('c1', 40);
+    const runs = builder.runs();
+    expect(runs.map((run) => [run.runId, run.recordSeqs, run.outcome])).toEqual([
+      ['r-1', [1, 3], 'finished'],
+      ['r-1/a:1', [], 'finished'],
+      ['r-1/a:1|b:2', [2], 'finished'],
+    ]);
+    expect(runs[1]?.metrics.eventCountByType).toEqual({});
+    expect(runs[1]?.metrics.totalStreamBytes).toBe(0);
+  });
+
+  it('puts a child’s close-time issue on the child, anchored to its own last frame', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(
+      lgRecord(2, 'messages|a:1', [
+        { type: 'AIMessageChunk', id: 's1', content: '', tool_call_chunks: [{ index: 0, id: 'call_a', name: 'f', args: '{bad' }] },
+        {},
+      ]),
+    );
+    builder.addRecord(lgRecord(3, 'values', { messages: [] }));
+    builder.closeConnection('c1', 40);
+    const [top, child] = builder.runs();
+    expect(top?.issues).toEqual([]);
+    expect(child?.issues.map((raised) => [raised.code, raised.seq, raised.runId])).toEqual([
+      ['lg-tool-args-invalid', 2, 'r-1/a:1'],
+    ]);
+  });
+
+  it('a child’s error cuts off its own subgraphs: aborted, and later frames go to the errored child (S5)', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages|a:1|b:2', chunk('s1', 'x')));
+    builder.addRecord(lgRecord(3, 'error|a:1', { error: 'E', message: 'child boom' }));
+    builder.addRecord(lgRecord(4, 'messages|a:1|b:2', chunk('s1', 'y')));
+    builder.addRecord(lgRecord(5, 'values|a:1|c:3', { x: 1 }));
+    builder.addRecord(lgRecord(6, 'values', { messages: [] }));
+    builder.closeConnection('c1', 70);
+    const runs = builder.runs();
+    expect(runs.map((run) => [run.runId, run.outcome, run.recordSeqs])).toEqual([
+      ['r-1', 'finished', [1, 6]],
+      ['r-1/a:1', 'error', [3, 4, 5]],
+      ['r-1/a:1|b:2', 'aborted', [2]],
+    ]);
+    expect(runs[2]?.messages.get('s1')).toMatchObject({ content: 'x', closed: true });
+  });
+
+  it('anchors lg-no-final-values to the connection’s last top-level frame', () => {
+    const builder = lgBuilder();
+    builder.addRecord(lgRecord(1, 'metadata', { run_id: 'r-1' }));
+    builder.addRecord(lgRecord(2, 'messages', chunk('m1', 'Hi')));
+    builder.addRecord(lgRecord(3, 'messages|sub:1', chunk('s1', 'x')));
+    builder.closeConnection('c1', 40);
+    expect(builder.runs()[0]?.issues.map((raised) => [raised.code, raised.seq])).toEqual([['lg-no-final-values', 2]]);
   });
 
   it('records a child the parent’s failure cut off as aborted', () => {

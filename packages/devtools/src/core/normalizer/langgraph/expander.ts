@@ -32,17 +32,27 @@ export interface ExpandedEvent {
   readonly event: AguiEvent;
 }
 
+/** One issue and the run it is about (S3). */
+export interface ExpandedIssue {
+  readonly runKey: string;
+  readonly issue: Issue;
+}
+
 export interface LangGraphExpansion {
-  /** The run this frame belongs to (S3): its record, bytes, wire name and issues go there. */
+  /** The run this frame belongs to (S3): its record, bytes and wire name go there. */
   runKey: string;
   events: ExpandedEvent[];
-  issues: Issue[];
+  /**
+   * Usually the frame's run's. Not always: `lg-no-metadata` is the top-level run's, and closing a
+   * scope this frame cut off (S5) checks that scope's tool calls.
+   */
+  issues: ExpandedIssue[];
 }
 
 export interface LangGraphFinish {
   events: ExpandedEvent[];
-  /** Raised at close; they belong to the top-level run. */
-  issues: Issue[];
+  /** Raised at close, each on its own run, anchored to that run's last frame on this connection. */
+  issues: ExpandedIssue[];
   /** The runKeys whose runs stopped at an interrupt (S7): the builder records them `interrupted` (L9). */
   interrupted: string[];
 }
@@ -112,11 +122,29 @@ interface Scope {
   settled: boolean;
   interrupted: boolean;
   errored: boolean;
+  /**
+   * The seq of this connection's last frame that belongs to this scope's run (S3): what an issue
+   * about the scope raised away from its own frames — at close, or when an error cuts it off —
+   * anchors to. Absent for a scope that has sent no frame of its own (an ancestor a nested frame opened).
+   */
+  lastSeq: number | undefined;
 }
 
 /** How many namespace segments a scope key has: 0 for the top level. */
 function depthOf(key: string): number {
   return key === '' ? 0 : key.split('|').length;
+}
+
+/** `key` and every ancestor's key, outermost (the top level, `''`) first. */
+function lineageOf(key: string): string[] {
+  if (key === '') return [''];
+  const segments = key.split('|');
+  return ['', ...segments.map((_, i) => segments.slice(0, i + 1).join('|'))];
+}
+
+/** Whether `key` is a scope strictly inside `ancestor`. */
+function isInside(key: string, ancestor: string): boolean {
+  return key !== ancestor && (ancestor === '' || key.startsWith(`${ancestor}|`));
 }
 
 function str(value: unknown): string | undefined {
@@ -172,6 +200,7 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
       settled: false,
       interrupted: false,
       errored: false,
+      lastSeq: undefined,
     };
     scopes.set(key, scope);
     return scope;
@@ -204,8 +233,26 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     return parent;
   }
 
-  function issue(out: LangGraphExpansion, code: IssueCode, message: string, seq: number): void {
-    out.issues.push(makeIssue(code, message, seq));
+  function issue(out: LangGraphExpansion, runKey: string, code: IssueCode, message: string, seq: number): void {
+    out.issues.push({ runKey, issue: makeIssue(code, message, seq) });
+  }
+
+  /**
+   * The scope that has ended the run a namespace belongs to: the namespace's own scope or the
+   * nearest-to-top ancestor that errored (S5). Only scopes already open are looked at.
+   */
+  function cutOffBy(namespace: readonly string[]): Scope | undefined {
+    for (let depth = 0; depth <= namespace.length; depth += 1) {
+      const scope = scopes.get(namespace.slice(0, depth).join('|'));
+      if (scope === undefined) return undefined;
+      if (scope.errored) return scope;
+    }
+    return undefined;
+  }
+
+  /** Whether the scope, or any scope it is inside, errored: its run was cut off (S5, S6). */
+  function isCutOff(scope: Scope): boolean {
+    return lineageOf(scope.key).some((key) => scopes.get(key)?.errored === true);
   }
 
   function start(out: LangGraphExpansion, meta: Record<string, unknown> | undefined): void {
@@ -224,8 +271,10 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
       start(out, undefined);
       return;
     }
+    // About the top-level run, whichever scope the first frame came from.
     issue(
       out,
+      '',
       'lg-no-metadata',
       'The stream sent no metadata event before its first event, so this run id is synthesized',
       seq,
@@ -249,7 +298,7 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
       try {
         JSON.parse(call.argsText);
       } catch {
-        issue(out, 'lg-tool-args-invalid', `Tool call ${call.toolCallId} streamed arguments that are not valid JSON`, seq);
+        issue(out, scope.key, 'lg-tool-args-invalid', `Tool call ${call.toolCallId} streamed arguments that are not valid JSON`, seq);
       }
     }
   }
@@ -465,6 +514,7 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     if (regressed) {
       issue(
         out,
+        scope.key,
         complete ? 'lg-complete-mismatch' : 'lg-partial-regressed',
         complete
           ? `messages/complete for ${id} does not extend what its partials streamed`
@@ -479,7 +529,7 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
   }
 
   function undecodable(out: LangGraphExpansion, name: string, seq: number): void {
-    issue(out, 'lg-undecodable', `The "${name}" event's payload is not the shape that event carries`, seq);
+    issue(out, out.runKey, 'lg-undecodable', `The "${name}" event's payload is not the shape that event carries`, seq);
   }
 
   /** One frame of a known mode, folded within its scope exactly as at the top level (S4). */
@@ -557,14 +607,15 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
         emit(out, scope, { type: 'CUSTOM', name: 'langgraph.custom', value: payload });
         break;
       case 'error': {
-        if (scope.key === '') {
-          // A run failure stops every subgraph mid-flight (S5): close what each has open,
-          // innermost first. The children get no terminal event, so the builder records them aborted.
-          for (const each of [...scopes.values()].reverse()) settle(out, each, seq);
-        } else {
-          // A subgraph failure ends that child only; its parent and siblings carry on (S5).
-          settle(out, scope, seq);
+        // A failure stops every subgraph inside the failed graph mid-flight (S5): close what each
+        // has open, innermost first (scopes open outermost first, so reversed open order), then
+        // the failed scope itself. The cut-off scopes get no terminal event, so the builder records
+        // them aborted; the failed scope's parent and siblings carry on. Their issues anchor to
+        // their own last frame: this one is not theirs.
+        for (const each of [...scopes.values()].reverse()) {
+          if (isInside(each.key, scope.key)) settle(out, each, each.lastSeq ?? seq);
         }
+        settle(out, scope, seq);
         scope.errored = true;
         const message = isObject(payload)
           ? (str(payload.message) ?? str(payload.error) ?? 'error')
@@ -591,23 +642,25 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     const { mode, namespace } = parseEventName(frame.sseEvent);
 
     if (mode === 'metadata' && namespace.length === 0) {
-      if (started) return out;
-      if (!isObject(payload)) undecodable(out, name, seq);
-      start(out, isObject(payload) ? payload : undefined);
+      if (!started) {
+        if (!isObject(payload)) undecodable(out, name, seq);
+        start(out, isObject(payload) ? payload : undefined);
+      }
+      topScope().lastSeq = seq;
       return out;
     }
 
     ensureStarted(out, seq);
-    const top = topScope();
-    // A top-level error ends the run and every subgraph in it (S5): later frames are recorded as
-    // they arrived, on the top-level run, and fold nothing.
-    if (top.errored) return out;
-    const scope = namespace.length === 0 ? top : scopeFor(out, namespace);
+    // An error ends its graph and every subgraph inside it (S5): a later frame from anywhere in
+    // that subtree is recorded as it arrived, on the errored scope's run, and folds nothing —
+    // and opens no scope. The errored scope's parent and siblings carry on.
+    const ended = cutOffBy(namespace);
+    const scope = ended ?? (namespace.length === 0 ? topScope() : scopeFor(out, namespace));
     out.runKey = scope.key;
-    // A child that errored folds nothing more; its siblings and parent carry on (S5).
-    if (scope.errored) return out;
+    scope.lastSeq = seq;
+    if (ended !== undefined) return out;
     if (!isKnownMode(mode)) {
-      issue(out, 'lg-unknown-event', `"${name}" is not an event LangGraph Platform emits`, seq);
+      issue(out, scope.key, 'lg-unknown-event', `"${name}" is not an event LangGraph Platform emits`, seq);
       return out;
     }
     foldMode(out, scope, mode, name, seq, payload);
@@ -621,7 +674,8 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
     // Deepest first: a child's messages close before its parent's, and the top-level run's
     // RUN_FINISHED comes after every child's (S6). `sort` is stable, so siblings keep open order.
     const ordered = [...scopes.values()].sort((a, b) => depthOf(b.key) - depthOf(a.key));
-    for (const scope of ordered) settle(out, scope, seq);
+    // Each scope's close-time issues anchor to its own last frame; one with none, to the close.
+    for (const scope of ordered) settle(out, scope, scope.lastSeq ?? seq);
     const top = topScope();
     // A run cut off by its error, or by a close before its final values, finishes no child (S6).
     if (top.errored) return done([]);
@@ -629,18 +683,21 @@ export function createLangGraphExpander(connId: string, request: LangGraphReques
       // Threadplane's bridge reads this exact condition as "did not finish normally": the stream
       // stopped mid-answer. No RUN_FINISHED, so the run builder records the outcome `aborted`.
       // A top-level check only: a subgraph's own `values` are not the run's (S6).
+      // Anchored to the last top-level frame: the claim is about the top-level run (S6).
       issue(
         out,
+        '',
         'lg-no-final-values',
         'The stream closed without a final values event, although the request asked for values',
-        seq,
+        top.lastSeq ?? seq,
       );
       return done([]);
     }
     const interrupted: string[] = [];
     for (const scope of ordered) {
-      // A child that errored already ended; the top level cannot be errored here.
-      if (scope.errored) continue;
+      // A child that errored already ended; one inside it was cut off (S5). The top level cannot
+      // be either here.
+      if (isCutOff(scope)) continue;
       emit(out, scope, { type: 'RUN_FINISHED', runId: scope.runId, threadId });
       if (scope.interrupted) interrupted.push(scope.key);
     }

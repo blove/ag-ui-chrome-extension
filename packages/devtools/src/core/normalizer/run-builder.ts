@@ -18,7 +18,12 @@ import { runRules, finalizeRules, type RunValidationState } from '../validator';
 import { computeMetrics } from '../metrics/run-metrics';
 import { createChunkExpanderState, expandChunk, type ChunkExpanderState } from './chunk-expander';
 import { dialectOf, type Dialect } from './dialect';
-import { createLangGraphExpander, type ExpandedEvent, type LangGraphExpander } from './langgraph/expander';
+import {
+  createLangGraphExpander,
+  type ExpandedEvent,
+  type ExpandedIssue,
+  type LangGraphExpander,
+} from './langgraph/expander';
 
 /**
  * The `event` arm of the `CaptureRecord` union — the only arm the fold decodes. Naming it
@@ -252,16 +257,23 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     }
   }
 
+  /**
+   * `member: false` folds an event a record caused on a run the record does not belong to — a
+   * LangGraph frame closing another run's message, or opening an ancestor run (S3). It keeps the
+   * record's seq and time, but the seq does not join the run's `recordSeqs`, and it carries no
+   * bytes, so neither the run's event count nor its byte count sees the frame.
+   */
   function noteRecord(
     entry: RunEntry,
     record: EventRecord,
     event: AguiEvent | null,
     countBytes: boolean,
+    member = true,
   ): void {
     const seqs = entry.run.recordSeqs;
-    if (seqs[seqs.length - 1] !== record.seq) seqs.push(record.seq);
+    if (member && seqs[seqs.length - 1] !== record.seq) seqs.push(record.seq);
     entry.records.push(
-      countBytes
+      countBytes && member
         ? { ...record, event, issues: [] }
         : { ...record, raw: undefined, event, issues: [] },
     );
@@ -560,12 +572,13 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     record: EventRecord,
     countBytes: boolean,
     validate = true,
+    member = true,
   ): void {
     // L12: a synthetic event from the LangGraph expander is correct by construction. An AG-UI
     // issue raised against one would be our translation bug reported as the user's.
     const issues = validate ? runRules(event, record, entry.validation) : [];
     applyTransition(entry, event, record);
-    noteRecord(entry, record, event, countBytes);
+    noteRecord(entry, record, event, countBytes, member);
     attachIssues(entry, issues);
   }
 
@@ -633,8 +646,10 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
 
   /**
    * Fold a frame's synthetic events onto the runs their runKeys name, stamped with the frame (L10).
-   * The frame's bytes and wire name are counted once, on the frame's own run (S3, L13). Returns
-   * whether they were.
+   * The frame belongs to its own run only (S3): its seq joins that run's `recordSeqs` and its bytes
+   * and wire name are counted once there (L13). An event it causes on another run — closing a
+   * child a top-level error cut off, opening an ancestor — is folded there as a non-member.
+   * Returns whether the frame was counted.
    */
   function foldSynthetic(
     conn: ConnEntry,
@@ -648,9 +663,10 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
         event.type === 'RUN_STARTED' ? openLangGraphRun(conn, runKey, event, record) : langGraphEntry(conn, runKey);
       if (entry === undefined) continue;
       entry.run.dialect = 'langgraph';
-      const countBytes = !counted && runKey === frameKey;
+      const member = runKey === frameKey;
+      const countBytes = member && !counted;
       if (countBytes) counted = true;
-      foldEvent(entry, event, record, countBytes, false);
+      foldEvent(entry, event, record, countBytes, false, member);
     }
     return counted;
   }
@@ -677,17 +693,20 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     // A frame that folded nothing onto its own run — a `debug` frame, `messages/metadata`, a
     // frame after an error — is still that run's record, raw.
     if (!counted) noteRecord(target, record, null, true);
-    // A frame's issues are its run's (S3) — except `lg-no-metadata`, which says the TOP-LEVEL run's
-    // id is synthesized, even when the first frame came from a subgraph.
-    const top = langGraphEntry(conn, '') ?? target;
-    for (const raised of expansion.issues) attachIssues(raised.code === 'lg-no-metadata' ? top : target, [raised]);
+    attachLangGraphIssues(conn, expansion.issues, target);
     attachIssues(target, record.issues);
+  }
+
+  /** Each issue on the run it is about (S3); `fallback` for a run key this connection never opened. */
+  function attachLangGraphIssues(conn: ConnEntry, issues: readonly ExpandedIssue[], fallback: RunEntry): void {
+    for (const { runKey, issue } of issues) attachIssues(langGraphEntry(conn, runKey) ?? fallback, [issue]);
   }
 
   /**
    * The expander's end of stream: close what is open and settle each run's outcome (L6, L9, S6).
-   * Nothing was on the wire for these events: `raw: undefined` keeps them out of the byte count and
-   * the wire-name count, and each anchors to its own run's last real seq, like the chunk flush.
+   * Nothing was on the wire for these events: they fold as non-members (S3), so they add no seq,
+   * byte or wire name, and each is stamped with its own run's last seq, like the chunk flush — or,
+   * for a run that holds no record (an ancestor a nested frame opened), this connection's last frame.
    */
   function finishLangGraph(conn: ConnEntry, tMs: number): void {
     const top = conn.langGraph === undefined ? undefined : langGraphEntry(conn, '');
@@ -699,11 +718,11 @@ export function createRunBuilder(options: RunBuilderOptions = {}): RunBuilder {
     for (const { runKey, event } of finish.events) {
       const entry = langGraphEntry(conn, runKey);
       if (entry === undefined) continue;
-      const seq = entry.run.recordSeqs.at(-1) ?? 0;
+      const seq = entry.run.recordSeqs.at(-1) ?? conn.lastLangGraphSeq ?? 0;
       const record: EventRecord = { kind: 'event', seq, tMs, connId: conn.connId, raw: undefined, event, issues: [] };
-      foldEvent(entry, event, record, false, false);
+      foldEvent(entry, event, record, false, false, false);
     }
-    attachIssues(top, finish.issues.map((raised) => ({ ...raised, tMs })));
+    attachLangGraphIssues(conn, finish.issues.map(({ runKey, issue }) => ({ runKey, issue: { ...issue, tMs } })), top);
     for (const runKey of finish.interrupted) {
       const entry = langGraphEntry(conn, runKey);
       if (entry !== undefined) entry.run.outcome = 'interrupted';

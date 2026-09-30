@@ -222,4 +222,22 @@ describe('exportBlockedReason', () => {
       'The selected run holds no records, so there is nothing to export. Switch the scope to all runs.',
     );
   });
+
+  test('blocks, and would export nothing for, a run that exists but holds no records', () => {
+    // A LangGraph ancestor run opened by a nested subgraph frame sends no frame of its own (S3).
+    const source = importedSource();
+    const first = source.runs[0]!;
+    const empty = { ...source, runs: [...source.runs, { ...first, runId: 'r-1/a:1', recordSeqs: [] }] };
+    expect(exportBlockedReason(empty, 'r-1/a:1')).toBe(
+      'The selected run holds no records, so there is nothing to export. Switch the scope to all runs.',
+    );
+    const bundle = buildExport(empty, {
+      scope: 'r-1/a:1',
+      groups: [],
+      toolVersion: '0.0.0',
+      exportedAtIso: '2026-09-30T00:00:00.000Z',
+    });
+    expect(bundle.lines).toHaveLength(1);
+    expect(bundle.counts).toEqual({ events: 0, keepalives: 0, requests: 0, runs: 1 });
+  });
 });
