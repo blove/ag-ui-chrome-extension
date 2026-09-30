@@ -124,8 +124,24 @@ function messagePayload(message: unknown, out: string[]): void {
   }
 }
 
-/** A LangGraph run request's settings: which assistant, which stream modes, how to schedule. */
-const LANGGRAPH_SETTINGS: readonly string[] = [
+/**
+ * The top-level `RunAgentInput` keys `inputPayload` restates by field; `threadId`, `runId`,
+ * `parentRunId` and `tools` are structure.
+ */
+const AGUI_BODY_KNOWN: ReadonlySet<string> = new Set([
+  'threadId',
+  'runId',
+  'parentRunId',
+  'tools',
+  'messages',
+  'state',
+  'context',
+  'forwardedProps',
+  'resume',
+]);
+
+/** LangGraph Platform run settings: which assistant, which stream modes, how to schedule. */
+const LG_SETTINGS: ReadonlySet<string> = new Set([
   'assistant_id',
   'stream_mode',
   'stream_subgraphs',
@@ -141,7 +157,15 @@ const LANGGRAPH_SETTINGS: readonly string[] = [
   'interrupt_after',
   'feedback_keys',
   'checkpoint_id',
-];
+]);
+
+function isScalar(value: unknown): boolean {
+  return value === null || ['string', 'number', 'boolean'].includes(typeof value);
+}
+
+function isScalarOrList(value: unknown): boolean {
+  return isScalar(value) || (Array.isArray(value) && value.every(isScalar));
+}
 
 /**
  * The payload strings a `RunAgentInput` carries, wherever one appears: the captured request body,
@@ -152,16 +176,17 @@ const LANGGRAPH_SETTINGS: readonly string[] = [
  * on every clean export. A `resume` entry keeps its `interruptId` and `status`; its `payload`
  * is the user's answer to an interrupt.
  *
- * A LangGraph Platform request body (LangChain shape) is read by the same walk: the user's
- * messages sit one level down at `input.messages[].content`, beside `command` (resume values),
- * `config` and `metadata`, and none of those keys is structure, so all of it is payload. Only
- * the run's SETTINGS survive, restated in `LANGGRAPH_SETTINGS`.
+ * Any other top-level key is content nobody classified — unless it is a LangGraph Platform run
+ * setting (`assistant_id`, `stream_mode`, …) holding a name, a flag or a list of them. A LangGraph
+ * body behind a proxy path is classified AG-UI and its settings are then redacted too; that is
+ * over-redaction, not a leak, so not listed. On a request line, a LangGraph body's `input` and
+ * `command` are `lgOwners`'s (see `payloadStrings`).
  */
 function inputPayload(input: unknown, out: string[]): void {
   if (!isObject(input)) return;
   for (const [key, child] of Object.entries(input)) {
     if (['threadId', 'runId', 'parentRunId', 'tools'].includes(key)) continue;
-    if (LANGGRAPH_SETTINGS.includes(key)) continue;
+    if (LG_SETTINGS.has(key) && isScalarOrList(child)) continue;
     if (key === 'messages' && Array.isArray(child)) {
       for (const message of child) messagePayload(message, out);
     } else if (key === 'resume' && Array.isArray(child)) {
@@ -247,18 +272,34 @@ function lcMessageOwners(message: unknown, extra: readonly RedactionGroup[], out
   const kind = typeof message.type === 'string' ? message.type : '';
   const textGroup: RedactionGroup = kind === 'tool' || kind === 'ToolMessage' || kind === 'ToolMessageChunk' ? 'toolResults' : 'text';
   const plus = (group: RedactionGroup): RedactionGroup[] => [group, ...extra];
+  // A human message's `name` is the user's handle; an AI or tool message's is the developer's.
+  const human = ['human', 'HumanMessage', 'HumanMessageChunk'].includes(kind) || message.role === 'user' || message.role === 'human';
+  if (human) owns(message.name, plus('text'), out);
+  // A structure slot holding anything but a scalar is not structure: every group removes it.
+  const slot = (value: unknown): void => {
+    if (!isScalar(value)) owns(value, ANY, out);
+  };
+  for (const key of ['type', 'role', 'id', 'tool_call_id', 'status', 'chunk_position', ...(human ? [] : ['name'])]) slot(message[key]);
+  if (isObject(message.response_metadata)) {
+    for (const key of ['finish_reason', 'stop_reason', 'model_name', 'model', 'model_provider', 'system_fingerprint', 'service_tier', 'id']) {
+      slot(message.response_metadata[key]);
+    }
+  }
   if (typeof message.content === 'string') owns(message.content, plus(textGroup), out);
   else if (Array.isArray(message.content)) {
     for (const block of message.content) {
       // A bare string element is text, as LangChain reads it; any other non-object is unclassified.
       if (typeof block === 'string') owns(block, plus(textGroup), out);
       else if (!isObject(block)) owns(block, ANY, out);
-      else if (block.type === 'text') owns(block.text, plus(textGroup), out);
-      else if (block.type === 'reasoning') {
-        if (Array.isArray(block.summary)) for (const part of block.summary) if (isObject(part)) owns(part.text, plus('reasoning'), out);
-        owns(block.reasoning, plus('reasoning'), out);
-      } else if (block.type === 'thinking') owns(block.thinking, plus('reasoning'), out);
-      else owns(block, ANY, out);
+      else {
+        if (['text', 'reasoning', 'thinking'].includes(block.type as string)) for (const key of ['id', 'index']) slot(block[key]);
+        if (block.type === 'text') owns(block.text, plus(textGroup), out);
+        else if (block.type === 'reasoning') {
+          if (Array.isArray(block.summary)) for (const part of block.summary) if (isObject(part)) owns(part.text, plus('reasoning'), out);
+          owns(block.reasoning, plus('reasoning'), out);
+        } else if (block.type === 'thinking') owns(block.thinking, plus('reasoning'), out);
+        else owns(block, ANY, out);
+      }
     }
   } else {
     // Content that is neither a string nor a list of blocks is not known to belong to one group.
@@ -266,23 +307,29 @@ function lcMessageOwners(message: unknown, extra: readonly RedactionGroup[], out
   }
   for (const key of ['tool_call_chunks', 'tool_calls', 'invalid_tool_calls']) {
     const calls = message[key];
-    if (Array.isArray(calls)) for (const call of calls) if (isObject(call)) owns(call.args, plus('toolArgs'), out);
+    if (!Array.isArray(calls)) continue;
+    for (const call of calls) {
+      if (!isObject(call)) continue;
+      owns(call.args, plus('toolArgs'), out);
+      for (const slotKey of ['name', 'id', 'type', 'index']) slot(call[slotKey]);
+    }
   }
   owns(message.artifact, plus('toolResults'), out);
   owns(message.additional_kwargs, ANY, out);
 }
 
 /** Graph state: every value is the state's; the messages in it are also their own groups'. */
-function stateOwners(state: unknown, out: Owned[]): void {
+function stateOwners(state: unknown, out: Owned[], also: readonly RedactionGroup[] = []): void {
+  const owners: RedactionGroup[] = ['state', ...also];
   if (!isObject(state)) {
-    owns(state, ['state'], out);
+    owns(state, owners, out);
     return;
   }
   for (const [key, value] of Object.entries(state)) {
     if (key === 'messages' && Array.isArray(value)) {
-      for (const message of value) lcMessageOwners(message, ['state'], out);
+      for (const message of value) lcMessageOwners(message, owners, out);
     } else {
-      owns(value, ['state'], out);
+      owns(value, owners, out);
     }
   }
 }
@@ -312,7 +359,9 @@ function lgOwners(line: JsonlLine): Owned[] {
       return out;
     }
     if (isObject(body.input)) {
-      stateOwners(Object.fromEntries(Object.entries(body.input).filter(([key]) => key !== 'messages')), out);
+      // The graph's input schema beyond `messages` (a RAG graph's `question`) is the user's words
+      // as much as it is state: `text` and `state` both own it.
+      stateOwners(Object.fromEntries(Object.entries(body.input).filter(([key]) => key !== 'messages')), out, ['text']);
       // The prompt, in any form `add_messages` accepts: a list, one message, or a bare string.
       const messages = body.input.messages;
       if (Array.isArray(messages)) for (const message of messages) lcMessageOwners(message, [], out);
@@ -343,7 +392,14 @@ function lgOwners(line: JsonlLine): Owned[] {
     } else {
       owns(body.command, ANY, out);
     }
-    for (const key of ['config', 'context', 'metadata', 'checkpoint', 'webhook']) owns(body[key], ANY, out);
+    // `config`, `context`, `metadata`, `checkpoint`, `webhook`, anything unheard of — and a setting
+    // that holds more than names and flags: every group removes it.
+    // (A `RunAgentInput`'s own keys are `inputPayload`'s: this reader runs on every request line.)
+    for (const [key, value] of Object.entries(body)) {
+      if (key === 'input' || key === 'command' || AGUI_BODY_KNOWN.has(key)) continue;
+      if (LG_SETTINGS.has(key) && isScalarOrList(value)) continue;
+      owns(value, ANY, out);
+    }
     return out;
   }
   if (line.kind !== 'event') return out;
@@ -354,7 +410,7 @@ function lgOwners(line: JsonlLine): Owned[] {
       // The run's identity; a key beyond it is one no reader here has classified.
       if (isObject(payload)) {
         for (const [key, value] of Object.entries(payload)) {
-          if (!['run_id', 'attempt', 'thread_id', 'assistant_id'].includes(key)) owns(value, ANY, out);
+          if (!['run_id', 'attempt', 'thread_id', 'assistant_id'].includes(key) || !isScalar(value)) owns(value, ANY, out);
         }
       }
       break;
@@ -993,7 +1049,7 @@ describe('E6: what must NOT be redacted, or the file stops being a bug report', 
 describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns, and only that', () => {
   /** A distinct secret per group, each where LangGraph actually puts it. */
   const SECRETS: Record<RedactionGroup, string[]> = {
-    text: ['what is the Zanzibar merger price', 'the answer names Contoso', 'the subgraph researched Fabrikam'],
+    text: ['what is the Zanzibar merger price', 'the answer names Contoso', 'the subgraph researched Fabrikam', 'Priya Kowalski'],
     reasoning: ['weighing the Contoso numbers privately'],
     toolArgs: ['{"account":"ACME-7731"}'],
     toolResults: ['revenue was 4.2M for ACME', 'artifact row with ACME ledger'],
@@ -1004,7 +1060,10 @@ describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns,
     'custom progress for ACME',
     'a metadata key a newer server sent',
     'user-42@example.com',
+    'a status slot smuggling ACME',
   ];
+  /** The graph's input schema beyond `messages`: the user's words, and state. */
+  const TEXT_AND_STATE: string[] = ['the question about the Zanzibar deal'];
 
   const CAPTURE = langGraphJsonl(
     [
@@ -1043,6 +1102,7 @@ describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns,
             id: 't1',
             name: 'lookup_revenue',
             tool_call_id: 'call_1',
+            status: { note: 'a status slot smuggling ACME' },
             content: 'revenue was 4.2M for ACME',
             artifact: { rows: ['artifact row with ACME ledger'] },
           },
@@ -1053,7 +1113,7 @@ describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns,
       {
         event: 'values',
         data: {
-          messages: [{ type: 'human', id: 'h1', content: 'what is the Zanzibar merger price' }],
+          messages: [{ type: 'human', id: 'h1', name: 'Priya Kowalski', content: 'what is the Zanzibar merger price' }],
           account_note: 'state note about the Zurich account',
         },
       },
@@ -1062,7 +1122,10 @@ describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns,
     {
       body: {
         assistant_id: 'agent',
-        input: { messages: [{ type: 'human', id: 'h1', content: 'what is the Zanzibar merger price' }] },
+        input: {
+          messages: [{ type: 'human', id: 'h1', name: 'Priya Kowalski', content: 'what is the Zanzibar merger price' }],
+          question: 'the question about the Zanzibar deal',
+        },
         command: { goto: [{ node: 'ledger', input: { ledger: 'the Send carries the Zurich ledger' } }] },
         stream_mode: ['values', 'messages-tuple', 'updates', 'custom'],
         stream_subgraphs: true,
@@ -1084,6 +1147,7 @@ describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns,
       for (const secret of SECRETS[group]) expect([secret, owners.get(secret)]).toEqual([secret, [group]]);
     }
     for (const secret of EVERY) expect([secret, owners.get(secret)]).toEqual([secret, ANY]);
+    for (const secret of TEXT_AND_STATE) expect([secret, owners.get(secret)]).toEqual([secret, ['state', 'text']]);
   });
 
   for (const group of ALL_REDACTION_GROUPS) {
@@ -1099,6 +1163,8 @@ describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns,
         for (const secret of SECRETS[other]) expect([secret, present(redacted, secret)]).toEqual([secret, true]);
       }
       for (const secret of EVERY) expect([secret, present(redacted, secret)]).toEqual([secret, false]);
+      const textOrState = group === 'text' || group === 'state';
+      for (const secret of TEXT_AND_STATE) expect([secret, present(redacted, secret)]).toEqual([secret, !textOrState]);
     });
   }
 
@@ -1106,7 +1172,32 @@ describe('E6 for LangGraph Platform (L16, L17): each group removes what it owns,
     const raw = exportWith(CAPTURE, []);
     const redacted = exportWith(CAPTURE, [...ALL_REDACTION_GROUPS]);
     expect(leakedValues(raw, redacted)).toEqual([]);
-    for (const secret of [...Object.values(SECRETS).flat(), ...EVERY]) expect(present(redacted, secret)).toBe(false);
+    for (const secret of [...Object.values(SECRETS).flat(), ...EVERY, ...TEXT_AND_STATE]) expect(present(redacted, secret)).toBe(false);
+  });
+
+  test('a LangGraph body behind a proxy path, classified AG-UI, still loses its content to any group', () => {
+    // No LangGraph route in the URL and no `metadata` first: dialect detection says AG-UI, so the
+    // body meets the RunAgentInput rules, whose unknown top-level keys fail closed.
+    const proxied = langGraphJsonl(
+      [{ event: 'values', data: { messages: [{ type: 'human', id: 'h1', content: 'the proxied Zanzibar prompt' }] } }],
+      {
+        url: 'http://localhost:3000/api/agent',
+        body: {
+          assistant_id: 'agent',
+          input: { messages: [{ type: 'human', content: 'the proxied Zanzibar prompt' }] },
+          command: { resume: 'the proxied resume answer' },
+        },
+      },
+    );
+    const raw = exportWith(proxied, []);
+    expect(present(raw, 'the proxied Zanzibar prompt')).toBe(true);
+    for (const group of ALL_REDACTION_GROUPS) {
+      const redacted = exportWith(proxied, [group]);
+      for (const secret of ['the proxied Zanzibar prompt', 'the proxied resume answer']) {
+        expect([group, secret, present(redacted, secret)]).toEqual([group, secret, false]);
+      }
+    }
+    expect(leakedValues(raw, exportWith(proxied, [...ALL_REDACTION_GROUPS]))).toEqual([]);
   });
 
   test('structure survives every group: event names, node names, ids, tool names, settings', () => {

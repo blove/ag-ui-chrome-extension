@@ -280,6 +280,53 @@ const LG_SUBGRAPH = langGraphJsonl(
   { body: { assistant_id: 'agent', input: { messages: [{ type: 'human', content: 'research this' }] }, stream_mode: ['values', 'messages-tuple', 'updates'], stream_subgraphs: true } },
 );
 
+/**
+ * A LangGraph Platform capture that is genuinely broken, so the LangGraph claims redaction can
+ * destroy the evidence for are in front of the comparison: a tool call whose streamed args are
+ * not JSON (`lg-tool-args-invalid`), a partial whose TEXT does not extend the previous one and a
+ * partial whose REASONING does not (`lg-partial-regressed`, one each), and a complete that does not
+ * match its partials' text (`lg-complete-mismatch`).
+ */
+const LG_BROKEN = langGraphJsonl(
+  [
+    { event: 'metadata', data: { run_id: 'r-broken', attempt: 1 } },
+    aiChunk('m1', [], { tool_call_chunks: [{ index: 0, id: 'call_1', name: 'lookup', args: '{"account": ACME' }], chunk_position: 'last' }),
+    { event: 'messages/partial', data: [{ type: 'ai', id: 'm2', content: 'Hello there' }] },
+    { event: 'messages/partial', data: [{ type: 'ai', id: 'm2', content: 'Help' }] },
+    {
+      event: 'messages/partial',
+      data: [{ type: 'ai', id: 'm3', content: [{ type: 'reasoning', reasoning: 'first I will' }, { type: 'text', text: 'A' }] }],
+    },
+    {
+      event: 'messages/partial',
+      data: [{ type: 'ai', id: 'm3', content: [{ type: 'reasoning', reasoning: 'second' }, { type: 'text', text: 'An' }] }],
+    },
+    { event: 'messages/partial', data: [{ type: 'ai', id: 'm4', content: 'The total' }] },
+    { event: 'messages/complete', data: [{ type: 'ai', id: 'm4', content: 'A different total' }] },
+    { event: 'values', data: { messages: [{ type: 'human', id: 'h1', content: 'what is the total' }] } },
+  ],
+  { body: { assistant_id: 'agent', input: { messages: [{ type: 'human', id: 'h1', content: 'what is the total' }] }, stream_mode: ['values', 'messages-tuple', 'messages'] } },
+);
+
+/**
+ * Which group's redaction may withdraw each claim, and only that claim — the claim's evidence is
+ * that group's content. `lg-partial-regressed` is owned per partial: the text regression by
+ * `text`, the reasoning one by `reasoning` (see `LG_BROKEN`).
+ */
+const WITHDRAWN_BY: Readonly<Record<string, RedactionGroup>> = {
+  'tool-args-not-json': 'toolArgs',
+  'lg-tool-args-invalid': 'toolArgs',
+  // LG_BROKEN: seq 4 regresses text, seq 6 regresses reasoning, seq 8's complete mismatches text.
+  'lg-partial-regressed@4': 'text',
+  'lg-partial-regressed@6': 'reasoning',
+  'lg-complete-mismatch@8': 'text',
+};
+
+/** The group whose redaction may withdraw `issue` (a `code@seq` key), if any. */
+function withdrawnBy(issue: string): RedactionGroup | undefined {
+  return WITHDRAWN_BY[issue] ?? WITHDRAWN_BY[issue.slice(0, issue.indexOf('@'))];
+}
+
 const CAPTURES: Array<readonly [string, string]> = [
   ['happy-run', happyJsonl],
   ['malformed', malformedJsonl],
@@ -294,6 +341,7 @@ const CAPTURES: Array<readonly [string, string]> = [
   // what they destroyed (L17) rather than invent an issue.
   ['lg every group (authored here)', LG_EVERY_GROUP],
   ['lg subgraph (authored here)', LG_SUBGRAPH],
+  ['lg broken (authored here)', LG_BROKEN],
 ];
 
 /** Every single group, plus the "Redact everything" button's set. */
@@ -301,6 +349,15 @@ const GROUP_SETS: Array<readonly [string, RedactionGroup[]]> = [
   ...ALL_REDACTION_GROUPS.map((group): readonly [string, RedactionGroup[]] => [group, [group]]),
   ['all groups', [...ALL_REDACTION_GROUPS]],
 ];
+
+test('LG_BROKEN raises exactly the claims WITHDRAWN_BY names for it', () => {
+  expect(keys(afterImport(LG_BROKEN)).sort()).toEqual([
+    'lg-complete-mismatch@8',
+    'lg-partial-regressed@4',
+    'lg-partial-regressed@6',
+    'lg-tool-args-invalid@2',
+  ]);
+});
 
 describe('redaction never invents an issue', () => {
   for (const [name, text] of CAPTURES) {
@@ -327,9 +384,10 @@ describe('redaction withdraws exactly one claim, and only where it destroyed the
 
         const after = keys(redacted);
         const withdrawn = keys(original).filter((issue) => !after.includes(issue));
-        const expected = groups.includes('toolArgs')
-          ? keys(original).filter((issue) => issue.startsWith('tool-args-not-json@'))
-          : [];
+        const expected = keys(original).filter((issue) => {
+          const owner = withdrawnBy(issue);
+          return owner !== undefined && groups.includes(owner);
+        });
 
         expect(withdrawn).toEqual(expected);
       });
@@ -363,6 +421,9 @@ describe('redaction withdraws exactly one claim, and only where it destroyed the
       'delta-before-snapshot',
       'deprecated-event',
       'empty-text-delta',
+      'lg-complete-mismatch',
+      'lg-partial-regressed',
+      'lg-tool-args-invalid',
       'run-never-terminated',
       'state-patch-failed',
       'tool-args-not-json',

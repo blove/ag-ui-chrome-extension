@@ -386,9 +386,16 @@ function redactMessage(message: unknown, groups: ReadonlySet<RedactionGroup>): u
  * `forwardedProps` are app-supplied payloads, all of which can carry anything the page had in
  * scope. A `resume` entry is the user's answer to an interrupt: it keeps `interruptId` and
  * `status`, and its `payload` goes under any group.
+ *
+ * Any OTHER top-level key is redacted in full as soon as any group is selected. A body that is
+ * not really a `RunAgentInput` — a LangGraph Platform server behind a proxy path, which dialect
+ * detection cannot tell from AG-UI when its first event is not `metadata` — carries the user's
+ * prompt at `input.messages` and resume values at `command`; kept, both would ship verbatim. What
+ * this module has not classified is content (fail closed).
  */
 function redactInput(input: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
-  if (!isPlainObject(input)) return input;
+  // A body that is not an object at all (raw text that failed to parse, say) is unclassified too.
+  if (!isPlainObject(input)) return redactDeep(input);
   const out = ownRecord();
   for (const [key, child] of Object.entries(input)) {
     if (['threadId', 'runId', 'parentRunId', 'tools'].includes(key)) out[key] = child;
@@ -423,6 +430,20 @@ function mapEntries(
   fn: (key: string, child: unknown) => unknown,
 ): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, fn(key, child)]));
+}
+
+/**
+ * A structure slot's value — an id, a name, a type, an index, a status. Kept only while it is a
+ * scalar: an object or list in a slot that should hold a name is not known to be structure, so it
+ * is redacted in full (fail closed).
+ */
+function scalar(value: unknown): unknown {
+  return value === null || ['string', 'number', 'boolean'].includes(typeof value) ? value : redactDeep(value);
+}
+
+/** A structure slot that may also hold a list of scalars (`stream_mode`, `interrupt_before`, `next`). */
+function scalars(value: unknown): unknown {
+  return Array.isArray(value) ? value.map((item) => scalar(item)) : scalar(value);
 }
 
 /** Every group: what a message inside graph state is redacted with once `state` is selected. */
@@ -466,7 +487,7 @@ function redactBlock(
   return mapEntries(block, (key, child) => {
     const field = Object.prototype.hasOwnProperty.call(fields, key) ? fields[key] : undefined;
     if (field !== undefined) return field(child);
-    return BLOCK_STRUCTURE.has(key) ? child : redactDeep(child);
+    return BLOCK_STRUCTURE.has(key) ? scalar(child) : redactDeep(child);
   });
 }
 
@@ -504,13 +525,17 @@ function redactToolCalls(calls: unknown, set: ReadonlySet<RedactionGroup>): unkn
     isPlainObject(call)
       ? mapEntries(call, (key, child) => {
           if (key === 'args') return owned(child, 'toolArgs', set);
-          return key === 'name' || BLOCK_STRUCTURE.has(key) ? child : redactDeep(child);
+          return key === 'name' || BLOCK_STRUCTURE.has(key) ? scalar(child) : redactDeep(child);
         })
       : redactDeep(call),
   );
 }
 
-/** Message keys that are structure or developer-authored, kept under every group. */
+/**
+ * Message keys that are structure or developer-authored, kept under every group while scalar —
+ * except a human message's `name`, which is the user's own handle in a multi-user chat and is
+ * `text`'s.
+ */
 const LC_MESSAGE_KEPT: ReadonlySet<string> = new Set(['type', 'role', 'id', 'name', 'tool_call_id', 'status', 'chunk_position']);
 
 /**
@@ -544,9 +569,11 @@ function isToolResultMessage(message: Record<string, unknown>): boolean {
 function redactLcMessage(message: unknown, set: ReadonlySet<RedactionGroup>): unknown {
   if (!isPlainObject(message)) return redactDeep(message);
   const tool = isToolResultMessage(message);
+  const human = roleOf(message.type) === 'human' || message.role === 'user' || message.role === 'human';
   const textGroup: RedactionGroup = tool ? 'toolResults' : 'text';
   return mapEntries(message, (key, child) => {
-    if (LC_MESSAGE_KEPT.has(key)) return child;
+    if (key === 'name' && human) return owned(scalar(child), 'text', set);
+    if (LC_MESSAGE_KEPT.has(key)) return scalar(child);
     switch (key) {
       case 'content':
         if (typeof child === 'string') return owned(child, textGroup, set);
@@ -560,7 +587,7 @@ function redactLcMessage(message: unknown, set: ReadonlySet<RedactionGroup>): un
         return tool ? owned(child, 'toolResults', set) : redactDeep(child);
       case 'response_metadata':
         return isPlainObject(child)
-          ? mapEntries(child, (metaKey, value) => (RESPONSE_METADATA_KEPT.has(metaKey) ? value : redactDeep(value)))
+          ? mapEntries(child, (metaKey, value) => (RESPONSE_METADATA_KEPT.has(metaKey) ? scalar(value) : redactDeep(value)))
           : redactDeep(child);
       case 'usage_metadata':
         return keepCounts(child);
@@ -649,7 +676,7 @@ const LG_RUN_METADATA_KEPT: ReadonlySet<string> = new Set(['run_id', 'attempt', 
 function redactCheckpoint(payload: Record<string, unknown>, set: ReadonlySet<RedactionGroup>): unknown {
   return mapEntries(payload, (key, child) => {
     if (key === 'values') return redactState(child, set);
-    if (key === 'next') return child;
+    if (key === 'next') return scalars(child);
     return redactDeep(child);
   });
 }
@@ -664,7 +691,7 @@ function redactLangGraphEvent(mode: string, payload: unknown, set: ReadonlySet<R
       // `{run_id, attempt}`: the run's identity, nothing anyone typed. Only those keys: a key a
       // later server adds is one this module has never classified (fail closed).
       if (!isPlainObject(payload)) break;
-      return mapEntries(payload, (key, child) => (LG_RUN_METADATA_KEPT.has(key) ? child : redactDeep(child)));
+      return mapEntries(payload, (key, child) => (LG_RUN_METADATA_KEPT.has(key) ? scalar(child) : redactDeep(child)));
     case 'messages':
       if (!Array.isArray(payload)) break;
       return payload.map((item, i) => (i === 0 ? redactLcMessage(item, set) : i === 1 ? redactLgMeta(item) : redactDeep(item)));
@@ -762,13 +789,15 @@ function redactCommand(command: unknown, set: ReadonlySet<RedactionGroup>): unkn
 function redactLangGraphBody(input: unknown, set: ReadonlySet<RedactionGroup>): unknown {
   if (!isPlainObject(input)) return redactWholesale(input, { keepAguiType: false });
   return mapEntries(input, (key, value) => {
-    if (LANGGRAPH_SETTINGS_KEYS.has(key)) return value;
+    if (LANGGRAPH_SETTINGS_KEYS.has(key)) return scalars(value);
     if (key === 'input') {
       if (!isPlainObject(value)) return redactDeep(value);
       // `input.messages` is the prompt in any form `add_messages` accepts: a list, one message, or
-      // a bare string — a non-list is still a message, never state.
+      // a bare string — a non-list is still a message, never state. Every other input key is the
+      // graph's input schema, which is state AND, as often as not, the user's own words (a RAG
+      // graph's `question`): owned by `text` and `state` both.
       return mapEntries(value, (inputKey, child) => {
-        if (inputKey !== 'messages') return redactState(child, set);
+        if (inputKey !== 'messages') return set.has('text') ? redactDeep(child) : redactState(child, set);
         return Array.isArray(child) ? child.map((message) => redactLcMessage(message, set)) : redactLcMessage(child, set);
       });
     }

@@ -1229,15 +1229,24 @@ describe('redactLine — a LangGraph Platform request body fails closed', () => 
   });
 
   it('leaves an AG-UI request on the RunAgentInput path', () => {
-    const agui: JsonlRequest = { ...line, input: { threadId: 't', messages: [{ role: 'user', content: 'hello there' }], metadata: { keep: 'me' } } };
+    // `tools` tells the two paths apart: kept by the RunAgentInput rules, an unknown key (so
+    // redacted in full) on the LangGraph path. An unknown top-level key fails closed on both.
+    const tools = [{ name: 'lookup', description: 'look it up', parameters: { type: 'object' } }];
+    const agui: JsonlRequest = {
+      ...line,
+      input: { threadId: 't', messages: [{ role: 'user', content: 'hello there' }], tools, metadata: { keep: 'me' } },
+    };
     const out = redactLine(agui, ['text'], 'agui') as JsonlRequest;
     // `metadata` is not a `RunAgentInput` field, so it is content no group can claim and goes
     // under any group (LangGraph PR 4) — the RunAgentInput path is per field, not a passthrough.
     expect(out.input).toEqual({
       threadId: 't',
       messages: [{ role: 'user', content: '«redacted: 11 chars»' }],
+      tools,
       metadata: { keep: '«redacted: 2 chars»' },
     });
+    const asLangGraph = redactLine(agui, ['text'], 'langgraph') as JsonlRequest;
+    expect((asLangGraph.input as { tools: unknown }).tools).not.toEqual(tools);
   });
 });
 
@@ -1493,7 +1502,8 @@ describe('redactLine — LangGraph Platform, field by field (L16)', () => {
           assistant_id: 'agent',
           input: {
             messages: [{ type: 'human', id: 'h1', content: as(g, 'text', 'PROMPT-SECRET') }],
-            topic: as(g, 'state', 'INPUT-STATE-SECRET'),
+            // An input-schema key is the user's words as often as state: `text` and `state` own it.
+            topic: g.has('text') ? R('INPUT-STATE-SECRET') : as(g, 'state', 'INPUT-STATE-SECRET'),
           },
           command: { resume: as(g, 'text', 'RESUME-SECRET'), update: { notes: as(g, 'state', 'UPDATE-SECRET') }, goto: 'agent' },
           config: { configurable: { user_token: R('CONFIG-SECRET') } },
@@ -1665,6 +1675,83 @@ describe('redactLine — LangGraph Platform, field by field (L16)', () => {
     const out = run(lg('error', { error: { detail: 'ERR-OBJ' }, message: 'm' }), ['toolArgs']);
     expect(JSON.stringify(out)).not.toContain('ERR-OBJ');
     expect(run(lg('error', { error: 'ValueError', message: 'm' }), ['toolArgs'])).toEqual({ error: 'ValueError', message: R('m') });
+  });
+
+  it('owns a human message\'s name by text; an AI or tool message\'s name is kept', () => {
+    // In a multi-user chat LangChain sets a human message's `name` to the user's handle.
+    const human = { type: 'human', id: 'h1', name: 'priya.k', content: 'hi' };
+    const ai = { type: 'ai', id: 'a1', name: 'research_agent', content: 'yo' };
+    const tool = { type: 'tool', id: 't1', name: 'lookup', tool_call_id: 'c1', content: 'r' };
+    const role = { role: 'user', name: 'sam.j', content: 'hey' };
+    const out = run(lg('values', { messages: [human, ai, tool, role] }), ['text']) as { messages: Array<Record<string, unknown>> };
+    expect(out.messages.map((m) => m.name)).toEqual([R('priya.k'), 'research_agent', 'lookup', R('sam.j')]);
+    const body = run(req({ input: { messages: [human] } }), ['toolArgs']) as { input: { messages: Array<Record<string, unknown>> } };
+    expect(body.input.messages[0]!.name).toBe('priya.k');
+    // Inside state, `state` reaches every content field of a message, the name included.
+    const state = run(lg('values', { messages: [human] }), ['state']) as { messages: Array<Record<string, unknown>> };
+    expect(state.messages[0]!.name).toBe(R('priya.k'));
+  });
+
+  it('keeps a structure slot only while it holds a scalar', () => {
+    // An object where a name, id, type, index or status belongs is not known to be structure.
+    const O = (tag: string): Record<string, string> => ({ smuggled: `${tag}-SLOT` });
+    const chunk = {
+      type: 'AIMessageChunk',
+      id: O('MSGID'),
+      status: O('STATUS'),
+      chunk_position: O('POS'),
+      content: [{ type: 'text', text: 'x', id: O('BLOCKID'), index: O('BLOCKIDX') }],
+      tool_calls: [{ name: O('TCNAME'), id: O('TCID'), type: O('TCTYPE'), args: {} }],
+      tool_call_chunks: [{ name: O('TCCNAME'), id: 'c', index: O('TCCIDX'), type: 'tool_call_chunk', args: '' }],
+      response_metadata: { model_name: O('MODEL'), finish_reason: 'stop' },
+    };
+    const messages = JSON.stringify(run(lg('messages', [chunk, {}]), ['toolResults']));
+    expect(messages).not.toMatch(/-SLOT/);
+    expect(messages).toContain('"finish_reason":"stop"');
+    expect(messages).toContain('"type":"tool_call_chunk"');
+    const typed = JSON.stringify(run(lg('messages', [{ type: O('TYPE'), content: 'x' }, {}]), ['toolResults']));
+    expect(typed).not.toMatch(/-SLOT/);
+    const metadata = JSON.stringify(run(lg('metadata', { run_id: O('RUNID'), attempt: 1 }), ['toolResults']));
+    expect(metadata).not.toMatch(/-SLOT/);
+    expect(metadata).toContain('"attempt":1');
+    const checkpoint = JSON.stringify(run(lg('checkpoints', { values: {}, next: ['agent', O('NEXT')] }), ['toolResults']));
+    expect(checkpoint).not.toMatch(/-SLOT/);
+    expect(checkpoint).toContain('"agent"');
+    const body = run(req({ assistant_id: O('ASSISTANT'), stream_mode: ['values', O('MODE')], stream_subgraphs: true }), ['toolResults']);
+    expect(JSON.stringify(body)).not.toMatch(/-SLOT/);
+    expect((body as { stream_mode: unknown[] }).stream_mode[0]).toBe('values');
+    expect((body as { stream_subgraphs: unknown }).stream_subgraphs).toBe(true);
+  });
+
+  it('owns a request input key other than messages by text as well as state', () => {
+    // A RAG graph's input schema `{question}` is the user's own words.
+    const body = { input: { question: 'QUESTION-SECRET', messages: [] } };
+    expect(JSON.stringify(run(req(body), ['text']))).not.toContain('QUESTION-SECRET');
+    expect(JSON.stringify(run(req(body), ['state']))).not.toContain('QUESTION-SECRET');
+    expect(JSON.stringify(run(req(body), ['reasoning']))).toContain('QUESTION-SECRET');
+  });
+
+  it('fails closed on an AG-UI body\'s unknown top-level keys', () => {
+    // A LangGraph Platform server behind a proxy path whose first event is not `metadata` is
+    // classified AG-UI: its body's prompt sits at `input.messages`, its resume value at `command`.
+    const body = {
+      threadId: 't1',
+      runId: 'r1',
+      parentRunId: 'p1',
+      tools: [{ name: 'lookup' }],
+      messages: [{ id: 'u1', role: 'user', content: 'hi' }],
+      input: { messages: [{ type: 'human', content: 'PROXIED-PROMPT' }] },
+      command: { resume: 'PROXIED-RESUME' },
+    };
+    const request: JsonlRequest = { kind: 'request', connId: 'c1', tMs: 0, method: 'POST', url: '/api/chat', input: body };
+    for (const group of ALL_REDACTION_GROUPS) {
+      const out = redactLine(request, [group], 'agui') as JsonlRequest;
+      expect(JSON.stringify(out)).not.toMatch(/PROXIED-/);
+      expect(out.input).toMatchObject({ threadId: 't1', runId: 'r1', parentRunId: 'p1', tools: [{ name: 'lookup' }] });
+    }
+    // Not an object at all — a body that failed to parse — is unclassified too.
+    const raw = redactLine({ ...request, input: 'RAW-BODY-TEXT' }, ['state'], 'agui') as JsonlRequest;
+    expect(raw.input).toBe(R('RAW-BODY-TEXT'));
   });
 
   it('leaves AG-UI alone: a named matching frame and a RunAgentInput body are redacted as before', () => {
