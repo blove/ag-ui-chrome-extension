@@ -72,11 +72,12 @@ compatibility target because it is the largest AG-UI client population.
 - Record → export `.agui.jsonl` → import and replay
 - Redacted bug-report bundle
 
-### Phase 2 — Threadplane (specified in §14; §14.1 and §14.2 built)
+### Phase 2 — Threadplane (specified in §14; §14.1, §14.2 and §14.6 built)
 
 Angular signal graph, LangGraph-adapter normalization, `MockAgentTransport` fixture
 export, interrupt simulator, A2UI/json-render spec inspector. LangGraph normalization
-(§14.1) and the `MockAgentTransport` fixture export (§14.2) are built; the rest is not.
+(§14.1), the `MockAgentTransport` fixture export (§14.2) and the detection badge (§14.6) are
+built; the rest is not.
 
 ### Non-goals
 
@@ -504,6 +505,10 @@ registry. Also applies to CopilotKit's A2UI middleware, so it isn't Threadplane-
 **14.6 Detection badge.** Toolbar icon lights up on any AG-UI page and names the stack.
 Cheap, and it's the discovery mechanism — people find out the tool exists by seeing it
 activate somewhere they didn't expect.
+*Built (2026-09-30) — granted origins only: the badge reads `AG`, `LG` or `A+L` per tab on the
+localhost family and the origins the user enabled, never "any AG-UI page", which would need the
+broad host permissions §11 rules out (decision B1 of
+[the plan](../superpowers/plans/2026-09-30-detection-badge.md)).*
 
 ---
 

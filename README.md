@@ -24,11 +24,14 @@ On a page backed by a CopilotKit runtime, Session also names the runtime's versi
 agents it reports, read passively from the `/info` response the page's own client fetches when it
 connects — so the agent list is there before any run. Most AG-UI apps have no CopilotKit runtime and
 never make that request, and Session says so without implying anything is wrong.
+The toolbar icon lights per tab once a page speaks AG-UI (`AG`), LangGraph Platform (`LG`) or both
+(`A+L`), and its tooltip names the stack — on origins the capture layer runs on (localhost and the
+origins you enabled) only; other SSE traffic leaves it dark.
 
 Underneath, `core/` is Chrome-free and runs under Node: the generated event table and shape
 checking, the incremental SSE frame parser, connection detection, chunk expansion, the run model,
 the validator rules, run metrics, the RFC 6902 JSON Patch state timeline, and the `.agui.jsonl`
-codec with redaction. 1,982 tests, plus a Playwright harness that drives the extension in a real
+codec with redaction. 2,012 tests, plus a Playwright harness that drives the extension in a real
 browser against real sockets.
 
 What is not done: the Chrome Web Store submission itself. The listing pipeline is built and all five
