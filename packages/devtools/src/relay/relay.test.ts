@@ -276,6 +276,37 @@ describe('relay — forwarding', () => {
     ]);
   });
 
+  it('forwards an event frame’s name, which the rebuild must name explicitly (L1)', () => {
+    post({
+      source: AGUI_DT_SOURCE,
+      v: PROTOCOL_VERSION,
+      kind: 'frames',
+      connId: 'c1',
+      frames: [
+        { kind: 'event', tMs: 1, raw: '{"run_id":"r1"}', eventName: 'metadata' },
+        { kind: 'event', tMs: 2, raw: '{"type":"RUN_STARTED"}' },
+      ],
+    });
+    const [message] = forwarded(chromeHarness) as Record<string, unknown>[];
+    const frames = (message ?? {}).frames as Record<string, unknown>[];
+    expect(frames[0]).toEqual({ kind: 'event', tMs: 1, raw: '{"run_id":"r1"}', eventName: 'metadata' });
+    // An unnamed frame gains no key: AG-UI frames are forwarded exactly as before.
+    expect(Object.keys(frames[1] ?? {}).sort()).toEqual(['kind', 'raw', 'tMs']);
+  });
+
+  it('normalizes a page-posted "message" name away rather than forwarding it', () => {
+    post({
+      source: AGUI_DT_SOURCE,
+      v: PROTOCOL_VERSION,
+      kind: 'frames',
+      connId: 'c1',
+      frames: [{ kind: 'event', tMs: 1, raw: '{}', eventName: 'message' }],
+    });
+    const [message] = forwarded(chromeHarness) as Record<string, unknown>[];
+    const frames = (message ?? {}).frames as Record<string, unknown>[];
+    expect(Object.keys(frames[0] ?? {}).sort()).toEqual(['kind', 'raw', 'tMs']);
+  });
+
   it('forwards conn-close and binary', () => {
     post({
       source: AGUI_DT_SOURCE,
