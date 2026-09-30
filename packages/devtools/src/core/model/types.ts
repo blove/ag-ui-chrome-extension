@@ -45,7 +45,14 @@ export type IssueCode =
   | 'concurrent-text-messages'
   | 'delta-before-snapshot'
   | 'keepalive-gap'
-  | 'run-started-without-input';
+  | 'run-started-without-input'
+  | 'lg-unknown-event'
+  | 'lg-no-metadata'
+  | 'lg-undecodable'
+  | 'lg-partial-regressed'
+  | 'lg-complete-mismatch'
+  | 'lg-tool-args-invalid'
+  | 'lg-no-final-values';
 
 /**
  * The severity requirements §7 assigns to each code. Issues are emitted from the chunk
@@ -76,6 +83,16 @@ export const ISSUE_SEVERITY: Record<IssueCode, IssueSeverity> = {
   'delta-before-snapshot': 'warning',
   'keepalive-gap': 'info',
   'run-started-without-input': 'info',
+  // LangGraph Platform (spec L12). Raised by the expander, never by the AG-UI rules, which do
+  // not run on synthetic events: an AG-UI issue there would be our translation bug reported as
+  // the user's.
+  'lg-unknown-event': 'warning',
+  'lg-no-metadata': 'warning',
+  'lg-undecodable': 'error',
+  'lg-partial-regressed': 'error',
+  'lg-complete-mismatch': 'warning',
+  'lg-tool-args-invalid': 'error',
+  'lg-no-final-values': 'warning',
 };
 
 export interface Issue {
@@ -289,7 +306,12 @@ export interface RunMetrics {
   totalStreamBytes: number;
 }
 
-export type RunOutcome = 'running' | 'finished' | 'error' | 'aborted' | 'orphaned';
+/**
+ * `interrupted` is LangGraph's human-in-the-loop pause (spec L9): the graph stopped at an
+ * interrupt and is waiting to be resumed. Not an error, and not a plain finish. The AG-UI path
+ * never sets it.
+ */
+export type RunOutcome = 'running' | 'finished' | 'interrupted' | 'error' | 'aborted' | 'orphaned';
 
 export interface Run {
   runId: string;
@@ -325,4 +347,10 @@ export interface Run {
    * and a rule asking about a group name that does not exist should not compile.
    */
   redacted: readonly RedactionGroup[];
+  /**
+   * Set to `'langgraph'` when this run was folded from a LangGraph Platform stream (spec L4);
+   * absent for AG-UI, so every existing run and fixture is unchanged. Metrics read it (L13):
+   * a LangGraph run counts wire event names, because its AG-UI events are synthetic.
+   */
+  dialect?: 'langgraph';
 }
