@@ -34,7 +34,7 @@ describe('DropZone', () => {
           i === 0
             ? fileOf(
                 'happy.agui.jsonl',
-                '{"kind":"header","schemaVersion":1,"tool":"t","capturedAt":"2026-01-01T00:00:00Z","url":"http://x"}\n' +
+                '{"kind":"header","schemaVersion":1,"tool":"t","capturedAt":"2026-01-01T00:00:00Z","url":"http://x","transport":"sse","redacted":[]}\n' +
                   '{"kind":"event","connId":"c1","seq":1,"tMs":0,"event":{"type":"RUN_STARTED","threadId":"t_1","runId":"r_1"}}\n' +
                   '{"kind":"event","connId":"c1","seq":2,"tMs":9,"event":{"type":"RUN_FINISHED","threadId":"t_1","runId":"r_1"}}\n',
               )

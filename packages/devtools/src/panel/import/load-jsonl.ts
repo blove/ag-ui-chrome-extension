@@ -4,11 +4,12 @@ import {
   type JsonlHeader,
   type JsonlKeepalive,
 } from '../../core/jsonl/codec';
-import { cloneRuntimeInfo, isRuntimeInfo, type RuntimeInfo } from '../../core/detect/info';
+import type { RuntimeInfo } from '../../core/detect/info';
 import { createRunBuilder } from '../../core/normalizer/run-builder';
 import type { AguiEvent, CaptureRecord, Issue, Run } from '../../core/model/types';
 import { normalizeEventName } from '../../core/sse/event-name';
 import type { RequestLine } from '../../sw/protocol';
+import { createLineValidator, knownGroups, validateHeader } from './validate-line';
 
 export interface LoadedCapture {
   runs: Run[];
@@ -29,6 +30,10 @@ export interface LoadedCapture {
    *
    * Read by export, not by any tab: E3's cumulative `redacted` needs to know what the file it is
    * re-exporting already had replaced, and no other part of the panel can tell it.
+   *
+   * Validated (`validateHeader`): every field has its declared type, `runtime` included, and
+   * `redacted` keeps every group name the file claimed — known or not — so a re-export cannot
+   * under-report it.
    */
   header: JsonlHeader | null;
   /**
@@ -39,10 +44,14 @@ export interface LoadedCapture {
    * `runtime` key in a header is whatever the file happened to contain — a hand-edited capture, a
    * file from a later version, or something hostile. It reaches the Session tab and then a
    * re-export, so it goes through the same `isRuntimeInfo` grammar the relay and the service
-   * worker use, and a value that fails is dropped rather than repaired.
+   * worker use, and a value that fails is dropped rather than repaired — and reported.
    */
   runtime: RuntimeInfo | null;
-  /** One entry per malformed line, from `decodeJsonl`. Surfaced, never swallowed. */
+  /**
+   * One entry per line that did not load exactly as written: undecodable lines from
+   * `decodeJsonl`, then lines `validate-line.ts` repaired or dropped, in file order within each.
+   * Surfaced, never swallowed — `applyLoaded` turns a non-empty list into the partial-decode notice.
+   */
   decodeErrors: string[];
 }
 
@@ -103,46 +112,70 @@ function toKeepaliveRecord(line: JsonlKeepalive): CaptureRecord {
  * rendering bug.
  *
  * Never throws. A line that will not decode contributes one entry to `decodeErrors` and the
- * remaining lines still load, which is what makes a truncated capture openable.
+ * remaining lines still load, which is what makes a truncated capture openable. A line that
+ * decodes but carries a wrongly typed field is repaired or dropped by `validate-line.ts`, and
+ * contributes one entry the same way.
  */
 export function loadJsonl(text: string, options: { expandChunks?: boolean } = {}): LoadedCapture {
-  const { lines, errors } = decodeJsonl(text);
+  const { lines, lineNumbers, errors } = decodeJsonl(text);
+  const decodeErrors = [...errors];
+  const report = (index: number, kind: string, problems: string[]): void => {
+    if (problems.length === 0) return;
+    decodeErrors.push(`line ${String(lineNumbers[index] ?? '?')}: ${kind}: ${problems.join('; ')}`);
+  };
   /*
    * The header is read BEFORE the fold, not during it.
    *
    * §10 puts it on line 1, so the loop below would reach it first in any well-formed file — but
    * the run builder needs `redacted` at CONSTRUCTION, and a capture whose header was moved or
    * lost must not silently validate as though nothing had been replaced. The FIRST header wins,
-   * for the same reason it does below: a second one is a concatenation artefact.
+   * for the same reason it does below: a second one is a concatenation artefact, and since
+   * nothing reads it, nothing validates it either.
    */
-  const header: JsonlHeader | null = lines.find((line) => line.kind === 'header') ?? null;
+  const headerIndex = lines.findIndex((line) => line.kind === 'header');
+  let header: JsonlHeader | null = null;
+  if (headerIndex !== -1) {
+    const verdict = validateHeader(lines[headerIndex] as JsonlHeader);
+    report(headerIndex, 'header', verdict.problems);
+    header = verdict.line;
+  }
   const builder = createRunBuilder({
     expandChunks: options.expandChunks ?? true,
     // What this file says was taken out of it. A rule whose evidence a group destroyed declines
     // to make its claim, instead of making a finding about the redactor look like one about the
     // agent — see `validator/rules/tool.ts`.
-    redacted: header?.redacted ?? [],
+    redacted: knownGroups(header?.redacted ?? []),
   });
+  const validate = createLineValidator();
   const records: CaptureRecord[] = [];
   const requests: RequestLine[] = [];
   /** Every connection's last observed frame time — the moment it is closed at. */
   const lastTMsByConn = new Map<string, number>();
 
   // A `header` line carries no record, and the one that describes this file was taken above.
-  for (const line of lines) {
-    if (line.kind === 'request') {
+  for (const [index, raw] of lines.entries()) {
+    if (raw.kind === 'request') {
+      const { line, problems } = validate.request(raw);
+      report(index, 'request', problems);
+      if (line === null) continue;
       const { connId, tMs, method, url, input } = line;
       requests.push({ connId, tMs, method, url, input });
       builder.addRequest(connId, method, url, input);
       lastTMsByConn.set(connId, tMs);
-    } else if (line.kind === 'event') {
+    } else if (raw.kind === 'event') {
+      const { line, problems } = validate.event(raw);
+      report(index, 'event', problems);
+      if (line === null) continue;
       const record = toEventRecord(line);
       records.push(record);
       builder.addRecord(record);
       lastTMsByConn.set(line.connId, line.tMs);
-    } else if (line.kind === 'keepalive') {
+    } else if (raw.kind === 'keepalive') {
       // A keepalive is a real frame: it extends the connection's lifetime and it is what a
       // `keepalive-gap` anchors to, even though it never enters `recordSeqs`.
+      const { line, problems } = validate.keepalive(raw);
+      report(index, 'keepalive', problems);
+      if (line === null) continue;
       const record = toKeepaliveRecord(line);
       records.push(record);
       builder.addRecord(record);
@@ -160,7 +193,7 @@ export function loadJsonl(text: string, options: { expandChunks?: boolean } = {}
     requests,
     issues: builder.allIssues(),
     header,
-    runtime: isRuntimeInfo(header?.runtime) ? cloneRuntimeInfo(header.runtime) : null,
-    decodeErrors: errors,
+    runtime: header?.runtime ?? null,
+    decodeErrors,
   };
 }
