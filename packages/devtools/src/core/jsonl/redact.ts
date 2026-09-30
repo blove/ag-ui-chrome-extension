@@ -1,4 +1,4 @@
-import { EVENT_TYPES } from '../events/event-table.generated';
+import { EVENT_TABLE, EVENT_TYPES } from '../events/event-table.generated';
 import type { JsonlLine } from './codec';
 
 const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set<string>(EVENT_TYPES);
@@ -59,27 +59,152 @@ function redactDeep(value: unknown): unknown {
   return redactLeaf(value);
 }
 
-/** Single-field replacements: event type -> the group that owns it and the field it names. */
-const SINGLE_FIELD: Record<string, { group: RedactionGroup; field: string }> = {
-  TEXT_MESSAGE_CONTENT: { group: 'text', field: 'delta' },
-  TEXT_MESSAGE_CHUNK: { group: 'text', field: 'delta' },
-  REASONING_MESSAGE_CONTENT: { group: 'reasoning', field: 'delta' },
-  REASONING_MESSAGE_CHUNK: { group: 'reasoning', field: 'delta' },
-  // Field is `encryptedValue`, verified against @ag-ui/core@0.0.57's
-  // ReasoningEncryptedValueEventSchema shape (type, timestamp, rawEvent,
-  // subtype, entityId, encryptedValue). There is no `value` field.
-  REASONING_ENCRYPTED_VALUE: { group: 'reasoning', field: 'encryptedValue' },
-  TOOL_CALL_ARGS: { group: 'toolArgs', field: 'delta' },
-  TOOL_CALL_CHUNK: { group: 'toolArgs', field: 'delta' },
-  TOOL_CALL_RESULT: { group: 'toolResults', field: 'content' },
-};
-
-function redactPatchOp(op: unknown): unknown {
-  if (op === null || typeof op !== 'object' || Array.isArray(op)) return op;
-  const src = op as Record<string, unknown>;
-  if (!('value' in src)) return { ...src };
-  return { ...src, value: redactDeep(src.value) };
+/**
+ * Redacts `value` if `group` is selected. `redactDeep` rather than `redactLeaf`, so that a field
+ * the protocol types as a string but a server sends as an object is still redacted, not skipped.
+ */
+function owned(
+  value: unknown,
+  group: RedactionGroup,
+  groups: ReadonlySet<RedactionGroup>,
+): unknown {
+  return groups.has(group) ? redactDeep(value) : value;
 }
+
+/** Keeps an object's `keep` keys and redacts every other key's value; a non-object, wholesale. */
+function keepOnly(value: unknown, keep: readonly string[]): unknown {
+  if (!isPlainObject(value)) return redactDeep(value);
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    out[key] = keep.includes(key) ? child : redactDeep(child);
+  }
+  return out;
+}
+
+/**
+ * A JSON Patch — `STATE_DELTA.delta` or `ACTIVITY_DELTA.patch`. `op`, `path` and `from` are
+ * structure, and they are what decides whether a patch applies, so `state-patch-failed` fires
+ * at the same ops redacted or not. `value` belongs to `state`; any other key is unclassifiable.
+ */
+function redactPatch(ops: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
+  if (!Array.isArray(ops)) return redactDeep(ops);
+  return ops.map((op) => {
+    if (!isPlainObject(op)) return redactDeep(op);
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(op)) {
+      if (key === 'op' || key === 'path' || key === 'from') out[key] = child;
+      else if (key === 'value') out[key] = owned(child, 'state', groups);
+      else out[key] = redactDeep(child);
+    }
+    return out;
+  });
+}
+
+/**
+ * `RUN_FINISHED.outcome`: `{type: 'success'}`, or `{type: 'interrupt', interrupts: [...]}` whose
+ * entries explain to the user why the run stopped. No group owns that text, so it goes under any
+ * of them; an interrupt keeps its `id`, the `toolCallId` it pauses and its expiry.
+ */
+function redactOutcome(outcome: unknown): unknown {
+  if (!isPlainObject(outcome)) return redactDeep(outcome);
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(outcome)) {
+    if (key === 'type') out[key] = child;
+    else if (key === 'interrupts' && Array.isArray(child)) {
+      out[key] = child.map((interrupt) => keepOnly(interrupt, ['id', 'toolCallId', 'expiresAt']));
+    } else out[key] = redactDeep(child);
+  }
+  return out;
+}
+
+type FieldRule = (value: unknown, groups: ReadonlySet<RedactionGroup>) => unknown;
+
+const ownedBy =
+  (group: RedactionGroup): FieldRule =>
+  (value, groups) =>
+    owned(value, group, groups);
+
+/**
+ * Structure §11 promises survives: ids, roles, names, timestamps. Kept only on a type whose
+ * schema declares the field (`EVENT_TABLE`), so a passthrough field that merely shares a name —
+ * `name` on a `TEXT_MESSAGE_CONTENT` — is not structure by coincidence.
+ *
+ * `role`, `name`, `toolCallName`, `stepName`, `activityType`, `code` (a run error's code) and
+ * `source` (a `RAW` event's provider) are developer-authored labels, the same kind of fact as a
+ * tool's name. `subtype` is the enum `'tool-call' | 'message'`, and `replace` a boolean.
+ */
+const STRUCTURAL_FIELDS: ReadonlySet<string> = new Set([
+  'type',
+  'timestamp',
+  'threadId',
+  'runId',
+  'parentRunId',
+  'messageId',
+  'parentMessageId',
+  'toolCallId',
+  'toolCallName',
+  'entityId',
+  'subtype',
+  'role',
+  'name',
+  'stepName',
+  'activityType',
+  'replace',
+  'code',
+  'source',
+]);
+
+/**
+ * Structure some servers send outside the schema, which the panel reads: CopilotKit's
+ * `RUN_STARTED.agentId` is the Runs tab's agent column, and PRIVACY.md promises agent ids survive.
+ */
+const PASSTHROUGH_STRUCTURE: Record<string, readonly string[]> = { RUN_STARTED: ['agentId'] };
+
+/**
+ * Every content field @ag-ui/core 0.0.57 names, by event type, and the rule that redacts it.
+ * Checked against the schemas, not the generated table's kinds: `REASONING_ENCRYPTED_VALUE`'s
+ * field is `encryptedValue` (there is no `value`), and the deprecated `THINKING_*` events carry
+ * reasoning under their own names.
+ *
+ * A field that is neither here nor structural — `rawEvent`, which any event may carry and which
+ * is typically the upstream provider's own chunk; `CUSTOM.value`; `RAW.event`; `RUN_ERROR.message`;
+ * `RUN_FINISHED.result`; anything `BaseEventSchema`'s `.passthrough()` let through — has content
+ * this module cannot attribute to a group, and is redacted as soon as ANY group is selected.
+ */
+const FIELD_RULES: Record<string, Record<string, FieldRule>> = {
+  TEXT_MESSAGE_CONTENT: { delta: ownedBy('text') },
+  TEXT_MESSAGE_CHUNK: { delta: ownedBy('text') },
+  REASONING_MESSAGE_CONTENT: { delta: ownedBy('reasoning') },
+  REASONING_MESSAGE_CHUNK: { delta: ownedBy('reasoning') },
+  REASONING_ENCRYPTED_VALUE: { encryptedValue: ownedBy('reasoning') },
+  THINKING_START: { title: ownedBy('reasoning') },
+  THINKING_TEXT_MESSAGE_CONTENT: { delta: ownedBy('reasoning') },
+  TOOL_CALL_ARGS: { delta: ownedBy('toolArgs') },
+  TOOL_CALL_CHUNK: { delta: ownedBy('toolArgs') },
+  TOOL_CALL_RESULT: { content: ownedBy('toolResults') },
+  STATE_SNAPSHOT: { snapshot: ownedBy('state') },
+  STATE_DELTA: { delta: redactPatch },
+  ACTIVITY_SNAPSHOT: { content: ownedBy('state') },
+  ACTIVITY_DELTA: { patch: redactPatch },
+  MESSAGES_SNAPSHOT: {
+    messages: (messages, groups) =>
+      Array.isArray(messages)
+        ? messages.map((message) => redactMessage(message, groups))
+        : redactDeep(messages),
+  },
+  /*
+   * `RUN_STARTED` is a lifecycle event that can nonetheless carry a full payload: `input` is an
+   * optional protocol field (@ag-ui/core `RunStartedEventSchema`) echoing the whole
+   * `RunAgentInput` — the user's messages, the app's state, the forwarded props.
+   *
+   * Found by Tier B recording against a live agent. Every hand-written fixture omits `input`,
+   * so the suite had agreed this event carries nothing to protect, while a real deployment
+   * sends it on every run. Redacting the request body and not this one protects nothing: the
+   * same prompt ships in the export either way.
+   */
+  RUN_STARTED: { input: (input, groups) => redactInput(input, groups) },
+  RUN_FINISHED: { outcome: (outcome) => redactOutcome(outcome) },
+};
 
 /**
  * Fails closed on anything this module cannot classify into one of the five §11 groups.
@@ -113,7 +238,7 @@ function redactPatchOp(op: unknown): unknown {
  * `type`, so `keepAguiType` gates it. A `type` that is present but not even a string (e.g. a
  * number) is set to `null` rather than redacted as a leaf: a redacted string still reads to the
  * validator as SOME `type` value and would turn a `shape-invalid` issue into a fabricated
- * `unknown-event-type` — the same "don't invent a claim" rule `redactPatchOp` follows for paths.
+ * `unknown-event-type` — the same "don't invent a claim" rule `redactPatch` follows for paths.
  * That parity reasoning is forward-looking, not currently observable: `checkShape`, the module
  * that raises `shape-invalid`/`unknown-event-type`, has no caller outside its own unit tests
  * today, so nothing in the live import/run-builder pipeline actually produces either code yet.
@@ -141,46 +266,31 @@ function redactWholesale(event: unknown, opts: { keepAguiType: boolean }): unkno
   return out;
 }
 
+/**
+ * A known AG-UI event, field by field. Fails closed per field, not only per payload: every field
+ * is structure the schema declares, content a group owns, or content no group can claim.
+ * `groups` is never empty here — `redactLine` returns early on an empty selection.
+ */
 function redactEvent(event: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
-  if (event === null || typeof event !== 'object' || Array.isArray(event)) {
-    return redactWholesale(event, { keepAguiType: true });
-  }
-  const src = event as Record<string, unknown>;
-  const type = typeof src.type === 'string' ? src.type : '';
-
-  if (!KNOWN_EVENT_TYPES.has(type)) {
+  if (!isPlainObject(event)) return redactWholesale(event, { keepAguiType: true });
+  const type = typeof event.type === 'string' ? event.type : '';
+  const spec = EVENT_TABLE[type];
+  if (!KNOWN_EVENT_TYPES.has(type) || spec === undefined) {
     return redactWholesale(event, { keepAguiType: true });
   }
 
-  const single = SINGLE_FIELD[type];
-  if (single && groups.has(single.group) && single.field in src) {
-    return { ...src, [single.field]: redactLeaf(src[single.field]) };
+  const declared = new Set(spec.fields.map((field) => field.name));
+  const passthrough = PASSTHROUGH_STRUCTURE[type] ?? [];
+  const rules = FIELD_RULES[type] ?? {};
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(event)) {
+    const rule = rules[key];
+    if (rule !== undefined) out[key] = rule(value, groups);
+    else if (STRUCTURAL_FIELDS.has(key) && declared.has(key)) out[key] = value;
+    else if (passthrough.includes(key)) out[key] = value;
+    else out[key] = redactDeep(value);
   }
-
-  if (groups.has('state')) {
-    if (type === 'STATE_SNAPSHOT' && 'snapshot' in src) {
-      return { ...src, snapshot: redactDeep(src.snapshot) };
-    }
-    if (type === 'STATE_DELTA' && Array.isArray(src.delta)) {
-      return { ...src, delta: src.delta.map((op) => redactPatchOp(op)) };
-    }
-  }
-
-  /*
-   * `RUN_STARTED` is a lifecycle event that can nonetheless carry a full payload: `input` is an
-   * optional protocol field (@ag-ui/core `RunStartedEventSchema`) echoing the whole
-   * `RunAgentInput` — the user's messages, the app's state, the forwarded props.
-   *
-   * Found by Tier B recording against a live agent. Every hand-written fixture omits `input`,
-   * so the suite had agreed this event carries nothing to protect, while a real deployment
-   * sends it on every run. Redacting the request body and not this one protects nothing: the
-   * same prompt ships in the export either way.
-   */
-  if (type === 'RUN_STARTED' && 'input' in src) {
-    return { ...src, input: redactInput(src.input, groups) };
-  }
-
-  return event;
+  return out;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -188,31 +298,63 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * One message of a `RunAgentInput.messages` array.
- *
- * Group ownership is per field rather than per line. A message's `content` is authored text
- * except on a `tool`-role message, where it is a tool result — so `toolResults` owns it there
- * and `text` must not reach it, or deselecting `toolResults` could not protect it.
+ * Which group owns a message's `content`, by `role`. Ownership is per field rather than per
+ * line: `content` is authored text on a user, assistant, system or developer message, but a tool
+ * result on a `tool` message, reasoning on a `reasoning` one and app state on an `activity` one —
+ * so deselecting `toolResults` must leave a tool message's body alone even with `text` selected.
+ * An unknown role's content cannot be attributed, so it goes under any group.
+ */
+const CONTENT_GROUP_BY_ROLE: Record<string, RedactionGroup> = {
+  user: 'text',
+  assistant: 'text',
+  system: 'text',
+  developer: 'text',
+  tool: 'toolResults',
+  reasoning: 'reasoning',
+  activity: 'state',
+};
+
+/** One tool call an assistant message replays: `id`, `type` and function `name` are structure. */
+function redactToolCall(call: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
+  if (!isPlainObject(call)) return redactDeep(call);
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(call)) {
+    if (key === 'id' || key === 'type') out[key] = child;
+    else if (key === 'encryptedValue') out[key] = owned(child, 'reasoning', groups);
+    else if (key === 'function' && isPlainObject(child)) {
+      const fn: Record<string, unknown> = {};
+      for (const [fnKey, fnChild] of Object.entries(child)) {
+        if (fnKey === 'name') fn[fnKey] = fnChild;
+        else if (fnKey === 'arguments') fn[fnKey] = owned(fnChild, 'toolArgs', groups);
+        else fn[fnKey] = redactDeep(fnChild);
+      }
+      out[key] = fn;
+    } else out[key] = redactDeep(child);
+  }
+  return out;
+}
+
+/**
+ * One message, in a `MESSAGES_SNAPSHOT` or a `RunAgentInput.messages` array — the same
+ * `MessageSchema` in both places, so the same rules.
  */
 function redactMessage(message: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
-  if (!isPlainObject(message)) return message;
-  const out: Record<string, unknown> = { ...message };
-
-  const contentGroup: RedactionGroup = message.role === 'tool' ? 'toolResults' : 'text';
-  if ('content' in message && groups.has(contentGroup)) {
-    out.content = redactDeep(message.content);
+  if (!isPlainObject(message)) return redactDeep(message);
+  const role = typeof message.role === 'string' ? message.role : '';
+  const contentGroup = CONTENT_GROUP_BY_ROLE[role] as RedactionGroup | undefined;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(message)) {
+    if (['id', 'role', 'name', 'toolCallId', 'activityType'].includes(key)) out[key] = child;
+    else if (key === 'content') {
+      out[key] =
+        contentGroup === undefined ? redactDeep(child) : owned(child, contentGroup, groups);
+    } else if (key === 'encryptedValue') out[key] = owned(child, 'reasoning', groups);
+    // A tool message's `error` is part of what the tool returned.
+    else if (key === 'error') out[key] = owned(child, 'toolResults', groups);
+    else if (key === 'toolCalls' && Array.isArray(child)) {
+      out[key] = child.map((call) => redactToolCall(call, groups));
+    } else out[key] = redactDeep(child);
   }
-
-  // An assistant message replays its tool calls, arguments included, as a JSON string.
-  if (groups.has('toolArgs') && Array.isArray(message.toolCalls)) {
-    out.toolCalls = message.toolCalls.map((call) => {
-      if (!isPlainObject(call) || !isPlainObject(call.function)) return call;
-      const fn = call.function;
-      if (!('arguments' in fn)) return call;
-      return { ...call, function: { ...fn, arguments: redactLeaf(fn.arguments) } };
-    });
-  }
-
   return out;
 }
 
@@ -221,23 +363,24 @@ function redactMessage(message: unknown, groups: ReadonlySet<RedactionGroup>): u
  * echoes back in `RUN_STARTED.input`.
  *
  * `tools` deliberately survives: a tool schema is developer-authored structure, no §11 group
- * owns it, and it is most of what makes a captured run legible.
+ * owns it, and it is most of what makes a captured run legible. `state`, `context` and
+ * `forwardedProps` are app-supplied payloads, all of which can carry anything the page had in
+ * scope. A `resume` entry is the user's answer to an interrupt: it keeps `interruptId` and
+ * `status`, and its `payload` goes under any group.
  */
 function redactInput(input: unknown, groups: ReadonlySet<RedactionGroup>): unknown {
   if (!isPlainObject(input)) return input;
-  const out: Record<string, unknown> = { ...input };
-
-  if (Array.isArray(input.messages)) {
-    out.messages = input.messages.map((message) => redactMessage(message, groups));
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(input)) {
+    if (['threadId', 'runId', 'parentRunId', 'tools'].includes(key)) out[key] = child;
+    else if (key === 'messages' && Array.isArray(child)) {
+      out[key] = child.map((message) => redactMessage(message, groups));
+    } else if (key === 'state' || key === 'context' || key === 'forwardedProps') {
+      out[key] = owned(child, 'state', groups);
+    } else if (key === 'resume' && Array.isArray(child)) {
+      out[key] = child.map((entry) => keepOnly(entry, ['interruptId', 'status']));
+    } else out[key] = redactDeep(child);
   }
-
-  // App-supplied payloads, all of which can carry anything the page had in scope.
-  if (groups.has('state')) {
-    for (const key of ['state', 'context', 'forwardedProps']) {
-      if (key in input) out[key] = redactDeep(input[key]);
-    }
-  }
-
   return out;
 }
 

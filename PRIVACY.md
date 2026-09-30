@@ -1,6 +1,6 @@
 # Privacy Policy — AG-UI DevTools
 
-**Effective 15 August 2026.** Applies to the AG-UI DevTools Chrome extension and this repository.
+**Effective 30 September 2026.** Applies to the AG-UI DevTools Chrome extension and this repository.
 
 ## The short version
 
@@ -73,17 +73,21 @@ arguments and results included. What happens to that file afterwards is up to yo
 you are about to attach to an issue, or send to anyone, with the same care as the conversation it
 came from.
 
-Selecting every category does not make the file empty of everything, and it is better to say so
-here than to let you find out from a diff. Structure survives by design, and so does anything the
-**developer** wrote rather than anything the **user** typed: in AG-UI events, event types, message
-and tool-call ids, JSON Pointer paths, tool names and their schemas, and — on a page backed by a
-CopilotKit runtime — the runtime version and the agent ids, names and descriptions its `/info`
-response reported. On a stream whose events carry a name in the SSE `event:` field — LangGraph
-Platform, for one — that name survives too, including subgraph namespaces such as
-`messages|research:<task id>`, which name nodes in the developer's own graph. None of the five
-categories covers that material, because removing it would cost a bug report most of what makes it
-legible while protecting nothing anyone typed. If an agent id or description is itself sensitive in
-your deployment, a capture is not the place to find that out — check the file before you share it.
+Selecting every category does not make the file empty of everything, and it is better to say so here
+than to let you find out from a diff. Structure survives by design, and so does anything the
+**developer** wrote rather than anything the **user** typed: in AG-UI events, event types, message,
+tool-call, run and thread ids, message roles, step names, activity types, `CUSTOM` event names, the
+provider a `RAW` event names as its source, error codes, JSON Pointer paths and patch operations,
+tool names and their schemas, and — on a page backed by a CopilotKit runtime — the runtime version
+and the agent ids, names and descriptions its `/info` response reported. On a stream whose events
+carry a name in the SSE `event:` field — LangGraph Platform, for one — that name survives too,
+including subgraph namespaces such as `messages|research:<task id>`, which name nodes in the
+developer's own graph. None of the five categories covers that material, because removing it would
+cost a bug report most of what makes it legible while protecting nothing anyone typed. One more
+field survives that can hold something closer to personal data: a message's optional `name`, which
+identifies who wrote it, and an app may fill it with the user's own display name. If
+an agent id or description is itself sensitive in your deployment, a capture is not the place to
+find that out — check the file before you share it.
 
 A frame whose SSE event name is the same string as the AG-UI event type it carries — an AG-UI
 server that names its `event:` field after the event, as Hono's `writeSSE({ event, data })` does —
@@ -97,13 +101,18 @@ payload with no event name, a `type` field that follows AG-UI's own naming conve
 has a real edge to it: if an app keys a state map, or any other object, by text a user typed — a
 note keyed by its own title, say — that text is exported as a key, and no category redacts a key.
 
-This is not yet complete for AG-UI itself. With every category selected, the payloads of some
-AG-UI event types — `MESSAGES_SNAPSHOT`, `CUSTOM`, `RAW`, `ACTIVITY_SNAPSHOT`, `ACTIVITY_DELTA`,
-`THINKING_TEXT_MESSAGE_CONTENT`, and `RUN_ERROR`'s message — plus `RUN_FINISHED`'s `result` and
-the optional `rawEvent` field any AG-UI event may carry (a server that echoes the underlying
-provider's own chunk there, on any event type, including one a category otherwise redacts, such as
-`TEXT_MESSAGE_CONTENT`), are still exported as captured, so check the file before sharing a capture
-that contains one of them.
+Every field of every AG-UI event type is accounted for, including the ones whose content fits no
+single category. A `MESSAGES_SNAPSHOT` is redacted message by message according to who wrote each
+one: user, assistant, system and developer messages under message text, tool messages under tool
+results, reasoning messages under reasoning content, activity messages under state values, and the
+tool calls an assistant message replays under tool arguments. The older `THINKING_*` events count
+as reasoning content, and activities count as state values. Some content cannot be attributed to
+any one category, so it is removed as soon as you select any category: a `CUSTOM` event's value, a
+`RAW` event's payload, a run's error message, result and interrupt details, your answer to an
+interrupt, and the `rawEvent` field any AG-UI event may carry. A server may use that field to echo
+the underlying provider's own chunk, even on an event whose own content a category already covers.
+The same applies to any field the protocol does not define, because the extension cannot know what
+that field holds.
 
 ## Remote code
 

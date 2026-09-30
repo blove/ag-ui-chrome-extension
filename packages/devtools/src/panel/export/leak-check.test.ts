@@ -47,63 +47,148 @@ function stringLeaves(value: unknown, out: string[]): void {
 }
 
 /**
+ * Fields §11 promises survive: structure, not content. Restated here rather than imported, for
+ * the reason at the top of this file. `role`, `name`, `toolCallName`, `stepName`, `activityType`,
+ * `code` and `source` are developer-authored labels, not anything a user typed or a model wrote.
+ *
+ * Everything NOT on this list is treated as payload by `eventPayload` below. That makes this
+ * check fail closed the same way the export must: @ag-ui/core's `BaseEventSchema` is
+ * `.passthrough()`, so any event may carry fields no schema names, and the optional `rawEvent`
+ * that every event may carry is typically the upstream provider's own chunk, content and all.
+ */
+const STRUCTURAL_EVENT_FIELDS: ReadonlySet<string> = new Set([
+  'type',
+  'timestamp',
+  'threadId',
+  'runId',
+  'parentRunId',
+  'messageId',
+  'parentMessageId',
+  'toolCallId',
+  'toolCallName',
+  'entityId',
+  'subtype',
+  'role',
+  'name',
+  'stepName',
+  'activityType',
+  'replace',
+  'code',
+  'source',
+  // Not in the schema, but CopilotKit sends it on `RUN_STARTED` and it names the agent.
+  'agentId',
+]);
+
+/** Every string leaf of `value` except the top-level keys `keep` names. */
+function leavesExcept(value: unknown, keep: readonly string[], out: string[]): void {
+  if (!isObject(value)) {
+    stringLeaves(value, out);
+    return;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (!keep.includes(key)) stringLeaves(child, out);
+  }
+}
+
+/**
+ * The payload strings one message carries, in a `MESSAGES_SNAPSHOT` or a `RunAgentInput`.
+ *
+ * `id`, `role`, `name`, `toolCallId` and `activityType` are structure; a tool call keeps its `id`,
+ * `type` and function `name`. Everything else — `content` whatever the role, `encryptedValue`, a
+ * tool message's `error`, a tool call's arguments — is payload.
+ */
+function messagePayload(message: unknown, out: string[]): void {
+  if (!isObject(message)) {
+    stringLeaves(message, out);
+    return;
+  }
+  for (const [key, child] of Object.entries(message)) {
+    if (['id', 'role', 'name', 'toolCallId', 'activityType'].includes(key)) continue;
+    if (key === 'toolCalls' && Array.isArray(child)) {
+      for (const call of child) {
+        if (!isObject(call)) {
+          stringLeaves(call, out);
+          continue;
+        }
+        for (const [callKey, callChild] of Object.entries(call)) {
+          if (callKey === 'id' || callKey === 'type') continue;
+          if (callKey === 'function') leavesExcept(callChild, ['name'], out);
+          else stringLeaves(callChild, out);
+        }
+      }
+      continue;
+    }
+    stringLeaves(child, out);
+  }
+}
+
+/**
  * The payload strings a `RunAgentInput` carries, wherever one appears: the captured request body,
  * or the copy the protocol echoes back in `RUN_STARTED.input`.
  *
- * Only payload fields are listed. `id`, `role`, `threadId`, `runId`, `tools` and a tool call's
- * `name` survive redaction by design — §11 names no group that owns developer-authored structure
- * — so treating them as payload would report a leak on every clean export.
+ * `threadId`, `runId`, `parentRunId` and `tools` survive redaction by design — §11 names no
+ * group that owns developer-authored structure — so treating them as payload would report a leak
+ * on every clean export. A `resume` entry keeps its `interruptId` and `status`; its `payload`
+ * is the user's answer to an interrupt.
  */
 function inputPayload(input: unknown, out: string[]): void {
   if (!isObject(input)) return;
-  if (Array.isArray(input.messages)) {
-    for (const message of input.messages) {
-      if (!isObject(message)) continue;
-      stringLeaves(message.content, out);
-      if (!Array.isArray(message.toolCalls)) continue;
-      for (const call of message.toolCalls) {
-        if (isObject(call) && isObject(call.function)) stringLeaves(call.function.arguments, out);
-      }
+  for (const [key, child] of Object.entries(input)) {
+    if (['threadId', 'runId', 'parentRunId', 'tools'].includes(key)) continue;
+    if (key === 'messages' && Array.isArray(child)) {
+      for (const message of child) messagePayload(message, out);
+    } else if (key === 'resume' && Array.isArray(child)) {
+      for (const entry of child) leavesExcept(entry, ['interruptId', 'status'], out);
+    } else {
+      stringLeaves(child, out);
     }
   }
-  stringLeaves(input.state, out);
-  stringLeaves(input.context, out);
-  stringLeaves(input.forwardedProps, out);
 }
 
-/** The payload strings one event carries, by event type. §11's five groups, restated. */
+/** A JSON Patch keeps its `op`, `path` and `from`: those are what decide whether it applies. */
+function patchPayload(ops: unknown, out: string[]): void {
+  if (!Array.isArray(ops)) {
+    stringLeaves(ops, out);
+    return;
+  }
+  for (const op of ops) leavesExcept(op, ['op', 'path', 'from'], out);
+}
+
+/** A `RUN_FINISHED.outcome` keeps its `type`, and each interrupt its ids and expiry. */
+function outcomePayload(outcome: unknown, out: string[]): void {
+  if (!isObject(outcome)) {
+    stringLeaves(outcome, out);
+    return;
+  }
+  for (const [key, child] of Object.entries(outcome)) {
+    if (key === 'type') continue;
+    if (key === 'interrupts' && Array.isArray(child)) {
+      for (const interrupt of child) {
+        leavesExcept(interrupt, ['id', 'toolCallId', 'expiresAt'], out);
+      }
+    } else {
+      stringLeaves(child, out);
+    }
+  }
+}
+
+/**
+ * The payload strings one event carries. §11's five groups, restated — plus everything no group
+ * can claim (a `CUSTOM` value, a `RAW` event, `rawEvent`, a run's error message and result),
+ * which a redacted export must not carry either.
+ */
 function eventPayload(event: unknown, out: string[]): void {
   if (!isObject(event)) return;
   const type = typeof event.type === 'string' ? event.type : '';
-  switch (type) {
-    // `delta` is the payload field for three of the five groups: text, reasoning and toolArgs.
-    case 'TEXT_MESSAGE_CONTENT':
-    case 'TEXT_MESSAGE_CHUNK':
-    case 'REASONING_MESSAGE_CONTENT':
-    case 'REASONING_MESSAGE_CHUNK':
-    case 'TOOL_CALL_ARGS':
-    case 'TOOL_CALL_CHUNK':
-      stringLeaves(event.delta, out);
-      break;
-    case 'REASONING_ENCRYPTED_VALUE':
-      stringLeaves(event.encryptedValue, out);
-      break;
-    case 'TOOL_CALL_RESULT':
-      stringLeaves(event.content, out);
-      break;
-    case 'STATE_SNAPSHOT':
-      stringLeaves(event.snapshot, out);
-      break;
-    case 'STATE_DELTA':
-      if (Array.isArray(event.delta)) {
-        for (const op of event.delta) if (isObject(op)) stringLeaves(op.value, out);
-      }
-      break;
-    case 'RUN_STARTED':
-      inputPayload(event.input, out);
-      break;
-    default:
-      break;
+  for (const [key, child] of Object.entries(event)) {
+    if (STRUCTURAL_EVENT_FIELDS.has(key)) continue;
+    if (type === 'RUN_STARTED' && key === 'input') inputPayload(child, out);
+    else if (type === 'MESSAGES_SNAPSHOT' && key === 'messages' && Array.isArray(child)) {
+      for (const message of child) messagePayload(message, out);
+    } else if (type === 'STATE_DELTA' && key === 'delta') patchPayload(child, out);
+    else if (type === 'ACTIVITY_DELTA' && key === 'patch') patchPayload(child, out);
+    else if (type === 'RUN_FINISHED' && key === 'outcome') outcomePayload(child, out);
+    else stringLeaves(child, out);
   }
 }
 
@@ -129,7 +214,12 @@ function payloadStrings(line: JsonlLine): string[] {
  */
 function leakedValues(raw: readonly JsonlLine[], redacted: readonly JsonlLine[]): string[] {
   const survivors: string[] = [];
-  stringLeaves(redacted, survivors);
+  // The header's `redacted` list names the groups that ran — `text` among them — which is the
+  // export describing itself, not captured content surviving. Left in, a user message part's
+  // `{"type":"text"}` would read as a leak on every redacted export.
+  for (const line of redacted) {
+    stringLeaves(line.kind === 'header' ? { ...line, redacted: [] } : line, survivors);
+  }
   const leaks = new Set<string>();
   for (const line of raw) {
     for (const text of payloadStrings(line)) {
@@ -166,6 +256,201 @@ const EVERY_GROUP = [
   '{"kind":"event","connId":"c1","seq":17,"tMs":17,"event":{"type":"RUN_FINISHED","threadId":"t1","runId":"r1"}}',
   '',
 ].join('\n');
+
+/**
+ * The rest of the protocol's content: every field that is neither one of `EVERY_GROUP`'s single
+ * payload fields nor structure, as of @ag-ui/core 0.0.57.
+ *
+ * Until LangGraph PR 4 each of these shipped verbatim with every group selected, disclosed in a
+ * PRIVACY.md caveat: a `MESSAGES_SNAPSHOT`'s messages (whose content belongs to a different group
+ * per role), the deprecated `THINKING_*` events, activities, `CUSTOM` and `RAW`, a run's error
+ * message, result and interrupt outcome, a `resume` answer on the request, an unknown passthrough
+ * field, and the `rawEvent` any event may carry — here on a `TEXT_MESSAGE_CONTENT`, whose own
+ * `delta` the redactor already understood.
+ */
+const EVERY_OTHER_FIELD = [
+  JSON.stringify({
+    kind: 'header',
+    schemaVersion: 1,
+    tool: 't',
+    capturedAt: '2026-09-30T00:00:00.000Z',
+    url: 'http://localhost:3000/',
+    transport: 'sse',
+    redacted: [],
+  }),
+  JSON.stringify({
+    kind: 'request',
+    connId: 'c1',
+    tMs: 0,
+    method: 'POST',
+    url: '/run',
+    input: {
+      threadId: 't1',
+      runId: 'r1',
+      messages: [
+        {
+          id: 'u0',
+          role: 'user',
+          content: 'request user prompt',
+          encryptedValue: 'request encrypted blob',
+        },
+      ],
+      resume: [
+        {
+          interruptId: 'int0',
+          status: 'resolved',
+          payload: { answer: 'resume payload the user typed' },
+        },
+      ],
+    },
+  }),
+  ...[
+    { type: 'RUN_STARTED', threadId: 't1', runId: 'r1' },
+    {
+      type: 'MESSAGES_SNAPSHOT',
+      messages: [
+        { id: 's1', role: 'system', content: 'system prompt with house rules' },
+        { id: 'd1', role: 'developer', content: 'developer instructions verbatim' },
+        { id: 'u1', role: 'user', name: 'ada', content: 'snapshot user prompt text' },
+        {
+          id: 'u2',
+          role: 'user',
+          content: [
+            { type: 'text', text: 'multimodal user part' },
+            { type: 'binary', mimeType: 'image/png', data: 'base64 image bytes here' },
+          ],
+        },
+        {
+          id: 'a1',
+          role: 'assistant',
+          content: 'snapshot assistant reply',
+          toolCalls: [
+            {
+              id: 'tc1',
+              type: 'function',
+              function: { name: 'search', arguments: '{"q":"snapshot tool arguments"}' },
+              encryptedValue: 'encrypted tool call reasoning',
+            },
+          ],
+        },
+        {
+          id: 'tm1',
+          role: 'tool',
+          toolCallId: 'tc1',
+          content: 'snapshot tool result body',
+          error: 'snapshot tool error text',
+        },
+        {
+          id: 'rm1',
+          role: 'reasoning',
+          content: 'snapshot reasoning body',
+          encryptedValue: 'encrypted reasoning blob',
+        },
+        {
+          id: 'am1',
+          role: 'activity',
+          activityType: 'progress',
+          content: { status: 'activity message content' },
+        },
+      ],
+    },
+    { type: 'THINKING_START', title: 'thinking title text' },
+    { type: 'THINKING_TEXT_MESSAGE_START' },
+    { type: 'THINKING_TEXT_MESSAGE_CONTENT', delta: 'deprecated thinking delta' },
+    { type: 'THINKING_TEXT_MESSAGE_END' },
+    { type: 'THINKING_END' },
+    {
+      type: 'ACTIVITY_SNAPSHOT',
+      messageId: 'am2',
+      activityType: 'search',
+      content: { query: 'activity snapshot content' },
+    },
+    {
+      type: 'ACTIVITY_DELTA',
+      messageId: 'am2',
+      activityType: 'search',
+      patch: [{ op: 'replace', path: '/query', value: 'activity patch value' }],
+    },
+    { type: 'CUSTOM', name: 'app.event', value: { note: 'custom event value' } },
+    { type: 'RAW', source: 'provider', event: { chunk: 'raw provider chunk' } },
+    { type: 'TEXT_MESSAGE_START', messageId: 'm1', role: 'assistant' },
+    {
+      type: 'TEXT_MESSAGE_CONTENT',
+      messageId: 'm1',
+      delta: 'hi there friend',
+      rawEvent: { choices: [{ delta: { content: 'rawEvent echo of a delta' } }] },
+    },
+    { type: 'TEXT_MESSAGE_END', messageId: 'm1', extraField: 'an unknown passthrough field' },
+    {
+      type: 'RUN_FINISHED',
+      threadId: 't1',
+      runId: 'r1',
+      result: { answer: 'run finished result' },
+      outcome: {
+        type: 'interrupt',
+        interrupts: [
+          {
+            id: 'int1',
+            reason: 'approval needed for wire',
+            message: 'interrupt message to user',
+            toolCallId: 'tc1',
+            responseSchema: { description: 'response schema text' },
+            expiresAt: '2026-10-01T00:00:00.000Z',
+            metadata: { k: 'interrupt metadata value' },
+          },
+        ],
+      },
+    },
+    { type: 'RUN_STARTED', threadId: 't1', runId: 'r2' },
+    { type: 'RUN_ERROR', code: 'RATE_LIMITED', message: 'run error message with detail' },
+  ].map((event, index) =>
+    JSON.stringify({ kind: 'event', connId: 'c1', seq: index + 1, tMs: index + 1, event }),
+  ),
+  '',
+].join('\n');
+
+/**
+ * `EVERY_OTHER_FIELD`'s payload strings, by the group that owns them. §11 has five groups; what
+ * no group can claim — content whose meaning the extension cannot know — is `anyGroup`: removed
+ * by selecting any one of them, because guessing which group it belongs to and guessing wrong
+ * would ship it.
+ */
+const OTHER_BY_GROUP: Record<RedactionGroup | 'anyGroup', string[]> = {
+  text: [
+    'request user prompt',
+    'system prompt with house rules',
+    'developer instructions verbatim',
+    'snapshot user prompt text',
+    'multimodal user part',
+    'base64 image bytes here',
+    'snapshot assistant reply',
+    'hi there friend',
+  ],
+  reasoning: [
+    'request encrypted blob',
+    'encrypted tool call reasoning',
+    'snapshot reasoning body',
+    'encrypted reasoning blob',
+    'thinking title text',
+    'deprecated thinking delta',
+  ],
+  toolArgs: ['{"q":"snapshot tool arguments"}'],
+  toolResults: ['snapshot tool result body', 'snapshot tool error text'],
+  state: ['activity message content', 'activity snapshot content', 'activity patch value'],
+  anyGroup: [
+    'resume payload the user typed',
+    'custom event value',
+    'raw provider chunk',
+    'rawEvent echo of a delta',
+    'an unknown passthrough field',
+    'run finished result',
+    'approval needed for wire',
+    'interrupt message to user',
+    'response schema text',
+    'interrupt metadata value',
+    'run error message with detail',
+  ],
+};
 
 function sourceOf(text: string): ExportSource {
   const loaded = loadJsonl(text);
@@ -215,6 +500,17 @@ describe('the leak check itself', () => {
   });
 });
 
+describe('the leak check sees every field, not only the five groups’ own', () => {
+  test('finds every payload string in the rest of the protocol when nothing is redacted', () => {
+    const unredacted = exportWith(EVERY_OTHER_FIELD, []);
+    // `image/png` is a user message part's MIME type: part of a payload no field-level rule can
+    // see into, so it is reported with the rest of that part.
+    expect(leakedValues(unredacted, unredacted).sort()).toEqual(
+      [...Object.values(OTHER_BY_GROUP).flat(), 'image/png', 'text', 'binary'].sort(),
+    );
+  });
+});
+
 describe('E6: a fully redacted export leaks nothing', () => {
   test('no payload string from any of §11’s five groups survives', () => {
     const raw = exportWith(EVERY_GROUP, []);
@@ -225,6 +521,12 @@ describe('E6: a fully redacted export leaks nothing', () => {
   test('the same holds for the golden happy-run capture', () => {
     const raw = exportWith(happyJsonl, []);
     const redacted = exportWith(happyJsonl, [...ALL_REDACTION_GROUPS]);
+    expect(leakedValues(raw, redacted)).toEqual([]);
+  });
+
+  test('the same holds for every field outside the five groups’ own', () => {
+    const raw = exportWith(EVERY_OTHER_FIELD, []);
+    const redacted = exportWith(EVERY_OTHER_FIELD, [...ALL_REDACTION_GROUPS]);
     expect(leakedValues(raw, redacted)).toEqual([]);
   });
 
@@ -265,6 +567,33 @@ describe('E6: each group protects its own payload', () => {
       stringLeaves(redacted, survivors);
       for (const secret of byGroup[group]) {
         expect(survivors.some((survivor) => survivor.includes(secret))).toBe(false);
+      }
+    });
+  }
+});
+
+describe('E6: each group protects its own share of the rest of the protocol', () => {
+  for (const group of ALL_REDACTION_GROUPS) {
+    test(`selecting only \`${group}\` removes what it owns and what no group can own`, () => {
+      const redacted = exportWith(EVERY_OTHER_FIELD, [group]);
+      const survivors: string[] = [];
+      stringLeaves(redacted, survivors);
+      for (const secret of [...OTHER_BY_GROUP[group], ...OTHER_BY_GROUP.anyGroup]) {
+        expect(survivors.some((survivor) => survivor.includes(secret)), secret).toBe(false);
+      }
+    });
+
+    test(`selecting only \`${group}\` leaves every other group’s content alone`, () => {
+      // Per-field ownership is the point: a `MESSAGES_SNAPSHOT` tool message's content is a tool
+      // RESULT, so selecting \`text\` must not reach it — or deselecting \`toolResults\` to share
+      // a tool bug would silently strip the very thing being reported.
+      const redacted = exportWith(EVERY_OTHER_FIELD, [group]);
+      const survivors: string[] = [];
+      stringLeaves(redacted, survivors);
+      for (const other of ALL_REDACTION_GROUPS.filter((g) => g !== group)) {
+        for (const kept of OTHER_BY_GROUP[other]) {
+          expect(survivors.some((survivor) => survivor.includes(kept)), kept).toBe(true);
+        }
       }
     });
   }
@@ -313,6 +642,51 @@ describe('E6: what must NOT be redacted, or the file stops being a bug report', 
     );
     const ops = (delta as { event: { delta: { op: string; path: string }[] } }).event.delta;
     expect(ops.map((op) => `${op.op} ${op.path}`)).toEqual(['replace /customer', 'add /notes/-']);
+  });
+
+  test('the rest of the protocol keeps its structure: ids, roles, names, codes, paths', () => {
+    const redacted = exportWith(EVERY_OTHER_FIELD, [...ALL_REDACTION_GROUPS]);
+    const byType = (type: string): Record<string, unknown> => {
+      const line = redacted.find(
+        (candidate) =>
+          candidate.kind === 'event' && (candidate.event as { type: string }).type === type,
+      );
+      return (line as { event: Record<string, unknown> }).event;
+    };
+
+    const messages = byType('MESSAGES_SNAPSHOT').messages as Array<Record<string, unknown>>;
+    expect(messages.map((m) => `${String(m.id)}:${String(m.role)}`)).toEqual([
+      's1:system',
+      'd1:developer',
+      'u1:user',
+      'u2:user',
+      'a1:assistant',
+      'tm1:tool',
+      'rm1:reasoning',
+      'am1:activity',
+    ]);
+    expect(messages).toMatchObject([
+      {},
+      {},
+      { name: 'ada' },
+      {},
+      { toolCalls: [{ id: 'tc1', type: 'function', function: { name: 'search' } }] },
+      { toolCallId: 'tc1' },
+      {},
+      { activityType: 'progress' },
+    ]);
+
+    expect(byType('ACTIVITY_DELTA').patch).toEqual([
+      { op: 'replace', path: '/query', value: '«redacted: 20 chars»' },
+    ]);
+    expect(byType('ACTIVITY_SNAPSHOT').activityType).toBe('search');
+    expect(byType('CUSTOM').name).toBe('app.event');
+    expect(byType('RAW').source).toBe('provider');
+    expect(byType('RUN_ERROR').code).toBe('RATE_LIMITED');
+    expect(byType('RUN_FINISHED').outcome).toMatchObject({
+      type: 'interrupt',
+      interrupts: [{ id: 'int1', toolCallId: 'tc1' }],
+    });
   });
 
   test('the placeholder keeps the size, which is what a protocol bug report is about', () => {

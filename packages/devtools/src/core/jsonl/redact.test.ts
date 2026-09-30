@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { JsonlEvent, JsonlHeader, JsonlKeepalive, JsonlRequest } from './codec';
-import { ALL_REDACTION_GROUPS, redactLine, redactString } from './redact';
+import { ALL_REDACTION_GROUPS, redactLine, redactString, type RedactionGroup } from './redact';
 
 function ev(event: Record<string, unknown>, seq = 1): JsonlEvent {
   return { kind: 'event', connId: 'c1', seq, tMs: seq * 10, event };
@@ -780,7 +780,7 @@ describe('redactLine — a named SSE event is never an AG-UI frame', () => {
    * Spec L1/L16: the capture and loader paths normalize the default SSE event name (`message`,
    * or none at all) away, so `sseEvent` being present on a line at all means this line came off
    * a non-AG-UI protocol — LangGraph Platform, today. Its payload dispatching into the AG-UI
-   * `SINGLE_FIELD`/`STATE_*`/`RUN_STARTED` table by coincidence of a shared `type` string (e.g.
+   * `FIELD_RULES` table by coincidence of a shared `type` string (e.g.
    * a LangGraph `CUSTOM`-shaped frame) would be exactly the kind of misclassification this
    * module exists to avoid — it has no idea what that protocol's `CUSTOM` actually carries.
    * L16's field-level LangGraph rules will hang off this same branch, replacing wholesale
@@ -894,5 +894,236 @@ describe('redactLine — a named line whose SSE event name matches its own paylo
     // Wholesale, not the AG-UI single-field path: `type` is dropped like any other unattributed
     // field, since `keepAguiType` is false on this branch.
     expect((out.event as Record<string, unknown>).type).toBe('«redacted: 20 chars»');
+  });
+});
+
+/*
+ * LangGraph PR 4: fail closed per FIELD on known AG-UI events, not only per payload.
+ *
+ * @ag-ui/core's `BaseEventSchema` is `.passthrough()` and every event may carry `rawEvent`, so a
+ * known `type` says which fields the protocol NAMES, not which fields a line carries. Each named
+ * content field belongs to a §11 group; ids, roles, names, timestamps and patch ops/paths are
+ * structure; anything else cannot be classified and goes as soon as any group is selected.
+ */
+describe('redactLine — every field of a known AG-UI event is structure or redacted', () => {
+  it('redacts rawEvent under any group, even where that group does not own the payload', () => {
+    const line = ev({
+      type: 'TOOL_CALL_ARGS',
+      toolCallId: 't1',
+      delta: '{"a":1}',
+      rawEvent: { chunk: 'provider text' },
+    });
+
+    expect((redactLine(line, ['text']) as JsonlEvent).event).toEqual({
+      type: 'TOOL_CALL_ARGS',
+      toolCallId: 't1',
+      delta: '{"a":1}',
+      rawEvent: { chunk: '«redacted: 13 chars»' },
+    });
+  });
+
+  it('redacts a passthrough field no schema names under any group', () => {
+    const line = ev({ type: 'TEXT_MESSAGE_END', messageId: 'm1', note: 'secret' });
+
+    expect((redactLine(line, ['state']) as JsonlEvent).event).toEqual({
+      type: 'TEXT_MESSAGE_END',
+      messageId: 'm1',
+      note: '«redacted: 6 chars»',
+    });
+  });
+
+  it('keeps structure: ids, role, name, timestamp', () => {
+    const event = {
+      type: 'TEXT_MESSAGE_START',
+      messageId: 'm1',
+      role: 'assistant',
+      name: 'planner',
+      timestamp: 123,
+    };
+
+    expect((redactLine(ev(event), [...ALL_REDACTION_GROUPS]) as JsonlEvent).event).toEqual(event);
+  });
+
+  it('redacts CUSTOM value and RAW event under any group, keeping name and source', () => {
+    const custom = ev({ type: 'CUSTOM', name: 'app.x', value: { n: 5 } });
+    const raw = ev({ type: 'RAW', source: 'openai', event: 'data' });
+
+    expect((redactLine(custom, ['toolArgs']) as JsonlEvent).event).toEqual({
+      type: 'CUSTOM',
+      name: 'app.x',
+      value: { n: '«redacted: 1 chars»' },
+    });
+    expect((redactLine(raw, ['toolArgs']) as JsonlEvent).event).toEqual({
+      type: 'RAW',
+      source: 'openai',
+      event: '«redacted: 4 chars»',
+    });
+  });
+
+  it('redacts RUN_ERROR message under any group, keeping code', () => {
+    const line = ev({ type: 'RUN_ERROR', code: 'E1', message: 'boom' });
+
+    expect((redactLine(line, ['reasoning']) as JsonlEvent).event).toEqual({
+      type: 'RUN_ERROR',
+      code: 'E1',
+      message: '«redacted: 4 chars»',
+    });
+  });
+
+  it('redacts RUN_FINISHED result and interrupt text, keeping outcome type and ids', () => {
+    const line = ev({
+      type: 'RUN_FINISHED',
+      threadId: 't',
+      runId: 'r',
+      result: 'done',
+      outcome: {
+        type: 'interrupt',
+        interrupts: [{ id: 'i1', toolCallId: 'tc', reason: 'why', expiresAt: '2026-01-01' }],
+      },
+    });
+
+    expect((redactLine(line, ['state']) as JsonlEvent).event).toEqual({
+      type: 'RUN_FINISHED',
+      threadId: 't',
+      runId: 'r',
+      result: '«redacted: 4 chars»',
+      outcome: {
+        type: 'interrupt',
+        interrupts: [
+          { id: 'i1', toolCallId: 'tc', reason: '«redacted: 3 chars»', expiresAt: '2026-01-01' },
+        ],
+      },
+    });
+  });
+
+  it('attributes deprecated THINKING_* content to reasoning', () => {
+    const delta = ev({ type: 'THINKING_TEXT_MESSAGE_CONTENT', delta: 'hmm' });
+    const start = ev({ type: 'THINKING_START', title: 'plan' });
+
+    expect(redactLine(delta, ['text'])).toEqual(delta);
+    expect((redactLine(delta, ['reasoning']) as JsonlEvent).event).toEqual({
+      type: 'THINKING_TEXT_MESSAGE_CONTENT',
+      delta: '«redacted: 3 chars»',
+    });
+    expect((redactLine(start, ['reasoning']) as JsonlEvent).event).toEqual({
+      type: 'THINKING_START',
+      title: '«redacted: 4 chars»',
+    });
+  });
+
+  it('keeps an empty THINKING delta empty — redactString’s validator-parity rule', () => {
+    const line = ev({ type: 'THINKING_TEXT_MESSAGE_CONTENT', delta: '' });
+
+    expect(redactLine(line, ['reasoning'])).toEqual(line);
+  });
+
+  it('attributes ACTIVITY_* content to state, keeping activityType and op/path/from', () => {
+    const snap = ev({
+      type: 'ACTIVITY_SNAPSHOT',
+      messageId: 'a',
+      activityType: 'p',
+      replace: true,
+      content: { pct: 10 },
+    });
+    const delta = ev({
+      type: 'ACTIVITY_DELTA',
+      messageId: 'a',
+      activityType: 'p',
+      patch: [
+        { op: 'replace', path: '/pct', value: 20 },
+        { op: 'move', from: '/a', path: '/b' },
+      ],
+    });
+
+    expect(redactLine(snap, ['text'])).toEqual(snap);
+    expect((redactLine(snap, ['state']) as JsonlEvent).event).toEqual({
+      type: 'ACTIVITY_SNAPSHOT',
+      messageId: 'a',
+      activityType: 'p',
+      replace: true,
+      content: { pct: '«redacted: 2 chars»' },
+    });
+    expect((redactLine(delta, ['state']) as JsonlEvent).event).toEqual({
+      type: 'ACTIVITY_DELTA',
+      messageId: 'a',
+      activityType: 'p',
+      patch: [
+        { op: 'replace', path: '/pct', value: '«redacted: 2 chars»' },
+        { op: 'move', from: '/a', path: '/b' },
+      ],
+    });
+  });
+
+  it('attributes MESSAGES_SNAPSHOT content per message by role', () => {
+    const toolCalls = (args: string): unknown[] => [
+      { id: 'c', type: 'function', function: { name: 'f', arguments: args } },
+    ];
+    const messages = [
+      { id: 'u', role: 'user', content: 'hi' },
+      { id: 'a', role: 'assistant', content: 'yo', toolCalls: toolCalls('{}') },
+      { id: 't', role: 'tool', toolCallId: 'c', content: 'ok' },
+      { id: 'r', role: 'reasoning', content: 'because' },
+      { id: 'x', role: 'activity', activityType: 'p', content: { k: 'v' } },
+    ];
+    const line = ev({ type: 'MESSAGES_SNAPSHOT', messages });
+    /** `messages` with exactly one message's fields replaced: each group reaches one role. */
+    const expected = (index: number, fields: Record<string, unknown>): unknown[] =>
+      messages.map((message, i) => (i === index ? { ...message, ...fields } : message));
+
+    const cases: Array<[RedactionGroup, unknown[]]> = [
+      ['toolResults', expected(2, { content: '«redacted: 2 chars»' })],
+      ['reasoning', expected(3, { content: '«redacted: 7 chars»' })],
+      ['state', expected(4, { content: { k: '«redacted: 1 chars»' } })],
+      ['toolArgs', expected(1, { toolCalls: toolCalls('«redacted: 2 chars»') })],
+      [
+        'text',
+        expected(0, { content: '«redacted: 2 chars»' }).map((message, i) =>
+          i === 1 ? { ...(message as object), content: '«redacted: 2 chars»' } : message,
+        ),
+      ],
+    ];
+    for (const [group, want] of cases) {
+      const out = (redactLine(line, [group]) as JsonlEvent).event as { messages: unknown };
+      expect(out.messages, group).toEqual(want);
+    }
+  });
+
+  it('redacts an unnamed message field, and an unknown role’s content, under any group', () => {
+    const line = ev({
+      type: 'MESSAGES_SNAPSHOT',
+      messages: [
+        { id: 'u', role: 'user', content: 'hi', extra: 'leak' },
+        { id: 'z', role: 'narrator', content: 'story' },
+      ],
+    });
+
+    expect((redactLine(line, ['toolArgs']) as JsonlEvent).event).toEqual({
+      type: 'MESSAGES_SNAPSHOT',
+      messages: [
+        { id: 'u', role: 'user', content: 'hi', extra: '«redacted: 4 chars»' },
+        { id: 'z', role: 'narrator', content: '«redacted: 5 chars»' },
+      ],
+    });
+  });
+
+  it('redacts a request resume payload under any group, keeping interruptId and status', () => {
+    const line: JsonlRequest = {
+      kind: 'request',
+      connId: 'c1',
+      tMs: 0,
+      method: 'POST',
+      url: '/run',
+      input: {
+        threadId: 't',
+        runId: 'r',
+        resume: [{ interruptId: 'i', status: 'resolved', payload: 'yes' }],
+      },
+    };
+
+    expect((redactLine(line, ['text']) as JsonlRequest).input).toEqual({
+      threadId: 't',
+      runId: 'r',
+      resume: [{ interruptId: 'i', status: 'resolved', payload: '«redacted: 3 chars»' }],
+    });
   });
 });
