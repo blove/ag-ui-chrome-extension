@@ -417,6 +417,26 @@ describe('service worker', () => {
     expect(record.event?.['type']).toBe('RUN_STARTED');
   });
 
+  it('keeps a frame’s SSE event name on its record, and adds nothing to an unnamed one (L2)', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, {
+      v: 1,
+      kind: 'frames',
+      connId: 'c1',
+      frames: [
+        { kind: 'event', tMs: 5, raw: '{"run_id":"r1","attempt":1}', eventName: 'metadata' },
+        eventFrame(6, { type: 'RUN_STARTED' }),
+      ],
+    });
+
+    const [named, unnamed] = testHook().records();
+    if (named?.kind !== 'event' || unnamed?.kind !== 'event') throw new Error('expected event records');
+    expect(named.sseEvent).toBe('metadata');
+    expect(named.raw).toEqual({ run_id: 'r1', attempt: 1 });
+    expect('sseEvent' in unnamed).toBe(false);
+  });
+
   it('replays a snapshot to a panel that subscribes after the run', () => {
     const relay = relayPort(7);
     stub.connect(relay);

@@ -379,6 +379,8 @@ function toRecord(frame: WireFrame, seq: number, connId: string): CaptureRecord 
     connId,
     raw: decoded.raw,
     event: decoded.event,
+    // Copied, never derived: the relay already normalized it (L1).
+    ...(frame.eventName !== undefined ? { sseEvent: frame.eventName } : {}),
     issues: [],
   };
 }
