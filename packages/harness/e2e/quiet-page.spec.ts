@@ -49,7 +49,7 @@ import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { startPageServer, type PageServer } from '../page/serve.js';
 import { startHarnessServer, type HarnessServer } from '../server/agui-server.js';
 
-import { launchWithExtension, readCapture, type CaptureSnapshot } from './fixtures.js';
+import { launchWithExtension, readLoadedCapture, type CaptureSnapshot } from './fixtures.js';
 
 /**
  * What the collector records. `data` is whatever crossed the bus; `origin` is kept so a message
@@ -145,7 +145,9 @@ test.beforeAll(async () => {
   probe = await page.evaluate(
     () => window.__QUIET_PROBE__ ?? { installedAt: 0, seen: [] as SeenMessage[] },
   );
-  snapshot = await readCapture(ctx);
+  // Waits for the relay's `capture-loaded` to reach the worker rather than racing it (see
+  // `readLoadedCapture`): the page saw nothing either way, and the claim below is about the worker.
+  snapshot = await readLoadedCapture(ctx);
 });
 
 test.afterAll(async () => {

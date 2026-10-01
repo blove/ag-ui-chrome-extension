@@ -8,6 +8,7 @@
  * `PanelCommand`), and `RequestLine` crosses both.
  */
 import type { RuntimeInfo } from '../core/detect/info';
+import type { RenderDevtoolsReport } from '../core/signals/render-report';
 import type { ThreadplaneDevtoolsReport } from '../core/signals/report';
 import type { Ack, ArmCommand } from '../core/simulate/commands';
 import type { CaptureRecord } from '../core/model/types';
@@ -196,6 +197,16 @@ export interface SignalReports {
   droppedBefore: number;
 }
 
+/**
+ * Threadplane render reports a tab has produced (UI inspector U5), in arrival order, and how many
+ * its ring has lost — the same shape and discipline as `SignalReports`, kept apart because the two
+ * rings fill and evict independently. LIVE ONLY (U7): never written to an export.
+ */
+export interface RenderReports {
+  reports: RenderDevtoolsReport[];
+  droppedBefore: number;
+}
+
 /* -------------------------------------------------------------------------- */
 /* The panel leg                                                                */
 /* -------------------------------------------------------------------------- */
@@ -290,6 +301,11 @@ export type SwMessage =
        */
       signals: SignalReports;
       /**
+       * The Threadplane render reports this tab has produced (U5), oldest first. NOT OPTIONAL, for
+       * the reason `signals` is not; empty is the common value.
+       */
+      renders: RenderReports;
+      /**
        * The run-simulator acknowledgements this tab's hook has dispatched (design R4), oldest
        * first — kept per tab and cleared with the buffer, like `signals`. NOT OPTIONAL, for the
        * reason `signals` is not: a panel opened after an arm still has to show what became of it.
@@ -311,6 +327,8 @@ export type SwMessage =
        * own, not with the frames it describes, so it rides an append whose `records` is empty.
        */
       signals?: SignalReports;
+      /** Render reports that arrived since the last append (U5); absent means "no new reports". */
+      renders?: RenderReports;
     }
   | { kind: 'request'; request: RequestLine }
   /**

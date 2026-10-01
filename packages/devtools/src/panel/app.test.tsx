@@ -144,7 +144,7 @@ describe('App', () => {
    * silently lost its component would say so here rather than render blank.
    */
   it('has no placeholder left on any tab', () => {
-    for (const tab of ['timeline', 'runs', 'state', 'messages', 'signals', 'simulate', 'session'] as TabId[]) {
+    for (const tab of ['timeline', 'runs', 'state', 'messages', 'ui', 'signals', 'simulate', 'session'] as TabId[]) {
       const view = render(<App store={createPanelStore({ ...initialPanelState(), tab })} />);
       expect(screen.queryByText(/not built yet/i)).toBeNull();
       view.unmount();

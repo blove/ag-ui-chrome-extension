@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { AguiEvent, CaptureRecord } from '../../core/model/types';
 import type { ThreadplaneDevtoolsReport } from '../../core/signals/report';
+import { MAX_RENDER_RING_CHARS, renderReportChars, type RenderDevtoolsReport } from '../../core/signals/render-report';
+import { maxSizeRenderReport } from '../../test/render-reports';
 import type { RequestLine, SwMessage } from '../../sw/protocol';
 import { initialPanelState } from '../model/panel-types';
 import { createLiveSession } from './live-session';
@@ -47,6 +49,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -72,6 +75,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -139,6 +143,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -166,6 +171,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -189,6 +195,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -205,6 +212,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -226,6 +234,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -245,6 +254,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -268,6 +278,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -294,6 +305,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -317,6 +329,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -345,6 +358,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -378,6 +392,7 @@ describe('createLiveSession', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -427,6 +442,7 @@ describe('createLiveSession', () => {
         loaded: false,
         info: null,
         signals: { reports: [], droppedBefore: 0 },
+        renders: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
         simAcks: [],
       });
@@ -452,6 +468,7 @@ describe('createLiveSession', () => {
           loaded: true,
           info: null,
           signals: { reports: [], droppedBefore: 0 },
+          renders: { reports: [], droppedBefore: 0 },
           registration: { matches: [], error: null },
           simAcks: [],
         },
@@ -469,13 +486,13 @@ describe('createLiveSession', () => {
       // prevent — the finding is made by the timeout in `use-live-capture`, never here.
       const fresh = session.apply(
         { ...initialPanelState(), loaded: null },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, signals: { reports: [], droppedBefore: 0 }, registration: { matches: [], error: null }, simAcks: [] },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, signals: { reports: [], droppedBefore: 0 }, renders: { reports: [], droppedBefore: 0 }, registration: { matches: [], error: null }, simAcks: [] },
       );
       expect(fresh.loaded).toBeNull();
 
       const known = session.apply(
         { ...initialPanelState(), loaded: true },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, signals: { reports: [], droppedBefore: 0 }, registration: { matches: [], error: null }, simAcks: [] },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, signals: { reports: [], droppedBefore: 0 }, renders: { reports: [], droppedBefore: 0 }, registration: { matches: [], error: null }, simAcks: [] },
       );
       expect(known.loaded).toBe(true);
     });
@@ -505,6 +522,7 @@ describe('createLiveSession', () => {
         loaded: true,
         info: null,
         signals: { reports: [], droppedBefore: 0 },
+        renders: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
         simAcks: [],
       },
@@ -619,6 +637,7 @@ describe('createLiveSession', () => {
         loaded: true,
         info: null,
         signals: { reports: [], droppedBefore: 0 },
+        renders: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
         simAcks: [],
       });
@@ -656,6 +675,7 @@ describe('the request lines an export has to put back', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -740,6 +760,7 @@ describe('createLiveSession — /info agent discovery', () => {
       loaded: true,
       info: RUNTIME,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -767,6 +788,7 @@ describe('createLiveSession — /info agent discovery', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -843,6 +865,7 @@ describe('live session — content-script registration', () => {
       loaded: false,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration,
       simAcks: [],
     };
@@ -934,6 +957,7 @@ describe('live session — Threadplane devtools reports (G5, G6)', () => {
       info: null,
       registration: { matches: [], error: null },
       signals: { reports, droppedBefore },
+      renders: { reports: [], droppedBefore: 0 },
       simAcks: [],
     };
   }
@@ -999,6 +1023,86 @@ describe('live session — Threadplane devtools reports (G5, G6)', () => {
   });
 });
 
+describe('live session — Threadplane render reports (U5)', () => {
+  function render(seq: number, surface = 's1'): RenderDevtoolsReport {
+    return {
+      v: 1,
+      kind: 'render',
+      surface,
+      seq,
+      registry: ['Text'],
+      elements: [{ key: 'root', type: 'Text', state: 'mounted' }],
+      tMs: seq,
+    };
+  }
+
+  function snapshotWith(reports: RenderDevtoolsReport[], droppedBefore = 0): SwMessage {
+    return {
+      kind: 'snapshot',
+      records: [],
+      requests: [],
+      closed: [],
+      droppedBefore: 0,
+      loaded: true,
+      info: null,
+      registration: { matches: [], error: null },
+      signals: { reports: [], droppedBefore: 0 },
+      renders: { reports, droppedBefore },
+      simAcks: [],
+    };
+  }
+
+  it('starts empty', () => {
+    expect(initialPanelState().renders).toEqual({ reports: [], droppedBefore: 0 });
+  });
+
+  it('takes the snapshot’s reports, appends pushed ones, and leaves them alone otherwise', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshotWith([render(1)], 2));
+    expect(state.renders).toEqual({ reports: [render(1)], droppedBefore: 2 });
+    state = session.apply(state, { kind: 'append', records: [], renders: { reports: [render(2)], droppedBefore: 3 } });
+    expect(state.renders.reports.map((r) => r.seq)).toEqual([1, 2]);
+    expect(state.renders.droppedBefore).toBe(3);
+    state = session.apply(state, { kind: 'append', records: happyRun() });
+    expect(state.renders.reports.map((r) => r.seq)).toEqual([1, 2]);
+    // Signals and renders fold independently.
+    expect(state.signals.reports).toEqual([]);
+  });
+
+  it('bounds its own copy at 500 by default and counts what it evicts', () => {
+    const session = createLiveSession();
+    const many = Array.from({ length: 501 }, (_, i) => render(i + 1));
+    const state = session.apply(initialPanelState(), snapshotWith(many, 1));
+    expect(state.renders.reports).toHaveLength(500);
+    expect(state.renders.reports[0]?.seq).toBe(2);
+    expect(state.renders.droppedBefore).toBe(2);
+  });
+
+  it('also bounds its copy by size, across appends, like the worker', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshotWith([], 0));
+    for (let seq = 1; seq <= 40; seq += 1) {
+      state = session.apply(state, { kind: 'append', records: [], renders: { reports: [maxSizeRenderReport(seq)], droppedBefore: 0 } });
+    }
+    const held = state.renders.reports;
+    expect(held.length).toBeLessThan(40);
+    expect(held.at(-1)?.seq).toBe(40);
+    expect(held.reduce((total, report) => total + renderReportChars(report), 0)).toBeLessThanOrEqual(MAX_RENDER_RING_CHARS);
+    expect(state.renders.droppedBefore).toBe(40 - held.length);
+  });
+
+  it('a snapshot replaces them, a clear empties them, a refold keeps them', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshotWith([render(1), render(2)]));
+    state = session.refold(state, { expandChunks: false });
+    expect(state.renders.reports.map((r) => r.seq)).toEqual([1, 2]);
+    state = session.apply(state, snapshotWith([render(9)]));
+    expect(state.renders.reports.map((r) => r.seq)).toEqual([9]);
+    state = session.apply(state, { kind: 'cleared' });
+    expect(state.renders).toEqual({ reports: [], droppedBefore: 0 });
+  });
+});
+
 describe('live session — the run simulator (§14.4)', () => {
   const ACK = { v: 1 as const, armId: 'arm-1', state: 'armed' as const };
 
@@ -1013,6 +1117,7 @@ describe('live session — the run simulator (§14.4)', () => {
       info: null,
       registration: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       simAcks,
     };
   }

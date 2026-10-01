@@ -515,6 +515,11 @@ navigation to another page with Developer mode on it reaches that page.*
 **14.5 Generative UI inspector.** For `@threadplane/render` / A2UI: spec JSON ↔ rendered
 component mapping, with warnings for spec nodes that have no match in the app's
 registry. Also applies to CopilotKit's A2UI middleware, so it isn't Threadplane-only.
+*Built (extension); Threadplane: cacheplane/threadplane#1215 (in review, stacked on #1204). The UI
+tab reads A2UI / json-render surfaces off the wire for both frameworks and checks them against the
+catalog the wire advertises (exact) or the A2UI basic catalog (inferred); a Threadplane dev build's
+render report (names and states only, never props) supplies each element's actual state and its
+registry — see [the design](../superpowers/specs/2026-10-01-ui-inspector-design.md).*
 
 **14.6 Detection badge.** Toolbar icon lights up on any AG-UI page and names the stack.
 Cheap, and it's the discovery mechanism — people find out the tool exists by seeing it

@@ -942,6 +942,91 @@ describe('relay — the signals arm', () => {
 });
 
 /**
+ * The `render` arm across the boundary (UI inspector U5): source, origin, shape, then a
+ * field-by-field rebuild one level deeper for each element.
+ */
+describe('relay — the render arm', () => {
+  const REPORT = {
+    v: 1,
+    kind: 'render',
+    surface: 'spec:card',
+    seq: 3,
+    registry: ['Text', 'Card'],
+    elements: [
+      { key: 'card', type: 'Card', state: 'mounted' },
+      { key: 'title', type: 'Text', state: 'fallback' },
+    ],
+    tMs: 99.5,
+  };
+
+  function validRender(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      source: AGUI_DT_SOURCE,
+      v: PROTOCOL_VERSION,
+      kind: 'render',
+      report: { ...REPORT, registry: [...REPORT.registry], elements: REPORT.elements.map((e) => ({ ...e })) },
+      ...extra,
+    };
+  }
+
+  it('forwards it with the source tag dropped and nothing else changed', () => {
+    post(validRender());
+    expect(forwarded(chromeHarness)).toEqual([{ v: PROTOCOL_VERSION, kind: 'render', report: REPORT }]);
+    expectSilent();
+  });
+
+  it('strips extra keys from the message and anything riding on its arrays', () => {
+    const registry = Object.assign(['Text'], { smuggled: 'nested' });
+    const elements = Object.assign([{ key: 'card', type: 'Card', state: 'mounted' }], { smuggled: 'nested' });
+    post(validRender({ rogue: 'top level', connId: 'c1', report: { ...REPORT, registry, elements } }));
+    const [message] = forwarded(chromeHarness);
+    expect(JSON.stringify(message)).not.toContain('rogue');
+    expect(JSON.stringify(message)).not.toContain('smuggled');
+    expect(JSON.stringify(message)).not.toContain('connId');
+    expect(message).toEqual({
+      v: PROTOCOL_VERSION,
+      kind: 'render',
+      report: { ...REPORT, registry: ['Text'], elements: [{ key: 'card', type: 'Card', state: 'mounted' }] },
+    });
+    expectSilent();
+  });
+
+  const hostile: Array<[string, () => void]> = [
+    ['an extra key in the report', () => post(validRender({ report: { ...REPORT, props: { text: 'secret' } } }))],
+    ['a prop riding on an element', () => post(validRender({ report: { ...REPORT, elements: [{ key: 'a', type: 'A', state: 'mounted', text: 'secret' }] } }))],
+    ['an unknown state', () => post(validRender({ report: { ...REPORT, elements: [{ key: 'a', type: 'A', state: 'rendered' }] } }))],
+    ['a 129-char surface', () => post(validRender({ report: { ...REPORT, surface: 'x'.repeat(129) } }))],
+    ['a NaN tMs', () => post(validRender({ report: { ...REPORT, tMs: Number.NaN } }))],
+    ['a missing report', () => post(validRender({ report: undefined }))],
+    ['a signals report under the render arm', () => post(validRender({ report: { v: 1, agent: 'a', adapter: 'ag-ui', seq: 1, eventType: 'X', wrote: ['messages'], tMs: 1 } }))],
+    ['a report from another frame', () => post(validRender(), { source: {} })],
+    ['a report from another origin', () => post(validRender(), { origin: 'https://evil.test' })],
+    ['a report whose fields are inherited', () => post(validRender({ report: Object.create(REPORT) as unknown }))],
+  ];
+
+  it.each(hostile)('drops %s', (_name, act) => {
+    act();
+    expect(forwarded(chromeHarness)).toEqual([]);
+    expectSilent();
+  });
+
+  it('does not throw when an element fights back', () => {
+    const element = { key: 'a', type: 'A' };
+    Object.defineProperty(element, 'state', {
+      get(): never {
+        throw new Error('boom');
+      },
+      enumerable: true,
+    });
+    expect(() => {
+      post(validRender({ report: { ...REPORT, elements: [element] } }));
+    }).not.toThrow();
+    expect(forwarded(chromeHarness)).toEqual([]);
+    expectSilent();
+  });
+});
+
+/**
  * The run simulator's wiring (`./simulate` holds the behaviour and its own tests). What is held
  * here is the part only this file decides: who may ask, and where the flag is read.
  */

@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium, type BrowserContext, type Page, type Worker } from '@playwright/test';
 
 import type { RuntimeInfo } from '@devtools/core/detect/info';
+import type { RenderDevtoolsReport } from '@devtools/core/signals/render-report';
 import type { ThreadplaneDevtoolsReport } from '@devtools/core/signals/report';
 import type { Ack } from '@devtools/core/simulate/commands';
 import type { CaptureRecord, Issue, Run } from '@devtools/core/model/types';
@@ -34,11 +35,12 @@ import type {
   ClosedConn,
   RegistrationState,
   RequestLine,
+  RenderReports,
   SignalReports,
   SimDispatch,
 } from '@devtools/sw/protocol';
 
-export type { Ack, ClosedConn, RegistrationState, RequestLine, SignalReports, SimDispatch };
+export type { Ack, ClosedConn, RegistrationState, RenderReports, RequestLine, SignalReports, SimDispatch };
 
 export interface CaptureSnapshot {
   records: CaptureRecord[];
@@ -90,6 +92,8 @@ export interface CaptureSnapshot {
    * `snapshotFor`-backed accessors.
    */
   signals: SignalReports;
+  /** The Threadplane render reports the worker holds (UI inspector U5), read the same way. */
+  renders: RenderReports;
   /**
    * The run-simulator acknowledgements the worker holds (§14.4, R4) — the same list a panel's
    * `snapshot` carries, read through the hook's `snapshotFor`-backed accessor.
@@ -110,6 +114,8 @@ interface TestHook {
   reconcileRegistrations(): Promise<void>;
   signals(): ThreadplaneDevtoolsReport[];
   signalsDropped(): number;
+  renders(): RenderDevtoolsReport[];
+  rendersDropped(): number;
   simAcks(): Ack[];
   arm(tabId: number, command: unknown): Promise<SimDispatch | null>;
   disarm(tabId: number, armId: unknown): Promise<SimDispatch | null>;
@@ -224,9 +230,33 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
       info: hook.info(),
       registration: hook.registration(),
       signals: { reports: hook.signals(), droppedBefore: hook.signalsDropped() },
+      renders: { reports: hook.renders(), droppedBefore: hook.rendersDropped() },
       simAcks: hook.simAcks(),
     };
   });
+}
+
+/**
+ * Read the buffer once the worker reports the capture layer loaded in the page, or once
+ * `timeoutMs` has passed — whichever is first — and return that read either way.
+ *
+ * WHY. `loaded` is set by the relay's `capture-loaded` message, which crosses a `chrome.runtime`
+ * port into the MV3 worker on its own schedule; nothing orders it against the page's `load` event
+ * or against a test's own wait. A single read straight after the page settles races it. Measured
+ * on this branch with ten busy-loop processes on a 10-core machine: one `readCapture` took 5-15 s
+ * to be answered at all, and `quiet-page.spec.ts` failed its "still reports the document as
+ * loaded" check in a slow full run. Like `readSettledCapture`, the wait ends on the worker's own
+ * state, never on the clock, and it does not assert: a report that never comes is a `loaded:
+ * false` for the test about it to fail on.
+ */
+export async function readLoadedCapture(ctx: BrowserContext, timeoutMs = 20_000): Promise<CaptureSnapshot> {
+  const deadline = Date.now() + timeoutMs;
+  let latest = await readCapture(ctx);
+  while (!latest.loaded && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    latest = await readCapture(ctx);
+  }
+  return latest;
 }
 
 export interface SettleOptions {
@@ -386,6 +416,7 @@ export function foldAsLatePanel(capture: CaptureSnapshot): LatePanelFold {
     registration: capture.registration,
     // Not read by the runs or the issues either; stated for the same reason as `registration`.
     signals: capture.signals,
+    renders: capture.renders,
     // Likewise not read by the runs or the issues; stated so the message is `snapshotFor`'s shape.
     simAcks: capture.simAcks,
   });

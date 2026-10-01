@@ -9,7 +9,7 @@ import type { RuntimeInfo } from '../../core/detect/info';
 import type { Run, Issue, CaptureRecord } from '../../core/model/types';
 import type { JsonlHeader } from '../../core/jsonl/codec';
 import type { Ack } from '../../core/simulate/commands';
-import type { RegistrationState, RequestLine, SignalReports, SimDispatch } from '../../sw/protocol';
+import type { RegistrationState, RenderReports, RequestLine, SignalReports, SimDispatch } from '../../sw/protocol';
 
 /** Where the panel's data came from. Drives empty states and which controls are live. */
 export type PanelSource =
@@ -66,7 +66,7 @@ export interface BinaryTransport {
   bytes: number;
 }
 
-export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'signals' | 'simulate' | 'session';
+export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'ui' | 'signals' | 'simulate' | 'session';
 
 /** `null` means "all runs". */
 export type RunScope = string | null;
@@ -211,6 +211,12 @@ export interface PanelState {
    */
   signals: SignalReports;
   /**
+   * The Threadplane render reports the live capture has delivered (UI inspector U5), oldest first,
+   * with the eviction total summed like `signals`. The UI tab reads the latest per surface for its
+   * node states. LIVE ONLY (U7): an import empties this.
+   */
+  renders: RenderReports;
+  /**
    * Developer mode (§14.4, design R6) per origin, as the worker last reported it. Keyed by origin
    * because the flag is, and because the worker broadcasts every change to every panel: a panel
    * shows only its own inspected origin's entry. Absent means "not asked yet", which reads as off.
@@ -275,6 +281,7 @@ export function initialPanelState(): PanelState {
     preserveLog: false,
     binaryTransport: null,
     signals: { reports: [], droppedBefore: 0 },
+    renders: { reports: [], droppedBefore: 0 },
     developerModes: {},
     simulator: { acks: [], dispatches: [] },
     simArmLabels: {},

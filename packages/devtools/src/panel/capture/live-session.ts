@@ -12,6 +12,7 @@
 import type { RuntimeInfo } from '../../core/detect/info';
 import type { CaptureRecord } from '../../core/model/types';
 import type { ThreadplaneDevtoolsReport } from '../../core/signals/report';
+import { MAX_RENDER_RING_CHARS, renderRingStart, type RenderDevtoolsReport } from '../../core/signals/render-report';
 import type { Ack } from '../../core/simulate/commands';
 import { createRunBuilder, type RunBuilder } from '../../core/normalizer/run-builder';
 import type { ClosedConn, RegistrationState, RequestLine, SimDispatch, SwMessage } from '../../sw/protocol';
@@ -26,6 +27,8 @@ export interface LiveSessionOptions {
   maxRecords?: number;
   /** How many Threadplane reports the panel keeps. Matches the worker's ring (5000). */
   maxSignals?: number;
+  /** How many Threadplane render reports the panel keeps. Matches the worker's ring (500). */
+  maxRenders?: number;
 }
 
 export interface LiveSession {
@@ -59,6 +62,8 @@ const DEFAULT_MAX_RECORDS = 5000;
 
 /** The panel's bound on retained Threadplane reports, for the same reason as `DEFAULT_MAX_RECORDS`. */
 const DEFAULT_MAX_SIGNALS = 5000;
+/** The panel's bound on retained render reports — the worker's ring (U5). */
+const DEFAULT_MAX_RENDERS = 500;
 /** How many simulator acks and dispatches the panel keeps — the worker's own bound. */
 const MAX_SIM_ENTRIES = 200;
 
@@ -66,6 +71,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
   let expandChunks = options.expandChunks ?? true;
   let maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
   let maxSignals = options.maxSignals ?? DEFAULT_MAX_SIGNALS;
+  let maxRenders = options.maxRenders ?? DEFAULT_MAX_RENDERS;
   let builder: RunBuilder = createRunBuilder({ expandChunks });
   let records: CaptureRecord[] = [];
   /**
@@ -122,6 +128,10 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
   let signals: ThreadplaneDevtoolsReport[] = [];
   let signalsWorkerDropped = 0;
   let signalsPanelDropped = 0;
+  /** Threadplane render reports (U5), with the same pair of eviction counts as `signals`. */
+  let renders: RenderDevtoolsReport[] = [];
+  let rendersWorkerDropped = 0;
+  let rendersPanelDropped = 0;
   /**
    * The run simulator's arms (§14.4): the hook's acks as the worker holds them (it is the authority
    * on a snapshot and clears them with the buffer), and the answers to this panel's own Arm and
@@ -134,6 +144,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     expandChunks = next.expandChunks ?? expandChunks;
     maxRecords = next.maxRecords ?? maxRecords;
     maxSignals = next.maxSignals ?? maxSignals;
+    maxRenders = next.maxRenders ?? maxRenders;
     builder = createRunBuilder({ expandChunks });
     records = [];
     requests = [];
@@ -145,8 +156,19 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     signals = [];
     signalsWorkerDropped = 0;
     signalsPanelDropped = 0;
+    renders = [];
+    rendersWorkerDropped = 0;
+    rendersPanelDropped = 0;
     simAcks = [];
     simDispatches = [];
+  }
+
+  /** Oldest-first eviction of render reports past the count or the size bound (the worker's), counted. */
+  function trimRenders(): void {
+    const excess = renderRingStart(renders, maxRenders, MAX_RENDER_RING_CHARS);
+    if (excess === 0) return;
+    renders = renders.slice(excess);
+    rendersPanelDropped += excess;
   }
 
   /** Oldest-first eviction of reports, counted — P9 for the Signals tab. */
@@ -181,6 +203,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
       runtime,
       registration,
       signals: { reports: signals, droppedBefore: signalsWorkerDropped + signalsPanelDropped },
+      renders: { reports: renders, droppedBefore: rendersWorkerDropped + rendersPanelDropped },
       simulator: { acks: simAcks, dispatches: simDispatches },
     };
   }
@@ -217,6 +240,9 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     const heldSignals = signals;
     const heldSignalsWorkerDropped = signalsWorkerDropped;
     const heldSignalsPanelDropped = signalsPanelDropped;
+    const heldRenders = renders;
+    const heldRendersWorkerDropped = rendersWorkerDropped;
+    const heldRendersPanelDropped = rendersPanelDropped;
     const heldSimAcks = simAcks;
     const heldSimDispatches = simDispatches;
     restart(next);
@@ -233,6 +259,9 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     signals = heldSignals;
     signalsWorkerDropped = heldSignalsWorkerDropped;
     signalsPanelDropped = heldSignalsPanelDropped;
+    renders = heldRenders;
+    rendersWorkerDropped = heldRendersWorkerDropped;
+    rendersPanelDropped = heldRendersPanelDropped;
     simAcks = heldSimAcks;
     simDispatches = heldSimDispatches;
     return project(s);
@@ -291,6 +320,9 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
         signals = [...message.signals.reports];
         signalsWorkerDropped = message.signals.droppedBefore;
         trimSignals();
+        renders = [...message.renders.reports];
+        rendersWorkerDropped = message.renders.droppedBefore;
+        trimRenders();
         // The snapshot is a new dataset: a selection made against the previous one would point
         // at a seq this one may not contain, and a scope at a run it may not have.
         return {
@@ -317,6 +349,11 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
           signals = [...signals, ...message.signals.reports];
           signalsWorkerDropped = message.signals.droppedBefore;
           trimSignals();
+        }
+        if (message.renders !== undefined) {
+          renders = [...renders, ...message.renders.reports];
+          rendersWorkerDropped = message.renders.droppedBefore;
+          trimRenders();
         }
         return project(s);
       }

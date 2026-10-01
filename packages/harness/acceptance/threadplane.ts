@@ -22,14 +22,25 @@
  * count) — and the Signals reports the scripted runs produce reach the worker like any others. One
  * unarmed submit per adapter afterwards must make a request, so the zero is not vacuous.
  *
- * BUILDING THREADPLANE. When `dist/libs/{chat,ag-ui,langgraph}` is missing, or older than any file
- * under those libraries' `src/`, the three packages are built with the checkout's own Nx. The
+ * THE UI INSPECTOR (§14.5, cacheplane/threadplane#1215). Last, on a fresh page and a cleared buffer:
+ * `threadplane-render-page.ts` runs one AG-UI run over a real `HttpAgent` against this server's
+ * `POST /genui` (two assistant messages: an A2UI surface and a json-render spec, each with one
+ * component type the basic catalog lacks, and a child under it), then renders both through
+ * `<a2ui-surface>` and `<chat-generative-ui>`. Asserted: the worker holds every render report the
+ * page heard, for both surface ids; the unknown element is `unresolved`, its child `hidden`, the
+ * rest `mounted`; and the extension's own UI-tab model (`buildUiModel`, over the captured records,
+ * requests, runs and those reports) badges the same nodes the same way. The wire checks alone (no
+ * reports — an imported capture) agree for the A2UI surface against the inferred basic catalog; a
+ * json-render spec carries no catalog on the wire, so without the report every node reads rendered.
+ *
+ * BUILDING THREADPLANE. When `dist/libs/{chat,ag-ui,langgraph,render,a2ui}` is missing, or older
+ * than any file under those libraries' `src/`, the packages are built with the checkout's own Nx. The
  * checkout's `git status --porcelain` is read before and after and must not change: the build
  * writes only `dist/` (ignored), and this script never writes anywhere else in it.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -38,14 +49,24 @@ import { fileURLToPath } from 'node:url';
 
 import { build, type Plugin } from 'esbuild';
 
+import { isRenderReport, type RenderDevtoolsReport } from '@devtools/core/signals/render-report';
 import type { ThreadplaneDevtoolsReport } from '@devtools/core/signals/report';
 import { isThreadplaneReport } from '@devtools/core/signals/report';
 import { parseArmCommand, type Ack } from '@devtools/core/simulate/commands';
 import { armCommand, templateScript } from '@devtools/core/simulate/templates';
+import { buildUiModel, NODE_STATE_LABEL, type UiNode, type UiSurface } from '@devtools/panel/tabs/ui/ui-model';
 
 import type { BrowserContext, Page } from '@playwright/test';
 
-import { clearCapture, launchWithExtension, readCapture, simulator, tabIdOf } from '../e2e/fixtures.js';
+import {
+  clearCapture,
+  launchWithExtension,
+  readCapture,
+  readSettledCapture,
+  reconstruct,
+  simulator,
+  tabIdOf,
+} from '../e2e/fixtures.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const threadplane = resolve(
@@ -124,8 +145,10 @@ function threadplaneDist(): Plugin {
   };
 }
 
-const LIBS = ['chat', 'ag-ui', 'langgraph'] as const;
-const bundleOf = (pkg: string): string => join(distLibs, pkg, `fesm2022/threadplane-${pkg}.mjs`);
+const LIBS = ['chat', 'ag-ui', 'langgraph', 'render', 'a2ui'] as const;
+/** Each package's built entry: ng-packagr's FESM bundle, or `@threadplane/a2ui`'s plain tsc output. */
+const bundleOf = (pkg: string): string =>
+  pkg === 'a2ui' ? join(distLibs, pkg, 'src/index.js') : join(distLibs, pkg, `fesm2022/threadplane-${pkg}.mjs`);
 
 /** The newest modification time of any file under `dir`. */
 function newestUnder(dir: string): number {
@@ -174,9 +197,12 @@ async function bundle(): Promise<void> {
   if (!chat.includes('threadplane:devtools:arm')) {
     throw new Error('the built @threadplane/chat has no scripted runs: build cacheplane/threadplane#1204.');
   }
+  if (!chat.includes('createRenderDevtoolsReporter')) {
+    throw new Error('the built @threadplane/chat has no render report: build cacheplane/threadplane#1215.');
+  }
   await build({
-    entryPoints: [join(here, 'threadplane-page.ts')],
-    outfile: join(outDir, 'threadplane-page.js'),
+    entryPoints: [join(here, 'threadplane-page.ts'), join(here, 'threadplane-render-page.ts')],
+    outdir: outDir,
     bundle: true,
     format: 'esm',
     platform: 'browser',
@@ -198,9 +224,14 @@ function serve(): Promise<Server> {
     '<!doctype html><meta charset="utf-8"><title>Threadplane acceptance</title>' +
     '<script type="module" src="/threadplane-page.js"></script>';
   const server = createServer((req, res) => {
-    if (req.url === '/threadplane-page.js') {
+    if (req.url === '/threadplane-page.js' || req.url === '/threadplane-render-page.js') {
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
-      res.end(readFileSync(join(outDir, 'threadplane-page.js')));
+      res.end(readFileSync(join(outDir, req.url.slice(1))));
+    } else if (req.url === '/genui.html') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(html.replace('/threadplane-page.js', '/threadplane-render-page.js'));
+    } else if (req.url === '/genui' && req.method === 'POST') {
+      genui(req, res);
     } else if (req.url === '/' || req.url === '/index.html') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(html);
@@ -213,6 +244,177 @@ function serve(): Promise<Server> {
 }
 
 const pairs = (reports: ThreadplaneDevtoolsReport[]): Pair[] => reports.map((r) => [r.eventType, r.wrote]);
+
+/* -------------------------------------------------------------------------- */
+/* The UI inspector, against the real build                                     */
+/* -------------------------------------------------------------------------- */
+
+const BASIC_CATALOG_ID = 'https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json';
+
+/** The A2UI surface: `chart` is a type the basic catalog lacks, `chartLabel` sits under it. */
+const A2UI_LINES = [
+  { version: 'v0.9', createSurface: { surfaceId: 'weekly-report', catalogId: BASIC_CATALOG_ID } },
+  {
+    version: 'v0.9',
+    updateComponents: {
+      surfaceId: 'weekly-report',
+      components: [
+        { id: 'root', component: 'Column', children: ['title', 'chart', 'footer'] },
+        { id: 'title', component: 'Text', text: 'Weekly report' },
+        { id: 'chart', component: 'Sparkline', children: ['chartLabel'], points: [3, 1, 4] },
+        { id: 'chartLabel', component: 'Text', text: 'Signups' },
+        { id: 'footer', component: 'Text', text: 'Generated by the agent' },
+      ],
+    },
+  },
+];
+
+/** The json-render spec: `gauge` is unknown, `gaugeLabel` under it. */
+const SPEC = {
+  root: 'card',
+  elements: {
+    card: { type: 'Column', props: {}, children: ['heading', 'gauge'] },
+    heading: { type: 'Text', props: { text: 'Totals' } },
+    gauge: { type: 'Gauge', props: { value: 0.7 }, children: ['gaugeLabel'] },
+    gaugeLabel: { type: 'Text', props: { text: '70%' } },
+  },
+};
+
+/** Each surface's expected states: what the app reports, and the badge the UI tab must show. */
+const EXPECTED_STATES: Record<string, Record<string, RenderDevtoolsReport['elements'][number]['state']>> = {
+  'weekly-report': { root: 'mounted', title: 'mounted', chart: 'unresolved', chartLabel: 'hidden', footer: 'mounted' },
+  'spec:card': { card: 'mounted', heading: 'mounted', gauge: 'unresolved', gaugeLabel: 'hidden' },
+};
+/**
+ * What the wire checks alone show (an imported capture): the A2UI surface is checked against the
+ * inferred basic catalog, so the same badges; a json-render spec names no catalog on the wire, so
+ * nothing can be called unknown without the app's report — every node reads rendered.
+ */
+const WIRE_ONLY_BADGES: Record<string, Record<string, string>> = {
+  'weekly-report': { root: 'rendered', title: 'rendered', chart: 'unknown type', chartLabel: 'not rendered', footer: 'rendered' },
+  'spec:card': { card: 'rendered', heading: 'rendered', gauge: 'rendered', gaugeLabel: 'rendered' },
+};
+const BADGE_OF = { mounted: 'rendered', fallback: 'fallback', unresolved: 'unknown type', hidden: 'not rendered' } as const;
+
+/** `POST /genui`: one AG-UI run streaming the two assistant messages, echoing the request's ids. */
+function genui(req: IncomingMessage, res: ServerResponse): void {
+  let body = '';
+  req.on('data', (chunk: Buffer) => (body += chunk.toString('utf8')));
+  req.on('end', () => {
+    let input: { threadId?: string; runId?: string } = {};
+    try {
+      input = JSON.parse(body) as typeof input;
+    } catch {
+      // A body that is not JSON still gets a run; the ids fall back below.
+    }
+    const threadId = input.threadId ?? 'thread-genui';
+    const runId = input.runId ?? 'run-genui';
+    const a2ui = `---a2ui_JSON---\n${A2UI_LINES.map((line) => JSON.stringify(line)).join('\n')}\n`;
+    const spec = JSON.stringify(SPEC);
+    const half = Math.floor(a2ui.length / 2);
+    const events = [
+      { type: 'RUN_STARTED', threadId, runId },
+      { type: 'TEXT_MESSAGE_START', messageId: 'm-a2ui', role: 'assistant' },
+      { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm-a2ui', delta: a2ui.slice(0, half) },
+      { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm-a2ui', delta: a2ui.slice(half) },
+      { type: 'TEXT_MESSAGE_END', messageId: 'm-a2ui' },
+      { type: 'TEXT_MESSAGE_START', messageId: 'm-spec', role: 'assistant' },
+      { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm-spec', delta: spec },
+      { type: 'TEXT_MESSAGE_END', messageId: 'm-spec' },
+      { type: 'RUN_FINISHED', threadId, runId },
+    ];
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+    res.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''));
+  });
+}
+
+/** `id → badge` over a drawn tree, depth first. */
+function badgesOf(node: UiNode | undefined, out: Record<string, string> = {}): Record<string, string> {
+  if (node === undefined) return out;
+  if (node.state !== undefined && !(node.id in out)) out[node.id] = NODE_STATE_LABEL[node.state];
+  for (const child of node.children) badgesOf(child, out);
+  return out;
+}
+
+function surfaceIn(model: ReturnType<typeof buildUiModel>, id: string): UiSurface | undefined {
+  return model.groups.flatMap((group) => group.surfaces).find((view) => view.surface.id === id);
+}
+
+async function uiInspector(ctx: BrowserContext, port: number, failures: string[]): Promise<void> {
+  const fail = (message: string): void => {
+    failures.push(`UI inspector: ${message}`);
+  };
+  await clearCapture(ctx);
+  const page = await ctx.newPage();
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.goto(`http://localhost:${String(port)}/genui.html`);
+  await page.waitForFunction(() => (window as { __TP_DONE__?: boolean }).__TP_DONE__ === true, null, { timeout: 30_000 });
+  const { dispatched, error, messages } = await page.evaluate(() => {
+    const w = window as unknown as { __TP_RENDERS__: unknown[]; __TP_ERROR__?: string; __TP_MESSAGES__?: string[] };
+    return { dispatched: w.__TP_RENDERS__, error: w.__TP_ERROR__, messages: w.__TP_MESSAGES__ ?? [] };
+  });
+  if (error) fail(`the page threw: ${error}`);
+  if (pageErrors.length) fail(`page errors: ${pageErrors.join(' | ')}`);
+  console.log(`\nUI inspector: the agent's messages (${String(messages.length)}): ${messages.map((m) => JSON.stringify(m.slice(0, 40))).join(', ')}`);
+
+  const invalid = dispatched.filter((report) => !isRenderReport(report));
+  for (const report of invalid) fail(`rejected by isRenderReport: ${JSON.stringify(report)}`);
+  const reports = dispatched.filter(isRenderReport);
+
+  // Poll until the worker holds as many as the page heard; the bound only matters if broken.
+  const deadline = Date.now() + 15_000;
+  let held = (await readCapture(ctx)).renders;
+  while (held.reports.length < dispatched.length && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 25));
+    held = (await readCapture(ctx)).renders;
+  }
+  console.log(`Render reports dispatched by the page: ${String(dispatched.length)}; held by the worker: ${String(held.reports.length)} (ring dropped ${String(held.droppedBefore)})`);
+  if (!isDeepStrictEqual(held.reports, dispatched)) fail('the worker’s render reports differ from the page’s');
+
+  for (const [surface, expected] of Object.entries(EXPECTED_STATES)) {
+    const latest = reports.filter((report) => report.surface === surface).at(-1);
+    if (latest === undefined) {
+      fail(`no render report for surface ${surface}`);
+      continue;
+    }
+    const states = Object.fromEntries(latest.elements.map((element) => [element.key, element.state]));
+    console.log(`  #${String(latest.seq)} ${surface.padEnd(14)} registry ${String(latest.registry.length)} names; ${JSON.stringify(states)}`);
+    if (!isDeepStrictEqual(states, expected)) fail(`${surface} element states differ:\n  expected ${JSON.stringify(expected)}\n  actual   ${JSON.stringify(states)}`);
+  }
+
+  // The panel's own model over what the worker captured: the UI tab's badges.
+  const capture = await readSettledCapture(ctx, { connections: 1 });
+  const { runs } = reconstruct(capture);
+  const input = { records: capture.records, requests: capture.requests, runs };
+  const live = buildUiModel({ ...input, renders: capture.renders.reports }, null);
+  const wireOnly = buildUiModel({ ...input, renders: [] }, null);
+  console.log(`Captured: ${String(capture.records.length)} records, ${String(runs.length)} run(s); UI tab surfaces: ${JSON.stringify(live.groups.flatMap((g) => g.surfaces.map((v) => v.surface.id)))}`);
+  for (const [surface, expected] of Object.entries(EXPECTED_STATES)) {
+    const want = Object.fromEntries(Object.entries(expected).map(([key, state]) => [key, BADGE_OF[state]]));
+    for (const [name, model, source, wanted] of [
+      ['with the report', live, 'app', want],
+      ['wire checks only', wireOnly, 'checks', WIRE_ONLY_BADGES[surface]],
+    ] as const) {
+      const view = surfaceIn(model, surface);
+      if (view === undefined) {
+        fail(`the UI tab model (${name}) has no surface ${surface}`);
+        continue;
+      }
+      const badges = badgesOf(view.tree);
+      const findings = view.findings.map((finding) => `${finding.code}/${finding.basis}/${finding.componentId ?? '-'}`);
+      console.log(`  UI tab, ${name.padEnd(16)} ${surface.padEnd(14)} states from ${view.stateSource}, catalog ${view.catalog?.source ?? 'none'} (${view.catalog?.basis ?? '-'}): ${JSON.stringify(badges)}`);
+      console.log(`  ${''.padEnd(24)}findings ${JSON.stringify(findings)}`);
+      if (view.stateSource !== source) fail(`${surface} (${name}): node states came from ${view.stateSource}, expected ${source}`);
+      if (!isDeepStrictEqual(badges, wanted)) fail(`${surface} (${name}) badges differ:\n  expected ${JSON.stringify(wanted)}\n  actual   ${JSON.stringify(badges)}`);
+    }
+    const report = surfaceIn(live, surface);
+    if (report?.catalog?.source !== 'registry' || report.catalog.basis !== 'exact') {
+      fail(`${surface}: the reported registry did not become the surface's exact catalog`);
+    }
+  }
+  await page.close();
+}
 
 /* -------------------------------------------------------------------------- */
 /* The run simulator, against the real build                                    */
@@ -431,6 +633,9 @@ async function main(): Promise<void> {
 
     await controlRequests(page, requests, failures);
     if (pageErrors.length) failures.push(`page errors after the simulator: ${pageErrors.join(' | ')}`);
+
+    // The UI inspector, on its own page and a cleared buffer.
+    await uiInspector(ctx, port, failures);
   } finally {
     await ctx.close();
     await new Promise((r) => server.close(r));
@@ -442,6 +647,7 @@ async function main(): Promise<void> {
   } else {
     console.log('\nPASS: every report the real Threadplane build dispatched reached the worker, in order, unchanged.');
     console.log('PASS: the extension’s interrupt templates scripted both adapters through armed → consumed 0 → interrupt → resume → consumed 1 → idle, with no agent-endpoint request.');
+    console.log('PASS: the real build’s render reports reached the worker for both surfaces (unknown → unresolved, its child → hidden, the rest → mounted), and the UI tab’s model badges them the same; from the wire alone, the A2UI surface reads the same against the inferred basic catalog.');
   }
 }
 

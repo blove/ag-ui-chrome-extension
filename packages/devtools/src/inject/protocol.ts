@@ -6,6 +6,7 @@
  */
 
 import { isRuntimeInfo, type RuntimeInfo } from '../core/detect/info';
+import { isRenderReport, type RenderDevtoolsReport } from '../core/signals/render-report';
 import { isThreadplaneReport, type ThreadplaneDevtoolsReport } from '../core/signals/report';
 
 export const AGUI_DT_SOURCE = 'agui-dt';
@@ -125,7 +126,7 @@ export type InjectMessage =
   /**
    * A Threadplane app in development reported which of its signals one event wrote (design G2–G5).
    *
-   * NO `connId`, and that is the one exemption from the connection rule in this union. The report
+   * NO `connId`: with its sibling `render` below, the only exemption from the connection rule in this union. The report
    * is about the app's own state, not a stream; matching it to a frame is the panel's inference
    * (by event name, order and time), never a claim the page makes. It is posted only in response
    * to the page's own `threadplane:devtools` dispatch.
@@ -147,7 +148,19 @@ export type InjectMessage =
    *
    * `report` is the validated, field-by-field copy (`cloneReport`) — never the page's object.
    */
-  | { source: 'agui-dt'; v: 1; kind: 'signals'; report: ThreadplaneDevtoolsReport };
+  | { source: 'agui-dt'; v: 1; kind: 'signals'; report: ThreadplaneDevtoolsReport }
+  /**
+   * A Threadplane app in development reported how one rendered surface resolved (UI inspector U4,
+   * U5): its registry's component names and each element's state. Names and states only.
+   *
+   * Its OWN arm rather than a union inside `signals`, so each arm keeps one validator, one
+   * field-by-field copy and one worker ring — and a guard that accepts one shape can never be
+   * talked into the other. Connectionless for exactly the reasons `signals` is, and posted only in
+   * answer to the page's own `threadplane:devtools` dispatch with `kind: 'render'`.
+   *
+   * `report` is the validated, field-by-field copy (`cloneRenderReport`) — never the page's object.
+   */
+  | { source: 'agui-dt'; v: 1; kind: 'render'; report: RenderDevtoolsReport };
 
 const CLOSE_REASONS: ReadonlySet<string> = new Set(['complete', 'error', 'aborted']);
 
@@ -189,10 +202,15 @@ function check(value: unknown): boolean {
   if (!hasOwn(value, 'v') || value.v !== PROTOCOL_VERSION) return false;
   if (!hasOwn(value, 'kind')) return false;
 
-  // The one connectionless arm, checked ahead of the connection rule and exempted from it by
-  // name — see the `signals` arm above. Nothing else may reach the switch without a connection.
+  // The connectionless arms (`signals`, and `render` below), checked ahead of the connection rule
+  // and exempted from it by name — see those arms above. Nothing else may reach the switch without
+  // a connection.
   if (value.kind === 'signals') {
     return hasOwn(value, 'report') && isThreadplaneReport(value.report);
+  }
+  // Its sibling, the render report (U5): connectionless for the same reason, accepted only whole.
+  if (value.kind === 'render') {
+    return hasOwn(value, 'report') && isRenderReport(value.report);
   }
 
   // Unconditional for every other arm, which all belong to a connection. The `capture-installed`

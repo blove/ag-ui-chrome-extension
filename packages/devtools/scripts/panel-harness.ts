@@ -12,6 +12,7 @@ import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
 import type { Browser, FrameLocator, Page } from 'playwright';
+import { loadFixture } from '../src/test/load-capture';
 
 /** Where the panel document lives inside a built `dist/`. */
 export const PANEL_PATH = 'src/panel/panel.html';
@@ -93,7 +94,8 @@ export type ShimKind =
   | 'devtools-ungranted'
   | 'devtools-granted-unregistered'
   | 'devtools-live-signals'
-  | 'devtools-live-simulate';
+  | 'devtools-live-simulate'
+  | 'devtools-live-genui';
 
 /** The localhost origin `devtools-live-signals` reports — auto-enabled (D3), so capture turns on. */
 export const SIGNALS_INSPECTED_ORIGIN = 'http://localhost:5173';
@@ -187,6 +189,61 @@ const SIGNALS_SNAPSHOT = {
   info: null,
   registration: { matches: [], error: null },
   signals: { reports: SEED_REPORTS, droppedBefore: 0 },
+  renders: { reports: [], droppedBefore: 0 },
+  simAcks: [],
+};
+
+/**
+ * The UI tab's live gate (§14.5, U6): `devtools-live-genui` is a live tab whose capture is the
+ * `genui-threadplane-agui` fixture — the same records an import of that file gives — plus ONE
+ * Threadplane render report (U4) for its cockpit dashboard, `spec:root`, as the hook would send it
+ * after rendering run `r-tp2`'s spec: a registry without `line_chart` / `bar_chart`, so those two
+ * elements are `unresolved`; `delay_card` still waiting on data (`fallback`); `table_section` not
+ * visible (`hidden`). The gate imports the same fixture first, so it can assert the node states
+ * switch from the wire checks' to the hook's.
+ *
+ * TEST-ONLY, like the seeds above.
+ */
+const GENUI_FIXTURE = loadFixture('genui-threadplane-agui.agui.jsonl');
+
+export const GENUI_RENDER_REPORT = {
+  v: 1,
+  kind: 'render',
+  surface: 'spec:root',
+  seq: 3,
+  registry: ['dashboard_grid', 'container', 'stat_card', 'data_grid', 'text'],
+  elements: [
+    { key: 'root', type: 'dashboard_grid', state: 'mounted' },
+    { key: 'stats_row', type: 'container', state: 'mounted' },
+    { key: 'on_time_card', type: 'stat_card', state: 'mounted' },
+    { key: 'flights_card', type: 'stat_card', state: 'mounted' },
+    { key: 'delay_card', type: 'stat_card', state: 'fallback' },
+    { key: 'load_card', type: 'stat_card', state: 'mounted' },
+    { key: 'charts_row', type: 'container', state: 'mounted' },
+    { key: 'trend_chart', type: 'line_chart', state: 'unresolved' },
+    { key: 'airline_chart', type: 'bar_chart', state: 'unresolved' },
+    { key: 'table_section', type: 'data_grid', state: 'hidden' },
+  ],
+  tMs: 900,
+} as const;
+
+function lastCloses(records: readonly { connId: string; tMs: number }[]): { connId: string; tMs: number }[] {
+  const last = new Map<string, number>();
+  for (const record of records) last.set(record.connId, record.tMs);
+  return [...last].map(([connId, tMs]) => ({ connId, tMs }));
+}
+
+const GENUI_SNAPSHOT = {
+  kind: 'snapshot',
+  records: GENUI_FIXTURE.records,
+  requests: GENUI_FIXTURE.requests,
+  closed: lastCloses(GENUI_FIXTURE.records),
+  droppedBefore: 0,
+  loaded: true,
+  info: null,
+  registration: { matches: [], error: null },
+  signals: { reports: [], droppedBefore: 0 },
+  renders: { reports: [GENUI_RENDER_REPORT], droppedBefore: 0 },
   simAcks: [],
 };
 
@@ -335,6 +392,7 @@ export const SHIMS: Record<ShimKind, string> = {
                     // registered. \`null\` would mean "not known yet", which warns about nothing.
                     registration: { matches: [], error: null },
                     signals: { reports: [], droppedBefore: 0 },
+                    renders: { reports: [], droppedBefore: 0 },
                     simAcks: [],
                   });
                 }
@@ -396,6 +454,40 @@ export const SHIMS: Record<ShimKind, string> = {
     };
   `,
   'devtools-live-simulate': SIMULATE_SHIM,
+  // A live localhost tab whose capture is the genui-threadplane-agui fixture plus one render report.
+  'devtools-live-genui': `
+    globalThis.chrome = {
+      runtime: {
+        getManifest: () => ({ version: '0.0.0-harness' }),
+        connect: () => {
+          const listeners = [];
+          return {
+            onMessage: {
+              addListener: (fn) => { listeners.push(fn); },
+              removeListener: () => {},
+            },
+            onDisconnect: { addListener: () => {}, removeListener: () => {} },
+            postMessage: (command) => {
+              if (!command || command.kind !== 'subscribe') return;
+              setTimeout(() => {
+                for (const fn of listeners.slice()) fn(${JSON.stringify(GENUI_SNAPSHOT)});
+              }, 0);
+            },
+            disconnect: () => {},
+          };
+        },
+      },
+      permissions: { contains: () => Promise.resolve(true) },
+      devtools: {
+        inspectedWindow: {
+          tabId: 1,
+          eval: (expression, callback) => {
+            callback(expression === 'location.origin' ? ${JSON.stringify(SIGNALS_INSPECTED_ORIGIN)} : null);
+          },
+        },
+      },
+    };
+  `,
 };
 
 export interface StaticServer {

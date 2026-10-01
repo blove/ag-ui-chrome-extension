@@ -143,6 +143,7 @@ export function captureOn(s: PanelState, origin: string): PanelState {
     droppedBefore: wasImported ? 0 : s.droppedBefore,
     binaryTransport: wasImported ? null : s.binaryTransport,
     signals: wasImported ? { reports: [], droppedBefore: 0 } : s.signals,
+    renders: wasImported ? { reports: [], droppedBefore: 0 } : s.renders,
     simulator: wasImported ? { acks: [], dispatches: [] } : s.simulator,
     // An imported file's runtime metadata describes the page THAT capture was taken on, not the
     // tab now being watched. Keeping it would put another app's agent list beside a live stream.

@@ -1,6 +1,7 @@
 /**
- * The MAIN-world half of the Signals view (design G5): hear a Threadplane app's devtools report
- * and pass it on.
+ * The MAIN-world half of the Signals view (design G5) and the UI tab (UI inspector U5): hear a
+ * Threadplane app's devtools reports — signals reports and render reports, routed by `kind` — and
+ * pass them on.
  *
  * A Threadplane app in development dispatches `CustomEvent('threadplane:devtools', { detail })` on
  * its own `window`, fire-and-forget (G3). This listens for exactly that name — no other event's
@@ -33,6 +34,7 @@
  * comparable by `tMs`.
  */
 
+import { cloneRenderReport, isRenderReport } from '../core/signals/render-report';
 import {
   cloneReport,
   isThreadplaneReport,
@@ -45,6 +47,19 @@ export interface SignalsTarget {
   addEventListener(type: string, listener: (event: Event) => void): void;
 }
 
+/**
+ * Which report a detail claims to be, from its OWN `kind` (U4): absent is the §14.3 signals report,
+ * `'render'` is the render report, and anything else — another string, `undefined` spelled out, an
+ * inherited `kind` — is neither and is dropped. Only the routing; each validator then checks the
+ * whole shape (a signals report may not carry `kind`, a render report must carry exactly
+ * `'render'`), so a getter that answers this read differently from the validator's gains nothing.
+ */
+function kindOf(detail: unknown): 'signals' | 'render' | null {
+  if (typeof detail !== 'object' || detail === null) return null;
+  if (!Object.prototype.hasOwnProperty.call(detail, 'kind')) return 'signals';
+  return (detail as { kind?: unknown }).kind === 'render' ? 'render' : null;
+}
+
 export function installSignalsListener(
   target: SignalsTarget,
   post: (message: InjectMessage) => void,
@@ -53,10 +68,24 @@ export function installSignalsListener(
     try {
       // Read once. A plain `Event` of this name has no `detail` and is rejected below.
       const detail: unknown = (event as CustomEvent<unknown>).detail;
-      if (!isThreadplaneReport(detail)) return;
-      const report = cloneReport(detail);
-      if (!isThreadplaneReport(report)) return;
-      post({ source: AGUI_DT_SOURCE, v: PROTOCOL_VERSION, kind: 'signals', report });
+      switch (kindOf(detail)) {
+        case 'signals': {
+          if (!isThreadplaneReport(detail)) return;
+          const report = cloneReport(detail);
+          if (!isThreadplaneReport(report)) return;
+          post({ source: AGUI_DT_SOURCE, v: PROTOCOL_VERSION, kind: 'signals', report });
+          return;
+        }
+        case 'render': {
+          if (!isRenderReport(detail)) return;
+          const report = cloneRenderReport(detail);
+          if (!isRenderReport(report)) return;
+          post({ source: AGUI_DT_SOURCE, v: PROTOCOL_VERSION, kind: 'render', report });
+          return;
+        }
+        case null:
+          return;
+      }
     } catch {
       // A hostile detail, or a page that broke `postMessage`. The report is lost; the page's own
       // dispatch carries on as if nothing listened — which, as far as it can tell, nothing did.

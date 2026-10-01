@@ -77,6 +77,7 @@ function afterLateOpen(stream: CapturedStream): PanelState {
     loaded: true,
     info: null,
     signals: { reports: [], droppedBefore: 0 },
+    renders: { reports: [], droppedBefore: 0 },
     registration: { matches: [], error: null },
     simAcks: [],
   });
@@ -186,6 +187,7 @@ describe('a run that finished before the panel opened', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });
@@ -213,6 +215,7 @@ describe('a run that finished before the panel opened', () => {
       loaded: true,
       info: null,
       signals: { reports: [], droppedBefore: 0 },
+      renders: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
       simAcks: [],
     });

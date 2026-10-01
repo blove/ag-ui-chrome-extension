@@ -59,6 +59,9 @@ export async function buildPage(): Promise<void> {
   // A stand-in Threadplane app in development: valid and hostile `threadplane:devtools` reports,
   // and a subframe that reports too — see `e2e/signals.spec.ts`. Inline script, no bundle.
   copyFileSync(join(pageRoot, 'signals.html'), join(outDir, 'signals.html'));
+  // The same stand-in rendering generative UI: valid and hostile render reports (UI inspector U4)
+  // and one signals report on the same event name — see `e2e/render.spec.ts`. Inline script.
+  copyFileSync(join(pageRoot, 'render.html'), join(outDir, 'render.html'));
   // A stand-in for Threadplane's run-simulator hook: records arms, answers with real and forged
   // acks, and a subframe that must never be armed — see `e2e/simulate.spec.ts`. Inline script.
   copyFileSync(join(pageRoot, 'simulate.html'), join(outDir, 'simulate.html'));

@@ -5,7 +5,7 @@ import { createPanelStore, selectTab } from '../model/store';
 import { TabStrip } from './tab-strip';
 
 describe('TabStrip', () => {
-  it('renders the seven tabs in order as real tabs', () => {
+  it('renders the eight tabs in order as real tabs', () => {
     const store = createPanelStore(initialPanelState());
     render(<TabStrip store={store} />);
 
@@ -15,6 +15,7 @@ describe('TabStrip', () => {
       'Runs',
       'State',
       'Messages',
+      'UI',
       'Signals',
       'Simulate',
       'Session',
