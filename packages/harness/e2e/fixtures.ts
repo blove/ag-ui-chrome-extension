@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium, type BrowserContext, type Page, type Worker } from '@playwright/test';
 
 import type { RuntimeInfo } from '@devtools/core/detect/info';
+import type { RenderDevtoolsReport } from '@devtools/core/signals/render-report';
 import type { ThreadplaneDevtoolsReport } from '@devtools/core/signals/report';
 import type { Ack } from '@devtools/core/simulate/commands';
 import type { CaptureRecord, Issue, Run } from '@devtools/core/model/types';
@@ -34,11 +35,12 @@ import type {
   ClosedConn,
   RegistrationState,
   RequestLine,
+  RenderReports,
   SignalReports,
   SimDispatch,
 } from '@devtools/sw/protocol';
 
-export type { Ack, ClosedConn, RegistrationState, RequestLine, SignalReports, SimDispatch };
+export type { Ack, ClosedConn, RegistrationState, RenderReports, RequestLine, SignalReports, SimDispatch };
 
 export interface CaptureSnapshot {
   records: CaptureRecord[];
@@ -90,6 +92,8 @@ export interface CaptureSnapshot {
    * `snapshotFor`-backed accessors.
    */
   signals: SignalReports;
+  /** The Threadplane render reports the worker holds (UI inspector U5), read the same way. */
+  renders: RenderReports;
   /**
    * The run-simulator acknowledgements the worker holds (§14.4, R4) — the same list a panel's
    * `snapshot` carries, read through the hook's `snapshotFor`-backed accessor.
@@ -110,6 +114,8 @@ interface TestHook {
   reconcileRegistrations(): Promise<void>;
   signals(): ThreadplaneDevtoolsReport[];
   signalsDropped(): number;
+  renders(): RenderDevtoolsReport[];
+  rendersDropped(): number;
   simAcks(): Ack[];
   arm(tabId: number, command: unknown): Promise<SimDispatch | null>;
   disarm(tabId: number, armId: unknown): Promise<SimDispatch | null>;
@@ -224,6 +230,7 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
       info: hook.info(),
       registration: hook.registration(),
       signals: { reports: hook.signals(), droppedBefore: hook.signalsDropped() },
+      renders: { reports: hook.renders(), droppedBefore: hook.rendersDropped() },
       simAcks: hook.simAcks(),
     };
   });
@@ -386,6 +393,7 @@ export function foldAsLatePanel(capture: CaptureSnapshot): LatePanelFold {
     registration: capture.registration,
     // Not read by the runs or the issues either; stated for the same reason as `registration`.
     signals: capture.signals,
+    renders: capture.renders,
     // Likewise not read by the runs or the issues; stated so the message is `snapshotFor`'s shape.
     simAcks: capture.simAcks,
   });

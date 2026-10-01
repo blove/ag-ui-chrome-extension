@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AG-UI harness — Threadplane render reports</title>
+    <script>
+      // A stand-in for a Threadplane app in development mode rendering generative UI (UI inspector
+      // U4): it dispatches `CustomEvent('threadplane:devtools', { detail })` render reports — the
+      // shape `devtools-render-report.ts` emits (cacheplane/threadplane#1215) — interleaved with
+      // HOSTILE ones a page could forge and one §14.3 signals report, which shares the event name
+      // and is told apart by having no `kind`. `e2e/render.spec.ts` asserts that only the valid
+      // render reports reach the worker's render ring, in order, and the signals report its own.
+      //
+      // No bundle and no request: the reports are the only thing this page does.
+      (function () {
+        var probe = { heardOwnEvent: 0, aguiMessages: [], errors: [] };
+        window.__RENDER_PROBE__ = probe;
+        window.addEventListener('error', function (event) {
+          probe.errors.push(String(event.message));
+        });
+        window.addEventListener('threadplane:devtools', function () {
+          probe.heardOwnEvent += 1;
+        });
+        window.addEventListener('message', function (event) {
+          var data = event.data;
+          if (data && typeof data === 'object' && data.source === 'agui-dt') probe.aguiMessages.push(data);
+        });
+
+        function dispatch(detail) {
+          window.dispatchEvent(new CustomEvent('threadplane:devtools', { detail: detail }));
+        }
+
+        function render(overrides) {
+          var base = {
+            v: 1,
+            kind: 'render',
+            surface: 's1',
+            seq: 1,
+            registry: ['Column', 'Text'],
+            elements: [
+              { key: 'root', type: 'Column', state: 'mounted' },
+              { key: 'mystery', type: 'Mystery', state: 'unresolved' },
+              { key: 'leaf', type: 'Text', state: 'hidden' },
+            ],
+            tMs: 1,
+          };
+          return Object.assign(base, overrides);
+        }
+
+        var throwing = render({ seq: 90 });
+        Object.defineProperty(throwing, 'elements', {
+          enumerable: true,
+          get: function () {
+            throw new Error('hostile getter');
+          },
+        });
+        var proxy = new Proxy(render({ seq: 91 }), {
+          ownKeys: function () {
+            throw new Error('hostile trap');
+          },
+        });
+
+        var stamped = performance.now();
+        var sequence = [
+          render({ seq: 1, tMs: 10 }),
+          render({ seq: 50, props: { text: 'a prop value must never cross' } }),
+          render({ seq: 51, elements: [{ key: 'a', type: 'Text', state: 'mounted', text: 'a prop value must never cross' }] }),
+          render({ seq: 52, elements: [{ key: 'a', type: 'Text', state: 'visible' }] }),
+          render({ seq: 53, kind: 'ui' }),
+          render({ seq: 54, surface: new Array(130).join('x') }),
+          render({ seq: 55, tMs: NaN }),
+          throwing,
+          proxy,
+          // A §14.3 signals report on the same event: no `kind`, so it is routed to the signals ring.
+          { v: 1, agent: 'harness-agent', adapter: 'ag-ui', seq: 1, eventType: 'RUN_STARTED', wrote: ['status'], tMs: 11 },
+          render({
+            seq: 2,
+            surface: 'spec:card',
+            registry: ['Text'],
+            elements: [{ key: 'card', type: 'Text', state: 'fallback' }],
+            tMs: stamped,
+          }),
+        ];
+        sequence.forEach(dispatch);
+        probe.dispatched = sequence.length;
+        probe.stamped = stamped;
+        document.documentElement.setAttribute('data-render', 'dispatched');
+      })();
+    </script>
+  </head>
+  <body>
+    <h1>Threadplane render reports</h1>
+  </body>
+</html>

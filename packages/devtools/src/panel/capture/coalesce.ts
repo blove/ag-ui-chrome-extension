@@ -1,7 +1,7 @@
 /**
  * Coalesce the worker's report-only appends into one per burst.
  *
- * The worker pushes each Threadplane devtools report on its own `append` (records empty) the
+ * The worker pushes each Threadplane devtools report — signals or render — on its own `append` (records empty) the
  * moment it arrives, and a streaming run produces one per protocol event — dozens a second. Folded
  * one at a time, each would be its own store write and its own render of every tab. This holds
  * them for `COALESCE_MS` and delivers a single `append` carrying all of them.
@@ -20,8 +20,13 @@ export const COALESCE_MS = 16;
 
 type Append = Extract<SwMessage, { kind: 'append' }>;
 
-function isSignalsOnly(message: SwMessage): message is Append & { signals: NonNullable<Append['signals']> } {
-  return message.kind === 'append' && message.records.length === 0 && message.signals !== undefined;
+/** An append that carries reports and no records: what the worker pushes per signals or render report. */
+function isReportOnly(message: SwMessage): message is Append {
+  return (
+    message.kind === 'append' &&
+    message.records.length === 0 &&
+    (message.signals !== undefined || message.renders !== undefined)
+  );
 }
 
 export interface SignalCoalescer {
@@ -30,8 +35,22 @@ export interface SignalCoalescer {
   dispose(): void;
 }
 
+/** Concatenate two optional report lists; the later message's eviction total is the current one. */
+function mergeReports<T>(
+  held: { reports: T[]; droppedBefore: number } | undefined,
+  next: { reports: T[]; droppedBefore: number } | undefined,
+): { reports: T[]; droppedBefore: number } | undefined {
+  if (next === undefined) return held;
+  if (held === undefined) return { reports: [...next.reports], droppedBefore: next.droppedBefore };
+  return { reports: [...held.reports, ...next.reports], droppedBefore: next.droppedBefore };
+}
+
+/**
+ * Signals reports (§14.3) and render reports (UI inspector U5) both ride record-less appends, and
+ * both are held here; the merged append carries each list only when some message carried it.
+ */
 export function createSignalCoalescer(deliver: (message: SwMessage) => void): SignalCoalescer {
-  let pending: (Append & { signals: NonNullable<Append['signals']> }) | null = null;
+  let pending: Append | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   function flush(): void {
@@ -44,24 +63,22 @@ export function createSignalCoalescer(deliver: (message: SwMessage) => void): Si
 
   return {
     push(message) {
-      if (!isSignalsOnly(message)) {
+      if (!isReportOnly(message)) {
         flush();
         deliver(message);
         return;
       }
-      pending =
-        pending === null
-          ? { ...message, signals: { ...message.signals, reports: [...message.signals.reports] } }
-          : {
-              kind: 'append',
-              records: [],
-              // Both totals are re-stated per message; absent means "no news", so keep the last.
-              droppedBefore: message.droppedBefore ?? pending.droppedBefore,
-              signals: {
-                reports: [...pending.signals.reports, ...message.signals.reports],
-                droppedBefore: message.signals.droppedBefore,
-              },
-            };
+      const signals = mergeReports(pending?.signals, message.signals);
+      const renders = mergeReports(pending?.renders, message.renders);
+      // Both totals are re-stated per message; absent means "no news", so keep the last.
+      const droppedBefore = message.droppedBefore ?? pending?.droppedBefore;
+      pending = {
+        kind: 'append',
+        records: [],
+        ...(droppedBefore !== undefined ? { droppedBefore } : {}),
+        ...(signals !== undefined ? { signals } : {}),
+        ...(renders !== undefined ? { renders } : {}),
+      };
       timer ??= setTimeout(flush, COALESCE_MS);
     },
     dispose() {

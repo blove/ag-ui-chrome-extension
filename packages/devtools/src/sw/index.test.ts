@@ -2579,6 +2579,225 @@ describe('service worker — Threadplane signal reports', () => {
   });
 });
 
+/**
+ * Threadplane render reports in the worker (UI inspector U5): a separate bounded per-tab ring
+ * (500), retained for a late panel, pushed to a watching one, paused with capture, cleared with the
+ * buffer, and mirrored — its tail, within a byte budget — across a worker termination.
+ */
+describe('service worker — Threadplane render reports', () => {
+  let stub: ChromeStub;
+
+  const RENDER = {
+    v: 1 as const,
+    kind: 'render' as const,
+    surface: 's1',
+    seq: 1,
+    registry: ['Column', 'Text'],
+    elements: [
+      { key: 'root', type: 'Column', state: 'mounted' as const },
+      { key: 'mystery', type: 'Mystery', state: 'unresolved' as const },
+    ],
+    tMs: 10,
+  };
+  const SIGNAL = {
+    v: 1 as const,
+    agent: 'agent-1',
+    adapter: 'langgraph' as const,
+    seq: 1,
+    eventType: 'values',
+    wrote: ['values'],
+    tMs: 10,
+  };
+
+  function renderMessage(overrides: Partial<typeof RENDER> = {}): RelayMessage {
+    return { v: 1, kind: 'render', report: { ...RENDER, ...overrides } };
+  }
+
+  function seqs(reports: readonly { seq: number }[]): number[] {
+    return reports.map((report) => report.seq);
+  }
+
+  beforeEach(async () => {
+    stub = installChrome();
+    await loadWorker();
+    await settle();
+  });
+
+  it('holds none until a report arrives', () => {
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    expect(snapshotOf(panel).renders).toEqual({ reports: [], droppedBefore: 0 });
+    expect(testHook().renders()).toEqual([]);
+    expect(testHook().rendersDropped()).toBe(0);
+  });
+
+  it('keeps render reports in their own ring, apart from the signals ring', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, renderMessage({ seq: 1 }));
+    send(relay, { v: 1, kind: 'signals', report: SIGNAL });
+    send(relay, renderMessage({ seq: 2, surface: 'spec:card' }));
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    expect(seqs(snapshotOf(panel).renders.reports)).toEqual([1, 2]);
+    expect(snapshotOf(panel).renders.reports[0]).toEqual(RENDER);
+    expect(snapshotOf(panel).signals.reports).toEqual([SIGNAL]);
+    expect(testHook().records()).toEqual([]);
+  });
+
+  it('pushes each report to the panel watching that tab on a record-less append', () => {
+    const watcher = panelPort();
+    stub.connect(watcher);
+    send(watcher, { kind: 'subscribe', tabId: 7 });
+    const other = panelPort();
+    stub.connect(other);
+    send(other, { kind: 'subscribe', tabId: 9 });
+
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, renderMessage());
+    expect(messagesOfKind(watcher, 'append')).toEqual([
+      { kind: 'append', records: [], droppedBefore: 0, renders: { reports: [RENDER], droppedBefore: 0 } },
+    ]);
+    expect(messagesOfKind(other, 'append')).toEqual([]);
+  });
+
+  it('keeps at most 500 per tab and counts what it evicted', () => {
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    const relay = relayPort(7);
+    stub.connect(relay);
+    for (let seq = 1; seq <= 503; seq += 1) send(relay, renderMessage({ seq }));
+
+    const held = testHook().renders();
+    expect(held).toHaveLength(500);
+    expect(held[0]?.seq).toBe(4);
+    expect(testHook().rendersDropped()).toBe(3);
+    expect(messagesOfKind(panel, 'append').at(-1)?.renders?.droppedBefore).toBe(3);
+  });
+
+  it('rebuilds each report and drops a malformed one', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    const elements = Object.assign([{ key: 'root', type: 'Text', state: 'mounted' as const }], { smuggled: 'x' });
+    send(relay, { v: 1, kind: 'render', report: { ...RENDER, elements } });
+    send(relay, renderMessage({ elements: [{ key: 'a', type: 'A', state: 'visible' as never }] }));
+    send(relay, { v: 1, kind: 'render', report: { ...RENDER, props: {} } } as unknown as RelayMessage);
+    send(relay, { v: 1, kind: 'render', report: SIGNAL } as unknown as RelayMessage);
+    send(relay, { v: 1, kind: 'render' } as unknown as RelayMessage);
+    expect(testHook().renders()).toHaveLength(1);
+    expect(JSON.stringify(testHook().renders())).not.toContain('muggled');
+    expect(testHook().renders()[0]?.elements).not.toBe(elements);
+  });
+
+  it('does not record while recording is paused', () => {
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    send(panel, { kind: 'set-recording', recording: false });
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, renderMessage());
+    expect(testHook().renders()).toEqual([]);
+    expect(messagesOfKind(panel, 'append')).toEqual([]);
+  });
+
+  it('forgets them, and the eviction count, on a clear', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    for (let seq = 1; seq <= 501; seq += 1) send(relay, renderMessage({ seq }));
+    expect(testHook().rendersDropped()).toBe(1);
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    send(panel, { kind: 'clear' });
+    expect(testHook().renders()).toEqual([]);
+    expect(testHook().rendersDropped()).toBe(0);
+  });
+
+  it('survives a worker termination through the mirror: the tail, counted', async () => {
+    const session = new Map<string, unknown>();
+    let restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const relay = relayPort(7);
+    restarted.connect(relay);
+    for (let seq = 1; seq <= 150; seq += 1) send(relay, renderMessage({ seq }));
+    await settle(300);
+
+    restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+    const panel = panelPort();
+    restarted.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    const { renders } = snapshotOf(panel);
+    expect(renders.reports).toHaveLength(100);
+    expect(renders.reports[0]?.seq).toBe(51);
+    expect(renders.droppedBefore).toBe(50);
+  });
+
+  it('mirrors within a byte budget, so large reports cannot spend the session quota', async () => {
+    const session = new Map<string, unknown>();
+    let restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    // ~2,000 elements of ~60 bytes each: a report near the contract's ceiling.
+    const elements = Array.from({ length: 2000 }, (_, i) => ({
+      key: `element-${String(i).padStart(6, '0')}-${'k'.repeat(20)}`,
+      type: 'Text',
+      state: 'mounted' as const,
+    }));
+    const relay = relayPort(7);
+    restarted.connect(relay);
+    for (let seq = 1; seq <= 40; seq += 1) send(relay, renderMessage({ seq, elements }));
+    await settle(300);
+
+    const mirrored = session.get('agui-dt:tab:7') as { renders: unknown[]; rendersDropped: number };
+    expect(JSON.stringify(mirrored.renders).length).toBeLessThanOrEqual(1_000_000);
+    expect(mirrored.renders.length).toBeGreaterThan(0);
+    expect(mirrored.renders.length + mirrored.rendersDropped).toBe(40);
+
+    restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+    const panel = panelPort();
+    restarted.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    expect(snapshotOf(panel).renders.reports.at(-1)?.seq).toBe(40);
+  });
+
+  it('declines mirrored reports it cannot read, and restores an older mirror as holding none', async () => {
+    const session = new Map<string, unknown>();
+    const base = { v: 1, records: [], requests: [], droppedBefore: 0, nextSeq: 1, recording: true };
+    session.set('agui-dt:tab:7', {
+      ...base,
+      renders: [RENDER, { ...RENDER, seq: 2, props: {} }, 'nonsense', { ...RENDER, seq: 3 }],
+      rendersDropped: -1,
+    });
+    session.set('agui-dt:tab:8', base);
+    const restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    restarted.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    expect(seqs(snapshotOf(panel).renders.reports)).toEqual([1, 3]);
+    expect(snapshotOf(panel).renders.droppedBefore).toBe(0);
+    const older = panelPort();
+    restarted.connect(older);
+    send(older, { kind: 'subscribe', tabId: 8 });
+    expect(snapshotOf(older).renders).toEqual({ reports: [], droppedBefore: 0 });
+  });
+});
+
 describe('service worker — the run simulator (§14.4)', () => {
   let stub: ChromeStub;
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureRecord } from '../../core/model/types';
 import type { ThreadplaneDevtoolsReport } from '../../core/signals/report';
+import type { RenderDevtoolsReport } from '../../core/signals/render-report';
 import type { SwMessage } from '../../sw/protocol';
 import { COALESCE_MS, createSignalCoalescer } from './coalesce';
 
@@ -15,6 +16,14 @@ function signalsOnly(seq: number, droppedBefore = 0, signalsDropped = 0): SwMess
     droppedBefore,
     signals: { reports: [report(seq)], droppedBefore: signalsDropped },
   };
+}
+
+function render(seq: number): RenderDevtoolsReport {
+  return { v: 1, kind: 'render', surface: 's1', seq, registry: [], elements: [], tMs: seq };
+}
+
+function rendersOnly(seq: number, rendersDropped = 0): SwMessage {
+  return { kind: 'append', records: [], droppedBefore: 0, renders: { reports: [render(seq)], droppedBefore: rendersDropped } };
 }
 
 const RECORD: CaptureRecord = {
@@ -82,5 +91,31 @@ describe('createSignalCoalescer', () => {
     coalescer.dispose();
     vi.advanceTimersByTime(COALESCE_MS * 4);
     expect(delivered).toEqual([]);
+  });
+
+  it('folds render reports too, interleaved with signals, each list in arrival order', () => {
+    coalescer.push(rendersOnly(1));
+    coalescer.push(signalsOnly(1));
+    coalescer.push(rendersOnly(2, 3));
+    expect(delivered).toEqual([]);
+    vi.advanceTimersByTime(COALESCE_MS);
+    expect(delivered).toEqual([
+      {
+        kind: 'append',
+        records: [],
+        droppedBefore: 0,
+        signals: { reports: [report(1)], droppedBefore: 0 },
+        renders: { reports: [render(1), render(2)], droppedBefore: 3 },
+      },
+    ]);
+  });
+
+  it('a burst of render reports alone carries no signals key', () => {
+    coalescer.push(rendersOnly(1));
+    coalescer.push(rendersOnly(2));
+    vi.advanceTimersByTime(COALESCE_MS);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).not.toHaveProperty('signals');
+    expect(delivered[0]).toMatchObject({ renders: { reports: [render(1), render(2)] } });
   });
 });

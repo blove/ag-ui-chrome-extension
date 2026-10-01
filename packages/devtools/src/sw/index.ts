@@ -32,6 +32,11 @@ import {
   isThreadplaneReport,
   type ThreadplaneDevtoolsReport,
 } from '../core/signals/report';
+import {
+  cloneRenderReport,
+  isRenderReport,
+  type RenderDevtoolsReport,
+} from '../core/signals/render-report';
 import { parseAck, parseArmCommand, parseDisarmCommand, type Ack, type ArmCommand } from '../core/simulate/commands';
 import { DEVELOPER_MODE_KEY_PREFIX, developerModeKey, isWebOrigin } from '../core/simulate/developer-mode';
 import type { WireFrame } from '../inject/protocol';
@@ -45,6 +50,7 @@ import {
   type RelayCommand,
   type RelayMessage,
   type RequestLine,
+  type RenderReports,
   type SignalReports,
   type SimDispatch,
   type SimDispatchOutcome,
@@ -119,6 +125,10 @@ declare global {
         signals(): ThreadplaneDevtoolsReport[];
         /** Reports evicted from (or trimmed off the mirror of) every tab's signal ring. */
         signalsDropped(): number;
+        /** The Threadplane render reports held (U5), across every tab — read through `snapshotFor`. */
+        renders(): RenderDevtoolsReport[];
+        /** Render reports evicted from (or trimmed off the mirror of) every tab's render ring. */
+        rendersDropped(): number;
         /** Run-simulator acknowledgements held, across every tab — read through `snapshotFor`. */
         simAcks(): Ack[];
         /**
@@ -238,6 +248,14 @@ interface TabState {
    */
   signalsDropped: number;
   /**
+   * Threadplane render reports (UI inspector U5), oldest first, at most `MAX_RENDER_REPORTS`. Its
+   * own ring beside `signals`: a render report describes a rendered surface, not an event, and the
+   * two evict independently.
+   */
+  renders: RenderDevtoolsReport[];
+  /** Render reports evicted from the front of `renders`, plus any the mirror trimmed. */
+  rendersDropped: number;
+  /**
    * Run-simulator acknowledgements (design R4), oldest first, at most `MAX_SIM_ACKS`. The relay
    * forwards only acks for arms it dispatched, so this is a handful per arm; the cap is for a page
    * that acks the same arm forever.
@@ -269,6 +287,19 @@ const MAX_SIGNAL_REPORTS = 5000;
  * tab's mirror write; the trimmed head is counted into `signalsDropped` on restore.
  */
 const MIRROR_MAX_SIGNALS = 1000;
+/**
+ * How many render reports one tab keeps (U5). Fewer than signals: a render report is re-sent only
+ * when a surface's resolution changes, and the UI tab reads the latest per surface.
+ */
+const MAX_RENDER_REPORTS = 500;
+/** The render ring's mirrored tail, by count… */
+const MIRROR_MAX_RENDERS = 100;
+/**
+ * …and by size. A render report may carry 2,000 elements (~100 KB at the contract's limits), so a
+ * count alone could spend the shared ~10 MB session quota — and a failed write loses the whole
+ * tab's mirror, records included. The tail is cut at this many serialized characters instead.
+ */
+const MIRROR_RENDER_BUDGET = 1_000_000;
 const MIRROR_DEBOUNCE_MS = 250;
 /** How many simulator acks one tab keeps. Oldest go first; the arm list only needs the latest. */
 const MAX_SIM_ACKS = 200;
@@ -331,6 +362,9 @@ interface MirroredTab {
    */
   signals: ThreadplaneDevtoolsReport[];
   signalsDropped: number;
+  /** The tail of the tab's render ring (count- and size-bounded), and the total lost before it. */
+  renders: RenderDevtoolsReport[];
+  rendersDropped: number;
   /** The tab's simulator acks — mirrored so a worker restart does not lose what became of an arm. */
   simAcks: Ack[];
 }
@@ -356,6 +390,8 @@ function ensureTab(tabId: number): TabState {
     badge: { text: '', title: BADGE_DEFAULT_TITLE },
     signals: [],
     signalsDropped: 0,
+    renders: [],
+    rendersDropped: 0,
     simAcks: [],
   };
   tabs.set(tabId, created);
@@ -379,6 +415,35 @@ function pushSignal(state: TabState, report: ThreadplaneDevtoolsReport): void {
     state.signals.splice(0, over);
     state.signalsDropped += over;
   }
+}
+
+/** The tab's render reports in the shape the panel is sent. A copy, like `signalsFor`. */
+function rendersFor(state: TabState): RenderReports {
+  return { reports: [...state.renders], droppedBefore: state.rendersDropped };
+}
+
+/** Append one render report, evicting (and counting) from the front past `MAX_RENDER_REPORTS`. */
+function pushRender(state: TabState, report: RenderDevtoolsReport): void {
+  state.renders.push(report);
+  const over = state.renders.length - MAX_RENDER_REPORTS;
+  if (over > 0) {
+    state.renders.splice(0, over);
+    state.rendersDropped += over;
+  }
+}
+
+/** The newest render reports that fit `MIRROR_MAX_RENDERS` and `MIRROR_RENDER_BUDGET`, oldest first. */
+function rendersForMirror(state: TabState): { renders: RenderDevtoolsReport[]; rendersDropped: number } {
+  const kept: RenderDevtoolsReport[] = [];
+  let size = 0;
+  for (let index = state.renders.length - 1; index >= 0 && kept.length < MIRROR_MAX_RENDERS; index -= 1) {
+    const report = state.renders[index] as RenderDevtoolsReport;
+    size += JSON.stringify(report).length + 1;
+    if (size > MIRROR_RENDER_BUDGET) break;
+    kept.push(report);
+  }
+  kept.reverse();
+  return { renders: kept, rendersDropped: state.rendersDropped + (state.renders.length - kept.length) };
 }
 
 /**
@@ -573,6 +638,7 @@ async function writeMirror(tabId: number): Promise<void> {
     signals: state.signals.slice(-MIRROR_MAX_SIGNALS),
     signalsDropped:
       state.signalsDropped + Math.max(0, state.signals.length - MIRROR_MAX_SIGNALS),
+    ...rendersForMirror(state),
     simAcks: state.simAcks,
   };
   await chrome.storage.session.set({ [sessionKey(tabId)]: mirrored });
@@ -660,6 +726,8 @@ function asMirroredTab(value: unknown): MirroredTab | null {
   const signals = value['signals'];
   const signalsDropped = value['signalsDropped'];
   const simAcks = value['simAcks'];
+  const renders = value['renders'];
+  const rendersDropped = value['rendersDropped'];
   return {
     v: 1,
     records: records.filter(isCaptureRecord),
@@ -687,6 +755,14 @@ function asMirroredTab(value: unknown): MirroredTab | null {
     signalsDropped:
       typeof signalsDropped === 'number' && Number.isSafeInteger(signalsDropped) && signalsDropped >= 0
         ? signalsDropped
+        : 0,
+    // Absent in a mirror written by an older build; re-validated and rebuilt like the signals.
+    renders: Array.isArray(renders)
+      ? renders.filter((report) => isRenderReport(report)).map(cloneRenderReport)
+      : [],
+    rendersDropped:
+      typeof rendersDropped === 'number' && Number.isSafeInteger(rendersDropped) && rendersDropped >= 0
+        ? rendersDropped
         : 0,
     // Re-validated like the reports: absent in an older mirror, and rendered by this build.
     simAcks: Array.isArray(simAcks)
@@ -749,6 +825,9 @@ async function restoreFromSession(): Promise<void> {
       state.signals = mirrored.signals.slice(-MAX_SIGNAL_REPORTS);
       state.signalsDropped =
         mirrored.signalsDropped + Math.max(0, mirrored.signals.length - MAX_SIGNAL_REPORTS);
+      state.renders = mirrored.renders.slice(-MAX_RENDER_REPORTS);
+      state.rendersDropped =
+        mirrored.rendersDropped + Math.max(0, mirrored.renders.length - MAX_RENDER_REPORTS);
       state.simAcks = mirrored.simAcks.slice(-MAX_SIM_ACKS);
       /*
        * Re-applied from the restored state rather than trusted to still be showing. Chrome does
@@ -782,6 +861,7 @@ const RELAY_KINDS: ReadonlySet<string> = new Set([
   'binary',
   'info',
   'signals',
+  'render',
   'sim-ack',
 ]);
 
@@ -798,6 +878,12 @@ function asRelayMessage(value: unknown): RelayMessage | null {
   // (see `inject/protocol.ts`). Validated here as well as at the relay, for the reason `info` is.
   if (kind === 'signals') {
     return Object.hasOwn(value, 'report') && isThreadplaneReport(value['report'])
+      ? (value as unknown as RelayMessage)
+      : null;
+  }
+  // Its sibling (U5): a render report is about a rendered surface, not a stream.
+  if (kind === 'render') {
+    return Object.hasOwn(value, 'report') && isRenderReport(value['report'])
       ? (value as unknown as RelayMessage)
       : null;
   }
@@ -971,6 +1057,20 @@ function handleRelayMessage(
       scheduleMirror(tabId);
       return;
     }
+    case 'render': {
+      // The signals arm's twin (U5): rebuilt on the way in, its own ring, pushed on a record-less
+      // append. After the recording gate, like signals: paused capture holds nothing new.
+      const report = cloneRenderReport(message.report);
+      pushRender(state, report);
+      broadcast(tabId, {
+        kind: 'append',
+        records: [],
+        droppedBefore: droppedFor(state),
+        renders: { reports: [report], droppedBefore: state.rendersDropped },
+      });
+      scheduleMirror(tabId);
+      return;
+    }
   }
 }
 
@@ -1037,6 +1137,8 @@ function snapshotFor(tabId: number): Snapshot {
     registration: registrationState(),
     // The Threadplane reports this tab has produced — normally long before a panel is opened.
     signals: signalsFor(state),
+    // Likewise the render reports (U5) — the UI tab's hook-derived node states.
+    renders: rendersFor(state),
     simAcks: [...state.simAcks],
   };
 }
@@ -1065,6 +1167,8 @@ function clearTab(tabId: number, state: TabState): void {
   // Reports describe the app the buffer described, and the next document may be a different app.
   state.signals = [];
   state.signalsDropped = 0;
+  state.renders = [];
+  state.rendersDropped = 0;
   // An ack describes an arm of the app the buffer described; it goes with the buffer (A2).
   state.simAcks = [];
   // What the tab has spoken is a claim about the buffer's contents, and the buffer is now empty.
@@ -1772,6 +1876,12 @@ globalThis.__AGUI_DT_TEST__ = {
   },
   signalsDropped(): number {
     return everySnapshot().reduce((total, snapshot) => total + snapshot.signals.droppedBefore, 0);
+  },
+  renders(): RenderDevtoolsReport[] {
+    return everySnapshot().flatMap((snapshot) => snapshot.renders.reports);
+  },
+  rendersDropped(): number {
+    return everySnapshot().reduce((total, snapshot) => total + snapshot.renders.droppedBefore, 0);
   },
   simAcks(): Ack[] {
     return everySnapshot().flatMap((snapshot) => snapshot.simAcks);

@@ -427,8 +427,8 @@ describe('installXhrPatch — reuse and protocol shape', () => {
     xhr.chunk('data: {"type":"RUN_STARTED"}\n\n');
     xhr.finish();
 
-    // A transport never posts the connectionless `signals` arm, so every message here names one.
-    const ids = new Set(posted.map((message) => (message.kind === 'signals' ? null : message.connId)));
+    // A transport never posts the connectionless `signals` or `render` arms, so every message here names one.
+    const ids = new Set(posted.map((message) => (message.kind === 'signals' || message.kind === 'render' ? null : message.connId)));
     expect(ids).toEqual(new Set(['c1', 'c2']));
   });
 
@@ -451,7 +451,7 @@ describe('installXhrPatch — reuse and protocol shape', () => {
     xhr.finish();
 
     const perConn = posted.reduce<Record<string, string[]>>((acc, message) => {
-      if (message.kind === 'signals') return acc;
+      if (message.kind === 'signals' || message.kind === 'render') return acc;
       (acc[message.connId] ??= []).push(message.kind);
       return acc;
     }, {});

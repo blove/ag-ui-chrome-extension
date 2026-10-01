@@ -470,6 +470,15 @@ describe('captureOn', () => {
     expect(captureOn(imported, 'https://app.example').binaryTransport).toBeNull();
   });
 
+  it('keeps live render reports when the origin is re-affirmed (U5)', () => {
+    const live = captureOn(initialPanelState(), 'https://app.example');
+    const renders = {
+      reports: [{ v: 1 as const, kind: 'render' as const, surface: 's1', seq: 1, registry: [], elements: [], tMs: 1 }],
+      droppedBefore: 0,
+    };
+    expect(captureOn({ ...live, renders }, 'https://app.example').renders).toEqual(renders);
+  });
+
   it('keeps live records when the origin is re-affirmed', () => {
     const live = captureOn(initialPanelState(), 'https://app.example');
     const withData: PanelState = { ...live, records: [makeRecord(1)], selectedSeq: 1 };

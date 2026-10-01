@@ -23,6 +23,7 @@
  * loaded in this document. That report goes up the `chrome.runtime` port and never near the page.
  */
 import { cloneRuntimeInfo } from '../core/detect/info';
+import { cloneRenderReport } from '../core/signals/render-report';
 import { cloneReport } from '../core/signals/report';
 import { normalizeEventName } from '../core/sse/event-name';
 import {
@@ -181,6 +182,14 @@ function toRelayMessage(message: InjectMessage): RelayMessage {
         // refused any report with a key the contract does not name; this copy is what refuses
         // anything riding on the `wrote` array, and what hands the port plain data.
         report: cloneReport(message.report),
+      };
+    case 'render':
+      return {
+        v: PROTOCOL_VERSION,
+        kind: 'render',
+        // The same rebuild one level deeper again: each element is copied key, type, state, so a
+        // prop riding on an element object (which `isInjectMessage` already refused) cannot cross.
+        report: cloneRenderReport(message.report),
       };
   }
 }

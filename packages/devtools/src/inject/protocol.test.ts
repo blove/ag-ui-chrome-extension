@@ -428,6 +428,59 @@ describe('isInjectMessage — the event name on a frame (L1)', () => {
  * one the connection rule exists for — nothing crosses that the page did not provoke — and the
  * cases below hold that the connection rule still applies to every OTHER arm.
  */
+/** The `render` arm — a Threadplane render report (UI inspector U4/U5), connectionless like `signals`. */
+describe('isInjectMessage — the render arm', () => {
+  const report = {
+    v: 1,
+    kind: 'render',
+    surface: 's1',
+    seq: 1,
+    registry: ['Text'],
+    elements: [{ key: 'root', type: 'Text', state: 'mounted' }],
+    tMs: 3,
+  } as const;
+  const render: InjectMessage = {
+    source: AGUI_DT_SOURCE,
+    v: PROTOCOL_VERSION,
+    kind: 'render',
+    report: { ...report, registry: [...report.registry], elements: report.elements.map((e) => ({ ...e })) },
+  };
+
+  it('accepts a well-formed render report with no connection', () => {
+    expect(isInjectMessage(render)).toBe(true);
+    expect(isInjectMessage(structuredClone(render))).toBe(true);
+  });
+
+  it('rejects a missing, malformed or misfiled report', () => {
+    expect(isInjectMessage(without(render, 'report'))).toBe(false);
+    expect(isInjectMessage({ ...render, report: null })).toBe(false);
+    expect(isInjectMessage({ ...render, report: { ...report, extra: 1 } })).toBe(false);
+    expect(isInjectMessage({ ...render, report: { ...report, elements: [{ key: 'a', type: 'A', state: 'shown' }] } })).toBe(false);
+    // A render report under the signals arm, and a signals report under the render arm.
+    expect(isInjectMessage({ ...render, kind: 'signals' })).toBe(false);
+    expect(
+      isInjectMessage({
+        ...render,
+        report: { v: 1, agent: 'a', adapter: 'ag-ui', seq: 1, eventType: 'X', wrote: ['messages'], tMs: 1 },
+      }),
+    ).toBe(false);
+  });
+
+  it('does not throw on a report with a hostile getter', () => {
+    const hostile = {
+      ...render,
+      report: {
+        ...report,
+        get elements(): unknown[] {
+          throw new Error('boom');
+        },
+      },
+    };
+    expect(() => isInjectMessage(hostile)).not.toThrow();
+    expect(isInjectMessage(hostile)).toBe(false);
+  });
+});
+
 describe('isInjectMessage — the signals arm', () => {
   const report = {
     v: 1,
