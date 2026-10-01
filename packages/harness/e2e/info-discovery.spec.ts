@@ -27,8 +27,11 @@ import { startHarnessServer, type HarnessServer } from '../server/agui-server.js
 import {
   clearCapture,
   foldAsLatePanel,
+  foldAsLivePanel,
   launchWithExtension,
+  openPanelPort,
   readSettledCapture,
+  tabIdOf,
   type CaptureSnapshot,
 } from './fixtures.js';
 
@@ -38,6 +41,7 @@ const AGENT_IDS = Object.keys(RUNTIME_INFO.agents);
 let harness: HarnessServer;
 let pageServer: PageServer;
 let ctx: BrowserContext;
+let extensionId: string;
 
 /** Drive one page load in the given discovery mode and read the settled capture. */
 async function runInMode(mode: 'multi' | 'single'): Promise<CaptureSnapshot> {
@@ -67,7 +71,7 @@ test.beforeAll(async () => {
   harness = await startHarnessServer();
   harness.use('happy');
   pageServer = await startPageServer({ agentUrl: harness.url });
-  ({ ctx } = await launchWithExtension());
+  ({ ctx, extensionId } = await launchWithExtension());
 });
 
 test.afterAll(async () => {
@@ -202,5 +206,51 @@ test.describe('an AG-UI page that never asks for agent discovery', () => {
     // wording for this state must not read as a finding.
     expect(capture.records.length).toBeGreaterThan(0);
     expect(capture.closes).toHaveLength(1);
+  });
+});
+
+/**
+ * The OTHER ordering: the panel is already open when the page fetches `/info`.
+ *
+ * Everything above reaches the panel through the snapshot, which is how a late panel learns it.
+ * A panel that is open at the time is fed by the worker's `info` push instead — and the panel's
+ * port filter used to drop that arm before its fold ever saw it, so the Session tab stayed on "no
+ * /info response seen" until a reconnect replayed a snapshot. This drives the worker's real
+ * broadcast to a real panel port and folds what arrived through the panel's own filter and fold.
+ */
+test.describe('a panel already open when the page fetches /info', () => {
+  test('learns the agent list from the live push, not from a reconnect', async () => {
+    await clearCapture(ctx);
+    const page = await ctx.newPage();
+    // The tab has to exist, and be subscribed to, BEFORE the page that fetches discovery loads.
+    await page.goto(`${pageServer.url}quiet.html`);
+    const tabId = await tabIdOf(ctx, page);
+    const panel = await openPanelPort(ctx, extensionId, tabId);
+
+    await page.goto(`${pageServer.url}copilotkit.html?mode=multi`);
+    await page.waitForFunction(
+      (expected: number) => document.getElementById('info')?.textContent === String(expected),
+      AGENT_IDS.length,
+      { timeout: 30_000 },
+    );
+    await panel.waitForKind('info');
+    const received = await panel.received();
+    await panel.close();
+    await page.close();
+
+    // Not vacuous: the snapshot this port was given on subscribe carried no runtime, so whatever
+    // the fold holds now came from the push, and from nowhere else.
+    const snapshots = received.filter(
+      (message): message is { kind: 'snapshot'; info: unknown } =>
+        (message as { kind?: unknown }).kind === 'snapshot',
+    );
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.info).toBeNull();
+
+    const live = foldAsLivePanel(received);
+    expect(live.runtime).not.toBeNull();
+    expect(live.runtime?.version).toBe(RUNTIME_INFO.version);
+    expect(live.runtime?.mode).toBe('multi-route');
+    expect(live.runtime?.agents?.map((agent) => agent.id)).toEqual(AGENT_IDS);
   });
 });

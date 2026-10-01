@@ -1,7 +1,8 @@
 /**
  * The service worker's two wire protocols (design §3, requirements §11).
  *
- * Pure types and constants — no DOM, no `chrome` — so every end can import it anywhere.
+ * Pure types, constants and the one pure guard on them — no DOM, no `chrome` — so every end can
+ * import it anywhere.
  *
  * The relay leg is the ISOLATED-world → worker direction (`RELAY_PORT_NAME`, `RelayMessage`).
  * The panel leg is the worker ⇄ DevTools panel direction (`PANEL_PORT_NAME`, `SwMessage`,
@@ -290,6 +291,57 @@ export type SwMessage =
    */
   | { kind: 'registration'; registration: RegistrationState | null }
   | { kind: 'cleared' };
+
+/**
+ * Every arm of `SwMessage`, and the compiler keeps it that way.
+ *
+ * A kind missing from this set is dropped silently by `asSwMessage` below, and so by the panel's
+ * port — which is the right behaviour for a message from a future version and exactly the wrong
+ * one for an arm we do handle. So it is spelled as a `Record` over the kind union rather than a list: adding an arm to
+ * `SwMessage` without adding it here fails typecheck, and so does a key that is not an arm.
+ *
+ * A list that only `satisfies SwMessage['kind'][]` checked each entry was a real kind, never that
+ * every kind was there — and `info` was missing from it, so a live panel dropped the `/info` push
+ * and only learned the agent list from the next snapshot (a reconnect), not when the page fetched
+ * it. Each entry's comment says what dropping it would silently cost.
+ */
+const SW_MESSAGE_KIND_TABLE = {
+  snapshot: true,
+  append: true,
+  request: true,
+  closed: true,
+  // The one message that explains why a protobuf capture has no records (resolution C3).
+  binary: true,
+  // Spec §13 done-when #2: the agent list as the page fetches it, not at the next reconnect.
+  info: true,
+  // The one message that distinguishes a granted origin from a document with the capture layer
+  // loaded in it — without it the panel would warn about a page that had just reported itself,
+  // and the reload it advises would appear to do nothing.
+  'capture-loaded': true,
+  // Whether the capture scripts are registered at all — without it the panel falls back to its
+  // "reload the page" advice for a failure a reload cannot touch.
+  registration: true,
+  cleared: true,
+} as const satisfies Record<SwMessage['kind'], true>;
+
+const SW_MESSAGE_KINDS: ReadonlySet<string> = new Set(Object.keys(SW_MESSAGE_KIND_TABLE));
+
+/**
+ * Narrow a port payload to `SwMessage`.
+ *
+ * `Port.onMessage` hands over `unknown`, so *something* has to narrow it, and a cast would be
+ * the one place a malformed message could reach the run builder as a `CaptureRecord[]`. This
+ * checks the discriminant only: the sender is our own service worker, so the risk being
+ * defended against is a version skew between a reloaded extension and a still-open panel, not
+ * a hostile peer.
+ */
+export function asSwMessage(value: unknown): SwMessage | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const kind = (value as { kind?: unknown }).kind;
+  if (typeof kind !== 'string') return null;
+  if (!SW_MESSAGE_KINDS.has(kind)) return null;
+  return value as SwMessage;
+}
 
 /** Panel → worker. */
 export type PanelCommand =
