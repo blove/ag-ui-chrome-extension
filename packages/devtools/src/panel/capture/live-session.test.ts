@@ -45,6 +45,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -68,6 +69,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     state = session.apply(state, { kind: 'append', records: tail });
@@ -133,6 +135,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -158,6 +161,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -179,6 +183,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     expect(state.runs[0]?.outcome).toBe('aborted');
@@ -193,6 +198,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -212,6 +218,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -229,6 +236,7 @@ describe('createLiveSession', () => {
       droppedBefore: 7,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -250,6 +258,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     expect(state.droppedBefore).toBe(0);
@@ -274,6 +283,7 @@ describe('createLiveSession', () => {
       droppedBefore: 6,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     nextSeq = 5;
@@ -295,6 +305,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     // Two evicted by the panel already.
@@ -321,6 +332,7 @@ describe('createLiveSession', () => {
       droppedBefore: 4,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     state = { ...state, selectedSeq: 2, scope: 'r1' };
@@ -352,6 +364,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     state = session.apply(state, { kind: 'closed', connId: 'c1', tMs: 40 });
@@ -399,6 +412,7 @@ describe('createLiveSession', () => {
         droppedBefore: 0,
         loaded: false,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
       const before = state.records.map((r) => r.seq);
@@ -422,6 +436,7 @@ describe('createLiveSession', () => {
           droppedBefore: 0,
           loaded: true,
           info: null,
+          signals: { reports: [], droppedBefore: 0 },
           registration: { matches: [], error: null },
         },
       );
@@ -438,13 +453,13 @@ describe('createLiveSession', () => {
       // prevent — the finding is made by the timeout in `use-live-capture`, never here.
       const fresh = session.apply(
         { ...initialPanelState(), loaded: null },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, registration: { matches: [], error: null } },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, signals: { reports: [], droppedBefore: 0 }, registration: { matches: [], error: null } },
       );
       expect(fresh.loaded).toBeNull();
 
       const known = session.apply(
         { ...initialPanelState(), loaded: true },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, registration: { matches: [], error: null } },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, signals: { reports: [], droppedBefore: 0 }, registration: { matches: [], error: null } },
       );
       expect(known.loaded).toBe(true);
     });
@@ -473,6 +488,7 @@ describe('createLiveSession', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       },
     );
@@ -585,6 +601,7 @@ describe('createLiveSession', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
 
@@ -620,6 +637,7 @@ describe('the request lines an export has to put back', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -702,6 +720,7 @@ describe('createLiveSession — /info agent discovery', () => {
       droppedBefore: 0,
       loaded: true,
       info: RUNTIME,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     expect(next.runtime).toEqual(RUNTIME);
@@ -727,6 +746,7 @@ describe('createLiveSession — /info agent discovery', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     expect(state.runtime).toBeNull();
@@ -801,6 +821,7 @@ describe('live session — content-script registration', () => {
       droppedBefore: 0,
       loaded: false,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration,
     };
   }

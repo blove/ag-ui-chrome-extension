@@ -252,7 +252,13 @@ describe('installEventSourcePatch — capture (§5.3)', () => {
     (a as FakeEventSource).deliver('{"type":"A"}');
     (b as FakeEventSource).deliver('{"type":"B"}');
 
-    expect(posted.map((message) => message.connId)).toEqual(['c1', 'c2', 'c1', 'c2']);
+    // A transport never posts the connectionless `signals` arm, so every message here names one.
+    expect(posted.map((message) => (message.kind === 'signals' ? null : message.connId))).toEqual([
+      'c1',
+      'c2',
+      'c1',
+      'c2',
+    ]);
     uninstall();
   });
 

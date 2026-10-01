@@ -24,13 +24,19 @@ import { fileURLToPath } from 'node:url';
 import { chromium, type BrowserContext, type Page, type Worker } from '@playwright/test';
 
 import type { RuntimeInfo } from '@devtools/core/detect/info';
+import type { ThreadplaneDevtoolsReport } from '@devtools/core/signals/report';
 import type { CaptureRecord, Issue, Run } from '@devtools/core/model/types';
 import { createRunBuilder } from '@devtools/core/normalizer/run-builder';
 import { createLiveSession } from '@devtools/panel/capture/live-session';
 import { initialPanelState } from '@devtools/panel/model/panel-types';
-import type { ClosedConn, RegistrationState, RequestLine } from '@devtools/sw/protocol';
+import type {
+  ClosedConn,
+  RegistrationState,
+  RequestLine,
+  SignalReports,
+} from '@devtools/sw/protocol';
 
-export type { ClosedConn, RegistrationState, RequestLine };
+export type { ClosedConn, RegistrationState, RequestLine, SignalReports };
 
 export interface CaptureSnapshot {
   records: CaptureRecord[];
@@ -76,6 +82,12 @@ export interface CaptureSnapshot {
    * could only see the grant, advised a page reload that in that state does nothing at all.
    */
   registration: RegistrationState | null;
+  /**
+   * The Threadplane devtools reports the worker holds (design G5), oldest first, and how many its
+   * ring evicted — the same `SignalReports` a panel's `snapshot` carries, read through the hook's
+   * `snapshotFor`-backed accessors.
+   */
+  signals: SignalReports;
 }
 
 /** The shape `src/sw/index.ts` attaches to the SW global, unconditionally. */
@@ -89,6 +101,8 @@ interface TestHook {
   info(): RuntimeInfo | null;
   registration(): RegistrationState | null;
   reconcileRegistrations(): Promise<void>;
+  signals(): ThreadplaneDevtoolsReport[];
+  signalsDropped(): number;
   clear(): void;
 }
 
@@ -197,6 +211,7 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
       closes: hook.closes(),
       info: hook.info(),
       registration: hook.registration(),
+      signals: { reports: hook.signals(), droppedBefore: hook.signalsDropped() },
     };
   });
 }
@@ -356,6 +371,8 @@ export function foldAsLatePanel(capture: CaptureSnapshot): LatePanelFold {
     // a late-panel fold assembled from a different shape than the worker actually sends is the
     // exact drift this helper exists to rule out.
     registration: capture.registration,
+    // Not read by the runs or the issues either; stated for the same reason as `registration`.
+    signals: capture.signals,
   });
   return { runs: state.runs, issues: state.issues, runtime: state.runtime };
 }

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AG-UI harness — Threadplane devtools reports</title>
+    <script>
+      // A stand-in for a Threadplane app in development mode (design G3): it dispatches
+      // `CustomEvent('threadplane:devtools', { detail })` on its own window, fire-and-forget, the
+      // way Threadplane's emitter does — interleaving VALID reports with HOSTILE ones a page could
+      // forge. `e2e/signals.spec.ts` asserts that only the valid ones reach the worker, in order.
+      //
+      // No bundle and no request: the reports are the only thing this page does, so every
+      // `agui-dt` message it can hear is one its own dispatch provoked.
+      //
+      // `?child` is the same page loaded as a SUBFRAME of the parent (below): it dispatches one
+      // report of its own, to hold the decision that reports from subframes are captured too.
+      (function () {
+        var isChild = new URLSearchParams(location.search).has('child');
+        var probe = { heardOwnEvent: 0, aguiMessages: [], errors: [] };
+        window.__SIGNALS_PROBE__ = probe;
+        window.addEventListener('error', function (event) {
+          probe.errors.push(String(event.message));
+        });
+        // The page's own listener, registered after the extension's document_start one: the app's
+        // dispatch must reach it every time, whatever the extension did with the same event.
+        window.addEventListener('threadplane:devtools', function () {
+          probe.heardOwnEvent += 1;
+        });
+        // What the page can observe of the extension: only messages its own dispatches caused.
+        window.addEventListener('message', function (event) {
+          var data = event.data;
+          if (data && typeof data === 'object' && data.source === 'agui-dt') {
+            probe.aguiMessages.push(data);
+          }
+        });
+
+        function dispatch(detail) {
+          window.dispatchEvent(new CustomEvent('threadplane:devtools', { detail: detail }));
+        }
+
+        function report(overrides) {
+          var base = {
+            v: 1,
+            agent: 'harness-agent',
+            adapter: 'langgraph',
+            seq: 1,
+            eventType: 'values',
+            wrote: ['values', 'messages'],
+            tMs: 1,
+          };
+          return Object.assign(base, overrides);
+        }
+
+        if (isChild) {
+          dispatch(report({ agent: 'harness-child-agent', eventType: 'messages', wrote: ['messages'] }));
+          document.documentElement.setAttribute('data-signals', 'dispatched');
+          return;
+        }
+
+        var throwing = report({ seq: 90 });
+        Object.defineProperty(throwing, 'wrote', {
+          enumerable: true,
+          get: function () {
+            throw new Error('hostile getter');
+          },
+        });
+        var proxy = new Proxy(report({ seq: 91 }), {
+          ownKeys: function () {
+            throw new Error('hostile trap');
+          },
+          get: function () {
+            throw new Error('hostile trap');
+          },
+        });
+
+        // The real clock, so the spec can hold that `tMs` crosses unchanged.
+        var stamped = performance.now();
+        var sequence = [
+          report({ seq: 1, tMs: 10 }),
+          report({ seq: 50, value: 'a signal value must never cross' }),
+          report({ seq: 51, wrote: ['values', 'password'] }),
+          report({ seq: 52, wrote: ['state'] }),
+          throwing,
+          proxy,
+          report({ seq: 53, eventType: new Array(130).join('x') }),
+          report({ seq: 54, wrote: ['values', 'values'] }),
+          report({ seq: 55, tMs: NaN }),
+          report({ seq: 56, adapter: 'crewai' }),
+          report({ seq: 2, eventType: 'messages', wrote: ['messages', 'messageMetadata'], tMs: 20 }),
+          report({
+            agent: 'harness-agui-agent',
+            adapter: 'ag-ui',
+            seq: 1,
+            eventType: 'STATE_DELTA',
+            wrote: ['state', 'messages'],
+            tMs: stamped,
+          }),
+        ];
+        sequence.forEach(dispatch);
+        // A plain Event of the same name carries no detail at all.
+        window.dispatchEvent(new Event('threadplane:devtools'));
+        // A valid report under ANOTHER name: the extension must not listen for it.
+        window.dispatchEvent(
+          new CustomEvent('threadplane:devtools-other', { detail: report({ seq: 99 }) }),
+        );
+        probe.dispatched = sequence.length + 1;
+        probe.stamped = stamped;
+        document.documentElement.setAttribute('data-signals', 'dispatched');
+
+        // The subframe, appended once the body exists — after the whole sequence, so its single
+        // report cannot interleave with it.
+        document.addEventListener('DOMContentLoaded', function () {
+          var frame = document.createElement('iframe');
+          frame.src = 'signals.html?child';
+          document.body.appendChild(frame);
+        });
+      })();
+    </script>
+  </head>
+  <body>
+    <h1>Threadplane devtools reports</h1>
+  </body>
+</html>

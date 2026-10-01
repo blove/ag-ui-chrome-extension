@@ -27,6 +27,11 @@ import {
   type StackTracker,
 } from '../core/detect/stack';
 import type { AguiEvent, CaptureRecord } from '../core/model/types';
+import {
+  cloneReport,
+  isThreadplaneReport,
+  type ThreadplaneDevtoolsReport,
+} from '../core/signals/report';
 import type { WireFrame } from '../inject/protocol';
 import {
   PANEL_PORT_NAME,
@@ -36,6 +41,7 @@ import {
   type RegistrationState,
   type RelayMessage,
   type RequestLine,
+  type SignalReports,
   type SwMessage,
 } from './protocol';
 import { createRingBuffer, type RingBuffer } from './ring-buffer';
@@ -100,6 +106,13 @@ declare global {
          * function module scope calls.
          */
         reconcileRegistrations(): Promise<void>;
+        /**
+         * The Threadplane devtools reports held, across every tab, oldest first per tab — read
+         * through `snapshotFor` like everything else here.
+         */
+        signals(): ThreadplaneDevtoolsReport[];
+        /** Reports evicted from (or trimmed off the mirror of) every tab's signal ring. */
+        signalsDropped(): number;
         clear(): void;
       }
     | undefined;
@@ -191,6 +204,21 @@ interface TabState {
    * forces the next apply to write every field, so the badge is always derived from this state.
    */
   badge: Badge | null;
+  /**
+   * Threadplane devtools reports (design G5), oldest first, at most `MAX_SIGNAL_REPORTS`.
+   *
+   * Its own ring rather than records in `buffer`: a report is not a protocol event, has no `seq`,
+   * and a Timeline row for one would assert something the stream never contained. Bounded by
+   * COUNT, not bytes, because every report is small and bounded field by field
+   * (`core/signals/report.ts`): at the limits, 5,000 of them are well under the record buffer's
+   * 8 MB.
+   */
+  signals: ThreadplaneDevtoolsReport[];
+  /**
+   * Reports evicted from the front of `signals`, plus any a previous incarnation evicted or the
+   * mirror trimmed — the P9 total, so a panel can say the matrix starts mid-session.
+   */
+  signalsDropped: number;
 }
 
 /** `frameId` 0 is the top-level document. Everything else is a subframe (§12 `all_frames`). */
@@ -209,6 +237,14 @@ const SESSION_KEY_PREFIX = 'agui-dt:tab:';
  * that silently starts mid-run is precisely what P9 forbids.
  */
 const MIRROR_MAX_RECORDS = 1000;
+/** How many Threadplane reports one tab keeps in memory. Eviction is counted, never silent. */
+const MAX_SIGNAL_REPORTS = 5000;
+/**
+ * How much of a tab's signal ring is mirrored — the same tail length as records, and for the same
+ * quota reason. A report is ~200 bytes at realistic sizes, so this adds roughly 200 KB to a busy
+ * tab's mirror write; the trimmed head is counted into `signalsDropped` on restore.
+ */
+const MIRROR_MAX_SIGNALS = 1000;
 const MIRROR_DEBOUNCE_MS = 250;
 
 interface MirroredTab {
@@ -259,6 +295,16 @@ interface MirroredTab {
    * which nothing happened.
    */
   stack: StackDecision[];
+  /**
+   * The tail of the tab's Threadplane report ring, and the total lost before it.
+   *
+   * MIRRORED, not live-only, so a worker terminated at ~30 s idle (§15) does not come back with a
+   * Timeline full of restored frames and an empty Signals matrix beside them — two views of the
+   * same session disagreeing about what happened. Only the tail is kept (`MIRROR_MAX_SIGNALS`) and
+   * the rest is counted, exactly as for records. Each report is re-validated on the way back in.
+   */
+  signals: ThreadplaneDevtoolsReport[];
+  signalsDropped: number;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -280,6 +326,8 @@ function ensureTab(tabId: number): TabState {
     stack: createStackTracker(),
     // A tab this worker has never touched shows Chrome's default.
     badge: { text: '', title: BADGE_DEFAULT_TITLE },
+    signals: [],
+    signalsDropped: 0,
   };
   tabs.set(tabId, created);
   return created;
@@ -287,6 +335,21 @@ function ensureTab(tabId: number): TabState {
 
 function droppedFor(state: TabState): number {
   return state.restoredDropped + state.buffer.droppedBefore();
+}
+
+/** The tab's reports in the shape the panel is sent. A copy, so a caller cannot mutate the ring. */
+function signalsFor(state: TabState): SignalReports {
+  return { reports: [...state.signals], droppedBefore: state.signalsDropped };
+}
+
+/** Append one report, evicting (and counting) from the front past `MAX_SIGNAL_REPORTS`. */
+function pushSignal(state: TabState, report: ThreadplaneDevtoolsReport): void {
+  state.signals.push(report);
+  const over = state.signals.length - MAX_SIGNAL_REPORTS;
+  if (over > 0) {
+    state.signals.splice(0, over);
+    state.signalsDropped += over;
+  }
 }
 
 /**
@@ -478,6 +541,9 @@ async function writeMirror(tabId: number): Promise<void> {
     info: state.info,
     closedConns: closesFor(state),
     stack: state.stack.decisions(),
+    signals: state.signals.slice(-MIRROR_MAX_SIGNALS),
+    signalsDropped:
+      state.signalsDropped + Math.max(0, state.signals.length - MIRROR_MAX_SIGNALS),
   };
   await chrome.storage.session.set({ [sessionKey(tabId)]: mirrored });
 }
@@ -561,6 +627,8 @@ function asMirroredTab(value: unknown): MirroredTab | null {
   const frames = value['loadedFrames'];
   const closed = value['closedConns'];
   const stack = value['stack'];
+  const signals = value['signals'];
+  const signalsDropped = value['signalsDropped'];
   return {
     v: 1,
     records: records.filter(isCaptureRecord),
@@ -579,6 +647,16 @@ function asMirroredTab(value: unknown): MirroredTab | null {
     closedConns: Array.isArray(closed) ? closed.filter(isClosedConn) : [],
     // Absent in a mirror written by an older build; the restored records re-derive what they can.
     stack: Array.isArray(stack) ? stack.filter(isStackDecision) : [],
+    // Absent in a mirror written by an older build: none held is the honest reading. Each report is
+    // validated and rebuilt like one arriving from the relay — the storage area is shared by the
+    // whole extension, and this build will render what it restores.
+    signals: Array.isArray(signals)
+      ? signals.filter((report) => isThreadplaneReport(report)).map(cloneReport)
+      : [],
+    signalsDropped:
+      typeof signalsDropped === 'number' && Number.isSafeInteger(signalsDropped) && signalsDropped >= 0
+        ? signalsDropped
+        : 0,
   };
 }
 
@@ -630,6 +708,9 @@ async function restoreFromSession(): Promise<void> {
       for (const frameId of mirrored.loadedFrames) state.loadedFrames.set(frameId, null);
       state.info = mirrored.info;
       for (const close of mirrored.closedConns) state.closedConns.set(close.connId, close.tMs);
+      state.signals = mirrored.signals.slice(-MAX_SIGNAL_REPORTS);
+      state.signalsDropped =
+        mirrored.signalsDropped + Math.max(0, mirrored.signals.length - MAX_SIGNAL_REPORTS);
       /*
        * Re-applied from the restored state rather than trusted to still be showing. Chrome does
        * keep a tab's action state across a worker restart, but "what the previous incarnation last
@@ -661,6 +742,7 @@ const RELAY_KINDS: ReadonlySet<string> = new Set([
   'conn-close',
   'binary',
   'info',
+  'signals',
 ]);
 
 function asRelayMessage(value: unknown): RelayMessage | null {
@@ -672,6 +754,13 @@ function asRelayMessage(value: unknown): RelayMessage | null {
   // exactly the case the panel has to be able to tell apart from a document with no content
   // scripts in it.
   if (kind === 'capture-loaded') return value as unknown as RelayMessage;
+  // The other connectionless arm: a Threadplane report is about the app's state, not a stream
+  // (see `inject/protocol.ts`). Validated here as well as at the relay, for the reason `info` is.
+  if (kind === 'signals') {
+    return Object.hasOwn(value, 'report') && isThreadplaneReport(value['report'])
+      ? (value as unknown as RelayMessage)
+      : null;
+  }
   if (typeof value['connId'] !== 'string') return null;
   if (kind === 'frames' && !Array.isArray(value['frames'])) return null;
   // Re-checked here as well as at the relay. The relay is the boundary the page reaches; this is
@@ -810,6 +899,21 @@ function handleRelayMessage(
       flushMirror(tabId);
       return;
     }
+    case 'signals': {
+      // Rebuilt on the way in, like `info`: this is the copy the panel will render.
+      const report = cloneReport(message.report);
+      pushSignal(state, report);
+      // Pushed on an `append` with no records, so a panel already watching folds it through the
+      // same arm it folds frames through; `droppedBefore` for records is re-stated as always.
+      broadcast(tabId, {
+        kind: 'append',
+        records: [],
+        droppedBefore: droppedFor(state),
+        signals: { reports: [report], droppedBefore: state.signalsDropped },
+      });
+      scheduleMirror(tabId);
+      return;
+    }
   }
 }
 
@@ -874,6 +978,8 @@ function snapshotFor(tabId: number): Snapshot {
     // "this document predates the registration, so reload it" from "there is no registration, so
     // reloading achieves nothing". Not per tab: registration is per origin and global.
     registration: registrationState(),
+    // The Threadplane reports this tab has produced — normally long before a panel is opened.
+    signals: signalsFor(state),
   };
 }
 
@@ -898,6 +1004,9 @@ function clearTab(tabId: number, state: TabState): void {
    * not recoverable at all, because the reader has no way to tell.
    */
   state.info = null;
+  // Reports describe the app the buffer described, and the next document may be a different app.
+  state.signals = [];
+  state.signalsDropped = 0;
   // What the tab has spoken is a claim about the buffer's contents, and the buffer is now empty.
   // A navigation clears too, and the next document may speak nothing at all.
   state.stack = createStackTracker();
@@ -1410,6 +1519,12 @@ globalThis.__AGUI_DT_TEST__ = {
     // session against an existing grant — the case no test could reach while the only trigger was
     // `permissions.onAdded`, because every e2e granted inside the test.
     return reconcileRegistrations();
+  },
+  signals(): ThreadplaneDevtoolsReport[] {
+    return everySnapshot().flatMap((snapshot) => snapshot.signals.reports);
+  },
+  signalsDropped(): number {
+    return everySnapshot().reduce((total, snapshot) => total + snapshot.signals.droppedBefore, 0);
   },
   clear(): void {
     for (const [tabId, state] of tabs) clearTab(tabId, state);

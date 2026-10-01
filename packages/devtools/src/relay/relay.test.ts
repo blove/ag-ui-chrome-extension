@@ -827,3 +827,116 @@ describe('relay — the info arm', () => {
     expectSilent();
   });
 });
+
+/**
+ * The `signals` arm across the boundary (design G5).
+ *
+ * A Threadplane report is posted by the MAIN world in answer to the page's own hook event — and,
+ * like everything here, can be forged by any script on the page. Same treatment: source, origin,
+ * shape (exact key set, vocabulary, limits), then a field-by-field rebuild.
+ */
+describe('relay — the signals arm', () => {
+  const REPORT = {
+    v: 1,
+    agent: 'agent-1',
+    adapter: 'ag-ui',
+    seq: 2,
+    eventType: 'STATE_DELTA',
+    wrote: ['state', 'messages'],
+    tMs: 40.5,
+  };
+
+  function validSignals(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      source: AGUI_DT_SOURCE,
+      v: PROTOCOL_VERSION,
+      kind: 'signals',
+      report: { ...REPORT, wrote: [...REPORT.wrote] },
+      ...extra,
+    };
+  }
+
+  it('forwards it with the source tag dropped and nothing else changed', () => {
+    post(validSignals());
+    expect(forwarded(chromeHarness)).toEqual([
+      { v: PROTOCOL_VERSION, kind: 'signals', report: REPORT },
+    ]);
+    expectSilent();
+  });
+
+  it('forwards reports in the order the page posted them', () => {
+    for (const seq of [1, 2, 3]) post(validSignals({ report: { ...REPORT, seq } }));
+    expect(
+      forwarded(chromeHarness).map((message) => (message as { report: { seq: number } }).report.seq),
+    ).toEqual([1, 2, 3]);
+  });
+
+  it('strips extra keys from the message and anything riding on the names array', () => {
+    const wrote = Object.assign(['state'], { smuggled: 'nested' });
+    post(validSignals({ rogue: 'top level', connId: 'c1', report: { ...REPORT, wrote } }));
+    const [message] = forwarded(chromeHarness);
+    expect(JSON.stringify(message)).not.toContain('rogue');
+    expect(JSON.stringify(message)).not.toContain('connId');
+    expect(message).toEqual({
+      v: PROTOCOL_VERSION,
+      kind: 'signals',
+      report: { ...REPORT, wrote: ['state'] },
+    });
+    expect(Object.keys((message as { report: { wrote: string[] } }).report.wrote)).toEqual(['0']);
+    expectSilent();
+  });
+
+  const hostile: Array<[string, () => void]> = [
+    ['an extra key in the report', () => post(validSignals({ report: { ...REPORT, value: 'secret' } }))],
+    ['a name outside the adapter’s vocabulary', () => post(validSignals({ report: { ...REPORT, wrote: ['values'] } }))],
+    ['a duplicate name', () => post(validSignals({ report: { ...REPORT, wrote: ['state', 'state'] } }))],
+    ['no names at all', () => post(validSignals({ report: { ...REPORT, wrote: [] } }))],
+    ['a 129-char event type', () => post(validSignals({ report: { ...REPORT, eventType: 'x'.repeat(129) } }))],
+    ['a NaN seq', () => post(validSignals({ report: { ...REPORT, seq: Number.NaN } }))],
+    ['a NaN tMs', () => post(validSignals({ report: { ...REPORT, tMs: Number.NaN } }))],
+    ['an unknown adapter', () => post(validSignals({ report: { ...REPORT, adapter: 'other' } }))],
+    ['a missing report', () => post(validSignals({ report: undefined }))],
+    ['a report that is a string', () => post(validSignals({ report: JSON.stringify(REPORT) }))],
+    ['a report from another frame', () => post(validSignals(), { source: {} })],
+    ['a report from another origin', () => post(validSignals(), { origin: 'https://evil.test' })],
+    ['a bumped protocol version', () => post(validSignals({ v: 2 }))],
+    [
+      'a report whose fields are inherited',
+      () => post(validSignals({ report: Object.create(REPORT) as unknown })),
+    ],
+    [
+      'a message that is not a plain clone',
+      () => post(Object.assign(Object.create({ marker: 1 }) as object, validSignals())),
+    ],
+  ];
+
+  it.each(hostile)('drops %s', (_name, act) => {
+    act();
+    expect(forwarded(chromeHarness)).toEqual([]);
+    expectSilent();
+  });
+
+  it('does not let a __proto__ key in the report pollute anything', () => {
+    const report = JSON.parse(`{"__proto__":{"polluted":true},${JSON.stringify(REPORT).slice(1)}`) as unknown;
+    post(validSignals({ report }));
+    expect(forwarded(chromeHarness)).toEqual([]);
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+    expectSilent();
+  });
+
+  it('does not throw when the report fights back', () => {
+    const report = { ...REPORT };
+    Object.defineProperty(report, 'wrote', {
+      get(): never {
+        throw new Error('boom');
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    expect(() => {
+      post(validSignals({ report }));
+    }).not.toThrow();
+    expect(forwarded(chromeHarness)).toEqual([]);
+    expectSilent();
+  });
+});

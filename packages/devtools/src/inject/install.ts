@@ -23,6 +23,7 @@
 import { installEventSourcePatch, type EventSourceConstructorLike } from './eventsource-patch';
 import { installFetchPatch, type FetchHost } from './fetch-patch';
 import { AGUI_DT_SOURCE, PROTOCOL_VERSION, type InjectMessage } from './protocol';
+import { installSignalsListener, type SignalsTarget } from './signals-listener';
 import { installXhrPatch, type XhrConstructorLike } from './xhr-patch';
 
 export interface AguiDevtoolsMarker {
@@ -53,6 +54,12 @@ export interface InjectHost extends FetchHost {
    */
   XMLHttpRequest?: XhrConstructorLike;
   EventSource?: EventSourceConstructorLike;
+  /**
+   * Where the Threadplane devtools hook is heard (design G5). Optional for the same reason the two
+   * transports above are: a stand-in host may not be an event target, and the transports must
+   * install regardless.
+   */
+  addEventListener?: SignalsTarget['addEventListener'];
 }
 
 export const MARKER_VERSION = '0.1.0';
@@ -180,6 +187,13 @@ export function installInject(host: InjectHost): boolean {
     // shipping it or deleting it.
     if (hasEventSource(host)) {
       installEventSourcePatch({ scope: host, post, now: monotonicNow, nextConnId });
+    }
+    // The Threadplane hook (design G5). Last, so a host that rejects the listener has every
+    // transport installed already. Posts through `send`, not `post`: a report belongs to no
+    // connection, so there is no open to re-state ahead of it. Like everything above it posts
+    // only in answer to something the page did — here, its own `threadplane:devtools` dispatch.
+    if (host.addEventListener !== undefined) {
+      installSignalsListener({ addEventListener: host.addEventListener.bind(host) }, send);
     }
     return true;
   } catch {

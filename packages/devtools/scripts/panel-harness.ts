@@ -137,6 +137,7 @@ export const SHIMS: Record<ShimKind, string> = {
                     // A real answer, not \`null\`: the worker HAS read Chrome and nothing is
                     // registered. \`null\` would mean "not known yet", which warns about nothing.
                     registration: { matches: [], error: null },
+                    signals: { reports: [], droppedBefore: 0 },
                   });
                 }
               }, 0);

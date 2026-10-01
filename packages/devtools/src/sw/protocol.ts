@@ -8,6 +8,7 @@
  * `PanelCommand`), and `RequestLine` crosses both.
  */
 import type { RuntimeInfo } from '../core/detect/info';
+import type { ThreadplaneDevtoolsReport } from '../core/signals/report';
 import type { CaptureRecord } from '../core/model/types';
 import type { InjectMessage } from '../inject/protocol';
 
@@ -118,6 +119,22 @@ export interface RegistrationState {
   error: string | null;
 }
 
+/**
+ * Threadplane devtools reports a tab has produced (design G5), and how many it has lost.
+ *
+ * `reports` are in ARRIVAL order — the order the page dispatched them, per document — and each is
+ * a field-by-field copy validated at every boundary. `droppedBefore` is the total evicted from the
+ * front of the worker's bounded ring (or trimmed from its session mirror) before the earliest one
+ * held, as of this message: the same P9 discipline `droppedBefore` has for records, kept as a
+ * separate count because the two rings fill and evict independently.
+ *
+ * LIVE ONLY (G8): this never reaches an `.agui.jsonl` export.
+ */
+export interface SignalReports {
+  reports: ThreadplaneDevtoolsReport[];
+  droppedBefore: number;
+}
+
 /* -------------------------------------------------------------------------- */
 /* The panel leg                                                                */
 /* -------------------------------------------------------------------------- */
@@ -202,6 +219,15 @@ export type SwMessage =
        * `RegistrationState`.
        */
       registration: RegistrationState | null;
+      /**
+       * The Threadplane devtools reports this tab has produced (design G5), oldest first.
+       *
+       * NOT OPTIONAL, for the reason `closed` and `info` above are not: a panel is normally opened
+       * after the app has been running, so the snapshot is the ordinary delivery route and the
+       * push on `append` is the exception. Empty is the common value — most pages are not
+       * Threadplane apps in development — and is not an error state.
+       */
+      signals: SignalReports;
     }
   | {
       kind: 'append';
@@ -212,6 +238,12 @@ export type SwMessage =
        * always sends it.
        */
       droppedBefore?: number;
+      /**
+       * Threadplane reports that arrived since the last append, with the ring's eviction total as
+       * of this one. Absent means "no new reports", never "none held". A report arrives on its
+       * own, not with the frames it describes, so it rides an append whose `records` is empty.
+       */
+      signals?: SignalReports;
     }
   | { kind: 'request'; request: RequestLine }
   /**

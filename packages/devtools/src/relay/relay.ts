@@ -21,6 +21,7 @@
  * loaded in this document. That report goes up the `chrome.runtime` port and never near the page.
  */
 import { cloneRuntimeInfo } from '../core/detect/info';
+import { cloneReport } from '../core/signals/report';
 import { normalizeEventName } from '../core/sse/event-name';
 import {
   isInjectMessage,
@@ -166,6 +167,16 @@ function toRelayMessage(message: InjectMessage): RelayMessage {
         // is the point of capturing it. This is metadata this build parsed and will render as
         // its own claim, so nothing rides along.
         info: cloneRuntimeInfo(message.info),
+      };
+    case 'signals':
+      return {
+        v: PROTOCOL_VERSION,
+        kind: 'signals',
+        // The same one-level-deeper copy as `info` above, for the same reason: a report is a claim
+        // the panel renders, not the page's own data kept verbatim. `isInjectMessage` already
+        // refused any report with a key the contract does not name; this copy is what refuses
+        // anything riding on the `wrote` array, and what hands the port plain data.
+        report: cloneReport(message.report),
       };
   }
 }

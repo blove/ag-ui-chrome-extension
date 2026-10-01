@@ -203,6 +203,7 @@ describe('panel live wiring', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -236,6 +237,7 @@ describe('panel live wiring', () => {
         droppedBefore: 12,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -263,6 +265,7 @@ describe('panel live wiring', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -463,6 +466,7 @@ describe('panel live wiring', () => {
           droppedBefore: 0,
           loaded: false,
           info: null,
+          signals: { reports: [], droppedBefore: 0 },
           registration: { matches: [], error: null },
         });
       });
@@ -490,6 +494,7 @@ describe('panel live wiring', () => {
           droppedBefore: 0,
           loaded: false,
           info: null,
+          signals: { reports: [], droppedBefore: 0 },
           registration: { matches: [], error: null },
         });
       });
@@ -671,6 +676,7 @@ describe('panel live wiring', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
       port.emit({ kind: 'closed', connId: 'c1', tMs: 40 });
@@ -713,6 +719,7 @@ describe('panel live wiring', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -776,6 +783,7 @@ describe('panel live wiring — a granted origin with nothing registered for it'
         loaded: false,
         info: null,
         // Granted, and nothing registered. The state an extension update leaves behind.
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -807,6 +815,7 @@ describe('panel live wiring — a granted origin with nothing registered for it'
         droppedBefore: 0,
         loaded: false,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -841,6 +850,7 @@ describe('panel live wiring — a granted origin with nothing registered for it'
         droppedBefore: 0,
         loaded: false,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });

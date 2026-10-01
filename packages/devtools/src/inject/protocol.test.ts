@@ -419,3 +419,68 @@ describe('isInjectMessage — the event name on a frame (L1)', () => {
     expect(isInjectMessage(framesWith(frame))).toBe(true);
   });
 });
+
+/**
+ * The `signals` arm — a Threadplane devtools report (design G5).
+ *
+ * The one arm that does NOT belong to a connection: it is downstream of a `threadplane:devtools`
+ * event the page itself dispatched, not of a request. The privacy property it keeps is the same
+ * one the connection rule exists for — nothing crosses that the page did not provoke — and the
+ * cases below hold that the connection rule still applies to every OTHER arm.
+ */
+describe('isInjectMessage — the signals arm', () => {
+  const report = {
+    v: 1,
+    agent: 'agent-1',
+    adapter: 'langgraph',
+    seq: 1,
+    eventType: 'values',
+    wrote: ['values', 'messages'],
+    tMs: 12.5,
+  } as const;
+  const signals: InjectMessage = {
+    source: AGUI_DT_SOURCE,
+    v: PROTOCOL_VERSION,
+    kind: 'signals',
+    report: { ...report, wrote: [...report.wrote] },
+  };
+
+  it('accepts a well-formed report with no connection', () => {
+    expect(isInjectMessage(signals)).toBe(true);
+    expect(isInjectMessage(structuredClone(signals))).toBe(true);
+  });
+
+  it('rejects a missing or malformed report', () => {
+    expect(isInjectMessage(without(signals, 'report'))).toBe(false);
+    expect(isInjectMessage({ ...signals, report: null })).toBe(false);
+    expect(isInjectMessage({ ...signals, report: { ...report, wrote: ['password'] } })).toBe(false);
+    expect(isInjectMessage({ ...signals, report: { ...report, extra: 1 } })).toBe(false);
+    expect(isInjectMessage({ ...signals, report: Object.create(report) as unknown })).toBe(false);
+  });
+
+  it('rejects a report carried on the prototype rather than owned', () => {
+    const message = Object.create({ report }) as Record<string, unknown>;
+    message.source = AGUI_DT_SOURCE;
+    message.v = PROTOCOL_VERSION;
+    message.kind = 'signals';
+    expect(isInjectMessage(message)).toBe(false);
+  });
+
+  it('does not throw on a report with a hostile getter', () => {
+    const hostile = {
+      ...signals,
+      report: {
+        ...report,
+        get wrote(): string[] {
+          throw new Error('boom');
+        },
+      },
+    };
+    expect(isInjectMessage(hostile)).toBe(false);
+  });
+
+  it('does not exempt any other arm from naming its connection', () => {
+    expect(isInjectMessage(without(connOpen, 'connId'))).toBe(false);
+    expect(isInjectMessage({ ...without(frames, 'connId'), report })).toBe(false);
+  });
+});

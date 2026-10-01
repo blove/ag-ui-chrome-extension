@@ -56,6 +56,9 @@ export async function buildPage(): Promise<void> {
   // not light for it — see `e2e/badge.spec.ts`. Inline script, no bundle: a raw `fetch` is all
   // it needs.
   copyFileSync(join(pageRoot, 'plain-sse.html'), join(outDir, 'plain-sse.html'));
+  // A stand-in Threadplane app in development: valid and hostile `threadplane:devtools` reports,
+  // and a subframe that reports too — see `e2e/signals.spec.ts`. Inline script, no bundle.
+  copyFileSync(join(pageRoot, 'signals.html'), join(outDir, 'signals.html'));
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
