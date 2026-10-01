@@ -10,7 +10,8 @@
  *  - each arm's state (`armRows`), from this panel's dispatches and the hook's acks.
  */
 import {
-  MAX_ARM_CHARS,
+  armBytes,
+  MAX_ARM_BYTES,
   parseArmCommand,
   type Ack,
   type AgUiRunScript,
@@ -66,8 +67,8 @@ export function armDisabledReason(state: PanelState, live: boolean): string | nu
 }
 
 export type ScriptCheck =
-  | { ok: true; runs: LangGraphRunScript[] | AgUiRunScript[]; chars: number }
-  | { ok: false; reason: string; chars?: number };
+  | { ok: true; runs: LangGraphRunScript[] | AgUiRunScript[]; bytes: number }
+  | { ok: false; reason: string; bytes?: number };
 
 /** A stand-in id of the longest length the panel mints, so the measured size is the real one. */
 const SIZING_ARM_ID = 'x'.repeat(36);
@@ -84,18 +85,19 @@ export function checkScript(adapter: SimAdapter, text: string): ScriptCheck {
     return { ok: false, reason: `The script is not valid JSON: ${error instanceof Error ? error.message : String(error)}` };
   }
   const candidate = { v: 1, armId: SIZING_ARM_ID, adapter, runs };
-  const chars = JSON.stringify(candidate).length;
+  // UTF-8 bytes, the unit the limit (and Threadplane's hook) counts in.
+  const bytes = armBytes(candidate);
   const parsed = parseArmCommand(candidate);
-  if (!parsed.ok) return { ok: false, reason: parsed.reason, chars };
-  return { ok: true, runs: parsed.value.runs, chars };
+  if (!parsed.ok) return { ok: false, reason: parsed.reason, bytes };
+  return { ok: true, runs: parsed.value.runs, bytes };
 }
 
 /** The command's size against R3's 2 MB. */
-export function formatSize(chars: number): string {
+export function formatSize(bytes: number): string {
   const limit = '2 MB';
-  if (chars > MAX_ARM_CHARS) return `${(chars / (1024 * 1024)).toFixed(2)} MB of ${limit} — over the limit`;
-  if (chars >= 1024 * 1024) return `${(chars / (1024 * 1024)).toFixed(2)} MB of ${limit}`;
-  return `${(chars / 1024).toFixed(1)} KB of ${limit}`;
+  if (bytes > MAX_ARM_BYTES) return `${(bytes / (1024 * 1024)).toFixed(2)} MB of ${limit} — over the limit`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB of ${limit}`;
+  return `${(bytes / 1024).toFixed(1)} KB of ${limit}`;
 }
 
 /** What the extension did with an arm or a cancel — its own account, not the hook's. */

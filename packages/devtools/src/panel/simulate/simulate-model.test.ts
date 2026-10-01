@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_ARM_CHARS, MAX_RUNS } from '../../core/simulate/commands';
+import { MAX_ARM_BYTES, MAX_ARM_CHARS, MAX_RUNS } from '../../core/simulate/commands';
 import type { ThreadplaneDevtoolsReport } from '../../core/signals/report';
 import { initialPanelState, type PanelState } from '../model/panel-types';
 import {
@@ -84,7 +84,7 @@ describe('checkScript', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.runs).toHaveLength(1);
-      expect(result.chars).toBeGreaterThan(30);
+      expect(result.bytes).toBeGreaterThan(30);
     }
   });
 
@@ -96,7 +96,15 @@ describe('checkScript', () => {
 
   it('gives the validator’s reason for a script of the wrong shape, against the chosen adapter', () => {
     const result = checkScript('langgraph', JSON.stringify([{ events: [{ type: 'RUN_STARTED' }] }]));
-    expect(result).toEqual({ ok: false, reason: 'runs[0] is missing "frames"', chars: expect.any(Number) });
+    expect(result).toEqual({ ok: false, reason: 'runs[0] is missing "frames"', bytes: expect.any(Number) });
+  });
+
+  it('measures the command in UTF-8 bytes, so a non-ASCII script shows its real size', () => {
+    const text = 'é'.repeat(MAX_ARM_CHARS - 1000);
+    const result = checkScript('langgraph', JSON.stringify([{ frames: [{ event: 'values', data: text }] }]));
+    expect(result.ok).toBe(false);
+    expect(result.bytes).toBeGreaterThan(MAX_ARM_BYTES);
+    expect(formatSize(result.bytes ?? 0)).toMatch(/— over the limit$/);
   });
 
   it('enforces the run limit (R3)', () => {
@@ -116,7 +124,7 @@ describe('checkScript', () => {
 describe('formatSize', () => {
   it('shows the size against the 2 MB limit', () => {
     expect(formatSize(1536)).toBe('1.5 KB of 2 MB');
-    expect(formatSize(MAX_ARM_CHARS + 1)).toBe('2.00 MB of 2 MB — over the limit');
+    expect(formatSize(MAX_ARM_BYTES + 1)).toBe('2.00 MB of 2 MB — over the limit');
   });
 });
 

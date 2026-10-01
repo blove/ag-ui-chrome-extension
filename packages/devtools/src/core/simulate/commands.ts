@@ -15,9 +15,10 @@
  * is plain data. A `Proxy` with hostile traps either throws (caught: rejected) or answers once.
  *
  * LIMITS (R3): at most `MAX_RUNS` runs, `MAX_ITEMS_PER_RUN` frames or events per run, and
- * `MAX_ARM_CHARS` characters of JSON text for the whole command. The walk stops as soon as its
- * running size passes the limit, so a cyclic or enormous value costs no more than the limit to
- * reject.
+ * `MAX_ARM_BYTES` UTF-8 bytes of JSON text for the whole command — the unit Threadplane's hook
+ * measures in. The walk stops as soon as its running size passes `MAX_ARM_CHARS` characters (a
+ * lower bound on the bytes), so a cyclic or enormous value costs no more than the limit to reject;
+ * the exact byte count is taken once, on the finished copy.
  */
 import type { ThreadplaneAdapter } from '../signals/report';
 
@@ -31,11 +32,16 @@ export const ACK_EVENT = 'threadplane:devtools:ack';
 export const MAX_RUNS = 8;
 export const MAX_ITEMS_PER_RUN = 5000;
 /**
- * R3's "2 MB serialized", measured as the length of the command's JSON text — UTF-16 code units,
- * which is what a `string.length` costs to hold. Close enough to bytes for a limit whose job is to
- * keep the unbounded out, and computable without encoding the whole thing.
+ * R3's "2 MB serialized": UTF-8 bytes of the command's JSON text, exactly as Threadplane's hook
+ * counts them (`TextEncoder` over `JSON.stringify`), so a script the panel accepts is one the hook
+ * accepts.
  */
-export const MAX_ARM_CHARS = 2 * 1024 * 1024;
+export const MAX_ARM_BYTES = 2 * 1024 * 1024;
+/**
+ * The validating walk's early-exit budget, in characters of JSON text. Every character is at least
+ * one UTF-8 byte, so passing this already means passing `MAX_ARM_BYTES`.
+ */
+export const MAX_ARM_CHARS = MAX_ARM_BYTES;
 export const MAX_EVENT_NAME_LENGTH = 256;
 export const MAX_REASON_LENGTH = 200;
 /** Deep enough for any real LangGraph state; shallow enough that no walk can blow the stack. */
@@ -277,6 +283,11 @@ function readArm(value: unknown): ArmCommand {
   fail('adapter must be "langgraph" or "ag-ui"');
 }
 
+/** The UTF-8 length of `value`'s JSON text — what the arm limit is measured in. */
+export function armBytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).length;
+}
+
 function attempt<T>(read: (value: unknown) => T, value: unknown): Parsed<T> {
   try {
     return { ok: true, value: read(value) };
@@ -291,15 +302,15 @@ function attempt<T>(read: (value: unknown) => T, value: unknown): Parsed<T> {
  *
  * Never throws. The copy is re-read once more — it is plain data, so this costs a walk and proves
  * the copy satisfies the same grammar the original was held to — and its JSON text is measured
- * exactly against `MAX_ARM_CHARS`.
+ * exactly, in UTF-8 bytes, against `MAX_ARM_BYTES`.
  */
 export function parseArmCommand(value: unknown): Parsed<ArmCommand> {
   const first = attempt(readArm, value);
   if (!first.ok) return first;
   const second = attempt(readArm, first.value);
   if (!second.ok) return second;
-  if (JSON.stringify(second.value).length > MAX_ARM_CHARS) {
-    return { ok: false, reason: `the command is larger than ${String(MAX_ARM_CHARS)} characters of JSON` };
+  if (armBytes(second.value) > MAX_ARM_BYTES) {
+    return { ok: false, reason: `the command is larger than ${String(MAX_ARM_BYTES)} bytes of JSON` };
   }
   return second;
 }

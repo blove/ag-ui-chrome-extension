@@ -217,7 +217,7 @@ export function Simulate({ store, onArm, onDisarm, onSetDeveloperMode }: Simulat
         onInput={(event) => setText((event.currentTarget as HTMLTextAreaElement).value)}
       />
       <div class="agui-simulate__status">
-        {check?.chars !== undefined && <span class="agui-simulate__size">{formatSize(check.chars)}</span>}
+        {check?.bytes !== undefined && <span class="agui-simulate__size">{formatSize(check.bytes)}</span>}
         {check !== null && !check.ok && (
           <span class="agui-simulate__error" role="alert">
             {check.reason}

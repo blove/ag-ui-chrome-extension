@@ -508,7 +508,9 @@ simulator scripts the NEXT run rather than injecting live: the Simulate tab arms
 LangGraph frames or AG-UI events, and the app's next stream call plays it through its own adapter
 code. Two locks — a Threadplane development build, and per-origin Developer mode in the panel,
 checked by the top-frame relay for its own origin — see
-[the design](../superpowers/specs/2026-09-30-run-simulator-design.md).*
+[the design](../superpowers/specs/2026-09-30-run-simulator-design.md). Known limit: an arm goes to
+whichever document is the tab's top frame when it is sent (not pinned by `documentId`), so after a
+navigation to another page with Developer mode on it reaches that page.*
 
 **14.5 Generative UI inspector.** For `@threadplane/render` / A2UI: spec JSON ↔ rendered
 component mapping, with warnings for spec nodes that have no match in the app's

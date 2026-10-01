@@ -5,6 +5,8 @@ import {
   DISARM_EVENT,
   isAck,
   isArmCommand,
+  armBytes,
+  MAX_ARM_BYTES,
   MAX_ARM_CHARS,
   MAX_ITEMS_PER_RUN,
   MAX_JSON_DEPTH,
@@ -129,6 +131,18 @@ describe('parseArmCommand — rejects, with a reason', () => {
     const parsed = parseArmCommand({ ...LG, runs: [{ frames: [{ event: 'values', data: big }] }] });
     expect(parsed.ok).toBe(false);
     if (!parsed.ok) expect(parsed.reason).toMatch(/larger than/);
+  });
+
+  it('counts the limit in UTF-8 bytes, as Threadplane’s hook does', () => {
+    // Mostly non-ASCII: under 2M characters of JSON, but each "é" is two UTF-8 bytes.
+    const text = 'é'.repeat(MAX_ARM_CHARS - 1000);
+    const command = { ...LG, runs: [{ frames: [{ event: 'values', data: text }] }] };
+    expect(JSON.stringify(command).length).toBeLessThan(MAX_ARM_CHARS);
+    expect(armBytes(command)).toBeGreaterThan(MAX_ARM_BYTES);
+    const parsed = parseArmCommand(command);
+    expect(parsed).toEqual({ ok: false, reason: `the command is larger than ${String(MAX_ARM_BYTES)} bytes of JSON` });
+    // The same length in ASCII is under the limit, so it is the bytes that refused it.
+    expect(parseArmCommand({ ...LG, runs: [{ frames: [{ event: 'values', data: 'e'.repeat(MAX_ARM_CHARS - 1000) }] }] }).ok).toBe(true);
   });
 
   it('rejects a cycle without hanging, and nesting past the depth limit', () => {
