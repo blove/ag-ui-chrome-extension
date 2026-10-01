@@ -47,6 +47,7 @@ import {
   importFixture,
   openPanel,
   PANEL_PATH,
+  SIGNALS_SEED,
   startServer,
 } from './panel-harness';
 
@@ -1666,6 +1667,123 @@ async function checkRuns(browser: Browser, origin: string): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Phase 2f — Signals (§14.3, design G6, G7)                                   */
+/* -------------------------------------------------------------------------- */
+
+/** G7, verbatim — the gate holds the wording a person reads, not just the unit test's constant. */
+const SIGNALS_EMPTY =
+  'No Threadplane devtools events on this page — the Signals view needs a Threadplane app in development mode, version 0.3.0 or later.';
+
+async function openSignals(page: Page): Promise<void> {
+  await page.click('button[role="tab"][id="agui-tab-signals"]');
+  await page.waitForSelector('.agui-signals');
+}
+
+/**
+ * The Signals tab in its two states. Empty is the common one (most pages are not Threadplane apps),
+ * so its wording is held to the same no-fault-words rule as Session's. Populated comes from the
+ * `devtools-live-signals` shim: a live snapshot through the panel's own port code, with lit cells
+ * that must PAINT (a filled cell is the whole of the view) and a column click that must land on
+ * the matched Timeline row.
+ */
+async function checkSignals(browser: Browser, origin: string): Promise<void> {
+  /* --- empty: G7's sentence, no fault words ------------------------------ */
+  {
+    const session = await openPanel(browser, origin, { scheme: 'light' });
+    try {
+      await openSignals(session.page);
+      const text = ((await session.page.textContent('.agui-signals')) ?? '').replace(/\s+/g, ' ').trim();
+      if (!text.includes(SIGNALS_EMPTY)) {
+        fail(`the empty Signals tab does not say G7's sentence. It says: ${text}`);
+      }
+      const fault = FAULT_WORDS.exec(text);
+      if (fault !== null) {
+        fail(
+          `the empty Signals tab words an ordinary absence as a fault: ${JSON.stringify(fault[0])} ` +
+            `in ${JSON.stringify(text)}. Most pages are not Threadplane apps.`,
+        );
+      }
+      await session.page.screenshot({ path: join(outDir, 'signals-empty.png'), fullPage: true });
+    } finally {
+      await session.close();
+    }
+  }
+
+  /* --- populated: lit cells paint, a click selects a Timeline row --------- */
+  {
+    const session = await openPanel(browser, origin, { scheme: 'light', shim: 'devtools-live-signals' });
+    try {
+      // The snapshot lands on the Timeline first; Signals is one click away like every tab.
+      await session.page.waitForSelector('.agui-event-row', { timeout: 5000 });
+      await openSignals(session.page);
+      await session.page.waitForSelector('.agui-signals__matrix', { timeout: 5000 });
+
+      const blocks = await session.page.$$eval('.agui-signals__block', (els) =>
+        els.map((el) => el.getAttribute('data-agent') ?? ''),
+      );
+      if (blocks.join(',') !== `${SIGNALS_SEED.agUiAgent},${SIGNALS_SEED.langGraphAgent}`) {
+        fail(`Signals drew blocks ${JSON.stringify(blocks)} — expected the AG-UI agent then the LangGraph one.`);
+      }
+
+      const lit = await session.page.$$eval('.agui-signals__cell[data-lit="true"]', (els) =>
+        els.map((el) => {
+          const style = getComputedStyle(el);
+          return { bg: style.backgroundColor, w: el.getBoundingClientRect().width };
+        }),
+      );
+      if (lit.length !== SIGNALS_SEED.litCells) {
+        fail(`Signals lit ${String(lit.length)} cells; the seeded reports wrote ${String(SIGNALS_SEED.litCells)} names.`);
+      }
+      const dark = await session.page.$eval('.agui-signals__cell[data-lit="false"]', (el) =>
+        getComputedStyle(el).backgroundColor,
+      );
+      const unpainted = lit.filter((cell) => cell.w < 8 || cell.bg === dark || cell.bg === 'rgba(0, 0, 0, 0)');
+      if (unpainted.length > 0) {
+        fail(
+          `${String(unpainted.length)} lit Signals cell(s) are not painted apart from an unlit one ` +
+            `(${JSON.stringify(unpainted[0])} vs ${dark}). A lit cell that does not show is the whole view missing.`,
+        );
+      }
+
+      await session.page.screenshot({ path: join(outDir, 'signals.png'), fullPage: true });
+
+      await session.page.click(
+        `.agui-signals__block[data-agent="${SIGNALS_SEED.agUiAgent}"] .agui-signals__col[data-seq="${String(SIGNALS_SEED.clickReportSeq)}"]`,
+      );
+      await session.page.waitForSelector('.agui-event-row[aria-selected="true"]', { timeout: 5000 });
+      const tab = await session.page.getAttribute('button[role="tab"][aria-selected="true"]', 'id');
+      if (tab !== 'agui-tab-timeline') {
+        fail(`a Signals column click left the panel on ${String(tab)}, not Timeline.`);
+      }
+      const selected = await seqsOf(session.page, '.agui-event-row[aria-selected="true"]');
+      if (selected.join(',') !== String(SIGNALS_SEED.expectedRecordSeq)) {
+        fail(
+          `a click on the third TEXT_MESSAGE_CONTENT report selected Timeline row(s) ${JSON.stringify(selected)}; ` +
+            `the third TEXT_MESSAGE_CONTENT frame is seq ${String(SIGNALS_SEED.expectedRecordSeq)}.`,
+        );
+      }
+      await session.page.screenshot({ path: join(outDir, 'signals-selected.png'), fullPage: true });
+
+      // A pseudo-event has no frame: the tab stays put and says so quietly.
+      await openSignals(session.page);
+      await session.page.click(
+        `.agui-signals__block[data-agent="${SIGNALS_SEED.langGraphAgent}"] .agui-signals__col[data-seq="1"]`,
+      );
+      const status = ((await session.page.textContent('.agui-signals__status')) ?? '').trim();
+      if (!/no matching frame/i.test(status) || FAULT_WORDS.test(status)) {
+        fail(`a Signals click with no frame to select said ${JSON.stringify(status)}.`);
+      }
+
+      if (session.errors.length > 0) {
+        fail(`the panel logged errors on the Signals tab: ${session.errors.join(' | ')}`);
+      }
+    } finally {
+      await session.close();
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Phase 3 — does a real click produce a real file? (design decision E1)       */
 /* -------------------------------------------------------------------------- */
 
@@ -2180,6 +2298,7 @@ async function main(): Promise<void> {
     if (failures.length === 0) await checkState(browser, server.origin);
     if (failures.length === 0) await checkRuns(browser, server.origin);
     if (failures.length === 0) await checkLangGraph(browser, server.origin);
+    if (failures.length === 0) await checkSignals(browser, server.origin);
     if (failures.length === 0) await checkExport(browser, server.origin);
   } finally {
     await browser.close();
@@ -2278,6 +2397,15 @@ async function main(): Promise<void> {
   console.log(`  Session: Protocol reads "LangGraph Platform" — ${outDir}/langgraph-session.png`);
   console.log(
     `  lg-subgraph: two finished runs, the child ending /research:t1 — ${outDir}/langgraph-subgraph-runs.png`,
+  );
+  console.log('Signals (G6, G7):');
+  console.log(
+    `  empty: G7's sentence, no fault words — ${outDir}/signals-empty.png`,
+  );
+  console.log(
+    `  live: two agent blocks, ${String(SIGNALS_SEED.litCells)} lit cells painted, a column click selects ` +
+      `Timeline seq ${String(SIGNALS_SEED.expectedRecordSeq)}; a pseudo-event says "no matching frame" — ` +
+      `${outDir}/signals.png, ${outDir}/signals-selected.png`,
   );
   console.log('the post-grant Reload control is styled (.agui-app__note-action).');
   console.log(

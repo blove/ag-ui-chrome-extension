@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AguiEvent, CaptureRecord } from '../../core/model/types';
+import type { ThreadplaneDevtoolsReport } from '../../core/signals/report';
 import type { RequestLine, SwMessage } from '../../sw/protocol';
 import { initialPanelState } from '../model/panel-types';
 import { createLiveSession } from './live-session';
@@ -893,5 +894,85 @@ describe('live session — content-script registration', () => {
     // back to "not known yet" for a page it had just explained.
     expect(state.registration).toEqual(REGISTERED);
     expect(state.records).toEqual([]);
+  });
+});
+
+describe('live session — Threadplane devtools reports (G5, G6)', () => {
+  function signal(seq: number, eventType = 'RUN_STARTED'): ThreadplaneDevtoolsReport {
+    return { v: 1, agent: 'a1', adapter: 'ag-ui', seq, eventType, wrote: ['status'], tMs: seq };
+  }
+
+  function snapshotWith(reports: ThreadplaneDevtoolsReport[], droppedBefore = 0): SwMessage {
+    return {
+      kind: 'snapshot',
+      records: [],
+      requests: [],
+      closed: [],
+      droppedBefore: 0,
+      loaded: true,
+      info: null,
+      registration: { matches: [], error: null },
+      signals: { reports, droppedBefore },
+    };
+  }
+
+  it('starts empty', () => {
+    expect(initialPanelState().signals).toEqual({ reports: [], droppedBefore: 0 });
+  });
+
+  it('takes the snapshot’s reports and eviction count as stated', () => {
+    const session = createLiveSession();
+    const state = session.apply(initialPanelState(), snapshotWith([signal(1), signal(2)], 3));
+    expect(state.signals.reports.map((r) => r.seq)).toEqual([1, 2]);
+    expect(state.signals.droppedBefore).toBe(3);
+  });
+
+  it('appends pushed reports, re-stating the worker’s eviction total', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshotWith([signal(1)]));
+    state = session.apply(state, {
+      kind: 'append',
+      records: [],
+      signals: { reports: [signal(2), signal(3)], droppedBefore: 1 },
+    });
+    expect(state.signals.reports.map((r) => r.seq)).toEqual([1, 2, 3]);
+    expect(state.signals.droppedBefore).toBe(1);
+  });
+
+  it('leaves the reports alone on an append that carries none', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshotWith([signal(1)], 2));
+    state = session.apply(state, { kind: 'append', records: happyRun() });
+    expect(state.signals.reports.map((r) => r.seq)).toEqual([1]);
+    expect(state.signals.droppedBefore).toBe(2);
+  });
+
+  it('bounds its own copy and counts what it evicts (P9)', () => {
+    const session = createLiveSession({ maxSignals: 2 });
+    let state = session.apply(initialPanelState(), snapshotWith([signal(1), signal(2)], 5));
+    state = session.apply(state, {
+      kind: 'append',
+      records: [],
+      signals: { reports: [signal(3)], droppedBefore: 5 },
+    });
+    expect(state.signals.reports.map((r) => r.seq)).toEqual([2, 3]);
+    expect(state.signals.droppedBefore).toBe(6);
+  });
+
+  it('a snapshot replaces them, and a clear empties them', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshotWith([signal(1), signal(2)]));
+    state = session.apply(state, snapshotWith([signal(9)]));
+    expect(state.signals.reports.map((r) => r.seq)).toEqual([9]);
+    state = session.apply(state, { kind: 'cleared' });
+    expect(state.signals).toEqual({ reports: [], droppedBefore: 0 });
+  });
+
+  it('survives a refold', () => {
+    const session = createLiveSession();
+    const state = session.apply(initialPanelState(), snapshotWith([signal(1)], 4));
+    const refolded = session.refold(state, { expandChunks: false });
+    expect(refolded.signals.reports.map((r) => r.seq)).toEqual([1]);
+    expect(refolded.signals.droppedBefore).toBe(4);
   });
 });

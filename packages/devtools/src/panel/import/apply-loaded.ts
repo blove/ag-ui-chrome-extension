@@ -35,6 +35,9 @@ export function applyLoaded(
     scope: null,
     selectedSeq: null,
     droppedBefore: 0,
+    // G8: reports are live only and never written to a file, so a file brings none — and the
+    // previous live tab's reports do not describe it.
+    signals: { reports: [], droppedBefore: 0 },
     loadError:
       bad === 0
         ? null
