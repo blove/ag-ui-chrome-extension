@@ -92,7 +92,8 @@ export type ShimKind =
   | 'no-devtools'
   | 'devtools-ungranted'
   | 'devtools-granted-unregistered'
-  | 'devtools-live-signals';
+  | 'devtools-live-signals'
+  | 'devtools-live-simulate';
 
 /** The localhost origin `devtools-live-signals` reports — auto-enabled (D3), so capture turns on. */
 export const SIGNALS_INSPECTED_ORIGIN = 'http://localhost:5173';
@@ -186,7 +187,105 @@ const SIGNALS_SNAPSHOT = {
   info: null,
   registration: { matches: [], error: null },
   signals: { reports: SEED_REPORTS, droppedBefore: 0 },
+  simAcks: [],
 };
+
+/**
+ * The run simulator's gate (§14.4). `devtools-live-simulate` is `devtools-live-signals`' live tab
+ * — the same snapshot, so the Simulate tab infers LangGraph from the latest Signals report and has
+ * a captured run to replay — plus a stand-in for the two legs past the panel:
+ *
+ *  - the WORKER: it stores Developer mode per origin (off until the panel's switch sets it) and
+ *    answers `developer-mode.get` / `.set` with `developer-mode`, as `sw/index.ts` does; it answers
+ *    `simulate.arm` / `.disarm` with `sim-dispatch` — `developer-mode-off` while off, as the relay
+ *    does — and otherwise dispatches `threadplane:devtools:arm` / `:disarm` on `window` and relays
+ *    each `threadplane:devtools:ack` for an arm it dispatched as `sim-ack`;
+ *  - the HOOK: `harness/page/simulate.html`'s fake, reduced to its real acks — `armed` at once,
+ *    then `consumed` for run 0 (the run the next stream call takes), 0-based as Threadplane acks.
+ *
+ * The real channel (worker → top-frame relay → page) is `harness/e2e/simulate.spec.ts`'s; this
+ * shim exists so the gate can photograph the panel driving it. `__SIMULATE_HOOK__` records the
+ * arms the hook received, so the gate can assert the panel sent exactly one, for LangGraph.
+ */
+const SIMULATE_SHIM = `
+  (function () {
+    var hook = { arms: [], disarms: [] };
+    window.__SIMULATE_HOOK__ = hook;
+    function ack(detail) {
+      window.dispatchEvent(new CustomEvent('threadplane:devtools:ack', { detail: detail }));
+    }
+    window.addEventListener('threadplane:devtools:arm', function (event) {
+      var command = event.detail;
+      hook.arms.push(command);
+      ack({ v: 1, armId: command.armId, state: 'armed' });
+      setTimeout(function () { ack({ v: 1, armId: command.armId, state: 'consumed', run: 0 }); }, 300);
+    });
+    window.addEventListener('threadplane:devtools:disarm', function (event) {
+      hook.disarms.push(event.detail);
+      ack({ v: 1, armId: event.detail.armId, state: 'disarmed' });
+    });
+
+    var developerMode = {};
+    var dispatched = new Set();
+    globalThis.chrome = {
+      runtime: {
+        getManifest: () => ({ version: '0.0.0-harness' }),
+        connect: () => {
+          const listeners = [];
+          const send = (message) => setTimeout(() => { for (const fn of listeners.slice()) fn(message); }, 0);
+          window.addEventListener('threadplane:devtools:ack', (event) => {
+            const ack = event.detail;
+            if (ack && dispatched.has(ack.armId)) send({ kind: 'sim-ack', ack: ack });
+          });
+          return {
+            onMessage: { addListener: (fn) => { listeners.push(fn); }, removeListener: () => {} },
+            onDisconnect: { addListener: () => {}, removeListener: () => {} },
+            postMessage: (command) => {
+              if (!command) return;
+              switch (command.kind) {
+                case 'subscribe':
+                  send(${JSON.stringify(SIGNALS_SNAPSHOT)});
+                  return;
+                case 'developer-mode.get':
+                  send({ kind: 'developer-mode', origin: command.origin, enabled: developerMode[command.origin] === true });
+                  return;
+                case 'developer-mode.set':
+                  developerMode[command.origin] = command.enabled === true;
+                  send({ kind: 'developer-mode', origin: command.origin, enabled: developerMode[command.origin] });
+                  return;
+                case 'simulate.arm': {
+                  const armId = command.command.armId;
+                  if (developerMode[${JSON.stringify(SIGNALS_INSPECTED_ORIGIN)}] !== true) {
+                    send({ kind: 'sim-dispatch', armId: armId, action: 'arm', outcome: 'developer-mode-off' });
+                    return;
+                  }
+                  dispatched.add(armId);
+                  send({ kind: 'sim-dispatch', armId: armId, action: 'arm', outcome: 'dispatched' });
+                  window.dispatchEvent(new CustomEvent('threadplane:devtools:arm', { detail: command.command }));
+                  return;
+                }
+                case 'simulate.disarm':
+                  send({ kind: 'sim-dispatch', armId: command.armId, action: 'disarm', outcome: 'dispatched' });
+                  window.dispatchEvent(new CustomEvent('threadplane:devtools:disarm', { detail: { v: 1, armId: command.armId } }));
+                  return;
+              }
+            },
+            disconnect: () => {},
+          };
+        },
+      },
+      permissions: { contains: () => Promise.resolve(true) },
+      devtools: {
+        inspectedWindow: {
+          tabId: 1,
+          eval: (expression, callback) => {
+            callback(expression === 'location.origin' ? ${JSON.stringify(SIGNALS_INSPECTED_ORIGIN)} : null);
+          },
+        },
+      },
+    };
+  })();
+`;
 
 export const SHIMS: Record<ShimKind, string> = {
   'no-devtools': `
@@ -236,6 +335,7 @@ export const SHIMS: Record<ShimKind, string> = {
                     // registered. \`null\` would mean "not known yet", which warns about nothing.
                     registration: { matches: [], error: null },
                     signals: { reports: [], droppedBefore: 0 },
+                    simAcks: [],
                   });
                 }
               }, 0);
@@ -295,6 +395,7 @@ export const SHIMS: Record<ShimKind, string> = {
       },
     };
   `,
+  'devtools-live-simulate': SIMULATE_SHIM,
 };
 
 export interface StaticServer {

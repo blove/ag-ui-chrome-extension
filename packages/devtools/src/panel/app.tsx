@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'preact/hooks';
 import type { JSX } from 'preact';
 import type { PanelStore } from './model/store';
-import { raiseSignal, selectTab, setCapture, setFramework } from './model/store';
+import { inspectedOriginChanged, raiseSignal, selectTab, setCapture, setFramework } from './model/store';
 import { useLiveCapture, type EnableStatus } from './capture/use-live-capture';
 import { usePanelState } from './model/use-panel-state';
 import { applyLoaded } from './import/apply-loaded';
@@ -21,6 +21,8 @@ import { State } from './tabs/state/state';
 import { Session } from './tabs/session/session';
 import { Signals } from './tabs/signals/signals';
 import { DeveloperModeBanner } from './simulate/developer-mode';
+import { Simulate } from './simulate/simulate';
+import { isWebOrigin } from '../core/simulate/developer-mode';
 
 /**
  * Resolve the inspected page's origin, so the capture banner can name it.
@@ -100,6 +102,34 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
     });
     return () => {
       live = false;
+    };
+  }, [store]);
+
+  /*
+   * Follow the inspected page to a new origin.
+   *
+   * The origin above is read once, when the panel opens. Without this, a navigation to another
+   * origin left the capture banner, the Developer-mode switch and its banner naming the OLD origin
+   * — and the switch storing the flag under an origin the page no longer has. `onNavigated` hands
+   * over the new document's URL, which is all the origin there is; a non-web URL (about:blank,
+   * chrome://…) has no origin capture could apply to, and leaves the label as it was.
+   */
+  useEffect(() => {
+    const event = chrome.devtools?.network?.onNavigated;
+    if (event === undefined) return;
+    const listener = (url: string): void => {
+      let origin: string;
+      try {
+        origin = new URL(url).origin;
+      } catch {
+        return;
+      }
+      if (!isWebOrigin(origin)) return;
+      store.update((s) => inspectedOriginChanged(s, origin));
+    };
+    event.addListener(listener);
+    return () => {
+      event.removeListener(listener);
     };
   }, [store]);
 
@@ -193,6 +223,15 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
       break;
     case 'signals':
       body = <Signals store={store} />;
+      break;
+    case 'simulate':
+      body = (
+        <Simulate
+          store={store}
+          onSetDeveloperMode={live.setDeveloperMode}
+          {...(state.capture.kind === 'on' && live.connected ? { onArm: live.arm, onDisarm: live.disarm } : {})}
+        />
+      );
       break;
   }
 

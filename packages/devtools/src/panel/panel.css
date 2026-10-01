@@ -2508,3 +2508,178 @@ code {
   color: var(--agui-fg);
   font-weight: 600;
 }
+
+/* Run simulator (§14.4, design R9): the Simulate tab. */
+.agui-simulate {
+  padding: 8px 12px 16px;
+  overflow-y: auto;
+  color: var(--agui-fg);
+}
+
+.agui-simulate__note,
+.agui-simulate__hint {
+  max-width: 78ch;
+  margin: 4px 0 8px;
+  color: var(--agui-fg-muted);
+}
+
+.agui-simulate__hint {
+  margin: 0 0 0 8px;
+}
+
+.agui-simulate__pickers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  align-items: center;
+  margin: 8px 0;
+}
+
+.agui-simulate__field > span:first-child {
+  margin-right: 6px;
+  font-weight: 600;
+}
+
+.agui-simulate select,
+.agui-simulate__editor {
+  font: inherit;
+  color: var(--agui-fg);
+  background: var(--agui-surface-raised);
+  border: 1px solid var(--agui-border);
+  border-radius: 3px;
+}
+
+.agui-simulate__editor-label {
+  display: block;
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+.agui-simulate__editor {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.agui-simulate__editor[aria-invalid='true'] {
+  border-color: var(--agui-danger-border);
+  background: var(--agui-danger-bg);
+}
+
+.agui-simulate__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 4px 0 8px;
+}
+
+.agui-simulate__size {
+  color: var(--agui-fg-muted);
+}
+
+.agui-simulate__error {
+  color: var(--agui-danger);
+}
+
+.agui-simulate__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.agui-simulate__arm-button,
+.agui-simulate__cancel {
+  font: inherit;
+  padding: 3px 14px;
+  border: 1px solid var(--agui-accent);
+  border-radius: 3px;
+  background: var(--agui-surface-raised);
+  color: var(--agui-accent);
+  cursor: pointer;
+}
+
+.agui-simulate__arm-button:hover:not(:disabled),
+.agui-simulate__cancel:hover {
+  background: var(--agui-hover);
+}
+
+.agui-simulate__arm-button:disabled {
+  border-color: var(--agui-border);
+  color: var(--agui-fg-muted);
+  cursor: not-allowed;
+}
+
+.agui-simulate__reason {
+  color: var(--agui-warning);
+}
+
+.agui-simulate__heading {
+  margin: 16px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--agui-fg-muted);
+}
+
+.agui-simulate__arms {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agui-simulate__arm {
+  padding: 6px 8px;
+  border: 1px solid var(--agui-border);
+  border-left-width: 3px;
+  border-radius: 3px;
+  margin-bottom: 6px;
+  background: var(--agui-surface);
+}
+
+.agui-simulate__arm[data-state='armed'],
+.agui-simulate__arm[data-state='sent'] {
+  border-left-color: var(--agui-accent);
+}
+
+.agui-simulate__arm[data-state='consumed'] {
+  border-left-color: var(--agui-bar-tool);
+}
+
+.agui-simulate__arm[data-state='rejected'],
+.agui-simulate__arm[data-state='not-sent'] {
+  border-left-color: var(--agui-warning);
+}
+
+.agui-simulate__arm-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+
+.agui-simulate__arm-label {
+  font-weight: 600;
+}
+
+.agui-simulate__arm-id {
+  color: var(--agui-fg-muted);
+}
+
+.agui-simulate__cancel {
+  margin-left: auto;
+  padding: 1px 10px;
+}
+
+.agui-simulate__arm-history,
+.agui-simulate__arm-note {
+  margin: 4px 0 0;
+  color: var(--agui-fg-muted);
+}

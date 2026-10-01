@@ -47,6 +47,7 @@ import {
   importFixture,
   openPanel,
   PANEL_PATH,
+  SIGNALS_INSPECTED_ORIGIN,
   SIGNALS_SEED,
   startServer,
 } from './panel-harness';
@@ -1805,6 +1806,83 @@ async function checkSignals(browser: Browser, origin: string): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Phase 2g — Simulate (§14.4, design R6, R7, R9)                              */
+/* -------------------------------------------------------------------------- */
+
+const DEVMODE_OFF_REASON = `Developer mode is off for ${SIGNALS_INSPECTED_ORIGIN}. Turn it on above to arm.`;
+const DEVMODE_BANNER = 'Developer mode: this page’s next agent run can be scripted from the panel.';
+
+/**
+ * The Simulate tab, off and on, through the `devtools-live-simulate` shim: the panel's own port
+ * code talking to a stand-in worker whose fake hook acks like Threadplane's.
+ *
+ * Off: Arm is disabled and says why, naming the origin; no banner. On: the banner is on screen,
+ * Arm sends exactly one arm for LangGraph (inferred from the Signals reports), and the arm list
+ * goes armed → consumed — the hook's acks, shown 1-based.
+ */
+async function checkSimulate(browser: Browser, origin: string): Promise<void> {
+  const session = await openPanel(browser, origin, { scheme: 'light', shim: 'devtools-live-simulate' });
+  try {
+    const page = session.page;
+    await page.waitForSelector('.agui-event-row', { timeout: 5000 });
+    await page.click('button[role="tab"][id="agui-tab-simulate"]');
+    await page.waitForSelector('.agui-simulate');
+
+    /* --- off: disabled, with the reason ------------------------------------ */
+    const arm = page.locator('.agui-simulate__arm-button');
+    if (!(await arm.isDisabled())) fail('the Simulate tab’s Arm button is enabled while Developer mode is off.');
+    const reason = ((await page.textContent('.agui-simulate__reason')) ?? '').trim();
+    if (reason !== DEVMODE_OFF_REASON) {
+      fail(`with Developer mode off the Simulate tab says ${JSON.stringify(reason)}, expected ${JSON.stringify(DEVMODE_OFF_REASON)}.`);
+    }
+    if ((await page.locator('.agui-devmode__banner').count()) !== 0) {
+      fail('the Developer-mode banner is on screen while Developer mode is off.');
+    }
+    const shown = await page.$eval('.agui-simulate', (el) => (el as HTMLElement).innerText);
+    if (!/top frame only/.test(shown)) fail('the Simulate tab does not say only the top frame’s agent is reached (R7).');
+    const adapter = await page.$eval('select[aria-label="Adapter"]', (el) => (el as HTMLSelectElement).value);
+    if (adapter !== 'langgraph') {
+      fail(`the Simulate tab inferred adapter ${JSON.stringify(adapter)}; the latest Signals report is LangGraph's.`);
+    }
+    await page.screenshot({ path: join(outDir, 'simulate-off.png'), fullPage: true });
+
+    /* --- on: the banner, an arm, and its acks ------------------------------ */
+    await page.click('.agui-simulate input[role="switch"]');
+    await page.waitForSelector('.agui-devmode__banner', { timeout: 5000 });
+    const banner = ((await page.textContent('.agui-devmode__banner')) ?? '').trim();
+    if (banner !== DEVMODE_BANNER) fail(`the Developer-mode banner reads ${JSON.stringify(banner)}.`);
+    if (await arm.isDisabled()) {
+      fail('the Simulate tab’s Arm button stayed disabled with Developer mode on and a valid template.');
+      return;
+    }
+    const size = ((await page.textContent('.agui-simulate__size')) ?? '').trim();
+    if (!/ of 2 MB$/.test(size)) fail(`the Simulate tab shows no size against the 2 MB limit (${JSON.stringify(size)}).`);
+
+    await arm.click();
+    try {
+      await page.waitForSelector('.agui-simulate__arm[data-state="consumed"]', { timeout: 5000 });
+    } catch {
+      const rows = await page.$$eval('.agui-simulate__arm', (els) => els.map((el) => (el as HTMLElement).innerText));
+      fail(`no arm reached "consumed" in the Simulate tab's arm list. Rows: ${JSON.stringify(rows)}`);
+      return;
+    }
+    const row = await page.$eval('.agui-simulate__arm', (el) => (el as HTMLElement).innerText.replace(/\s+/g, ' ').trim());
+    for (const wanted of ['Interrupt (approval)', 'consumed run 1 of 2', 'armed → consumed run 1 of 2']) {
+      if (!row.includes(wanted)) fail(`the arm row does not show ${JSON.stringify(wanted)}. It reads: ${row}`);
+    }
+    const hook = await page.evaluate(() => (window as unknown as { __SIMULATE_HOOK__: { arms: Array<{ adapter: string; runs: unknown[] }> } }).__SIMULATE_HOOK__);
+    if (hook.arms.length !== 1 || hook.arms[0]?.adapter !== 'langgraph' || hook.arms[0]?.runs.length !== 2) {
+      fail(`the fake hook received ${JSON.stringify(hook.arms.map((a) => ({ adapter: a.adapter, runs: a.runs.length })))}; expected one LangGraph arm of 2 runs.`);
+    }
+    await page.screenshot({ path: join(outDir, 'simulate-armed.png'), fullPage: true });
+
+    if (session.errors.length > 0) fail(`the panel logged errors on the Simulate tab: ${session.errors.join(' | ')}`);
+  } finally {
+    await session.close();
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Phase 3 — does a real click produce a real file? (design decision E1)       */
 /* -------------------------------------------------------------------------- */
 
@@ -2320,6 +2398,7 @@ async function main(): Promise<void> {
     if (failures.length === 0) await checkRuns(browser, server.origin);
     if (failures.length === 0) await checkLangGraph(browser, server.origin);
     if (failures.length === 0) await checkSignals(browser, server.origin);
+    if (failures.length === 0) await checkSimulate(browser, server.origin);
     if (failures.length === 0) await checkExport(browser, server.origin);
   } finally {
     await browser.close();
@@ -2427,6 +2506,12 @@ async function main(): Promise<void> {
     `  live: two agent blocks, ${String(SIGNALS_SEED.litCells)} lit cells painted, full unclipped column names, a column click selects ` +
       `Timeline seq ${String(SIGNALS_SEED.expectedRecordSeq)}; a pseudo-event says "no matching frame" — ` +
       `${outDir}/signals.png, ${outDir}/signals-selected.png`,
+  );
+  console.log('Simulate (§14.4, R6, R7, R9):');
+  console.log(`  off: Arm disabled — "${DEVMODE_OFF_REASON}", no banner, LangGraph inferred — ${outDir}/simulate-off.png`);
+  console.log(
+    `  on: banner shown; one LangGraph arm reached the fake hook; the arm list reads armed → consumed run 1 of 2 — ` +
+      `${outDir}/simulate-armed.png`,
   );
   console.log('the post-grant Reload control is styled (.agui-app__note-action).');
   console.log(

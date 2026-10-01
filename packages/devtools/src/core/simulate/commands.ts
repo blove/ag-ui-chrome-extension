@@ -82,7 +82,11 @@ export interface Ack {
   v: 1;
   armId: string;
   state: AckState;
-  /** Which of the arm's runs this is about — an index, `0` to `MAX_RUNS`. */
+  /**
+   * Which of the arm's runs this is about: a 0-BASED index into `runs`, `0` to `MAX_RUNS - 1` —
+   * Threadplane's hook (cacheplane/threadplane#1204) acks the first run as `run: 0`. The panel
+   * shows it 1-based ("consumed run 1 of 2").
+   */
   run?: number;
   /** A short reason, for `rejected` above all. Shown as text, never interpreted. */
   reason?: string;
@@ -326,10 +330,10 @@ function readAck(value: unknown): Ack {
   const ack: Ack = { v: version(fields.get('v')), armId: armId(fields.get('armId')), state: state as AckState };
   if (fields.has('run')) {
     const run = fields.get('run');
-    // `0`–`MAX_RUNS` inclusive, so a hook that counts runs from 1 is read as faithfully as one that
-    // indexes from 0. Either way it is a small integer the panel shows, never an index it follows.
-    if (typeof run !== 'number' || !Number.isSafeInteger(run) || run < 0 || run > MAX_RUNS) {
-      fail(`run must be an integer from 0 to ${String(MAX_RUNS)}`);
+    // A 0-based index into the arm's runs, so `0`–`MAX_RUNS - 1`. A small integer the panel shows,
+    // never an index it follows.
+    if (typeof run !== 'number' || !Number.isSafeInteger(run) || run < 0 || run >= MAX_RUNS) {
+      fail(`run must be an integer from 0 to ${String(MAX_RUNS - 1)}`);
     }
     ack.run = run;
   }

@@ -645,9 +645,10 @@ describe('panel live wiring', () => {
       expect(store.get().loaded).toBe(true);
 
       // A navigation is a NEW document, and it inherits nothing: the previous document's hooks
-      // say nothing about this one, which may be on an origin that was never granted.
+      // say nothing about this one, even on the same origin. (A navigation to ANOTHER origin
+      // re-labels capture for that origin instead — `app.test.tsx`.)
       act(() => {
-        navigated().emit('https://elsewhere.example/');
+        navigated().emit('http://localhost:5173/next');
       });
       expect(store.get().loaded).toBeNull();
 

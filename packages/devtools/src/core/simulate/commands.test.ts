@@ -186,7 +186,8 @@ describe('parseAck', () => {
       value: { v: 1, armId: 'a', state: 'consumed', run: 0 },
     });
     expect(isAck({ v: 1, armId: 'a', state: 'rejected', reason: 'too many runs' })).toBe(true);
-    expect(isAck({ v: 1, armId: 'a', state: 'consumed', run: MAX_RUNS })).toBe(true);
+    // 0-based, as Threadplane's hook counts (cacheplane/threadplane#1204): the last of 8 runs is 7.
+    expect(isAck({ v: 1, armId: 'a', state: 'consumed', run: MAX_RUNS - 1 })).toBe(true);
   });
 
   const cases: Array<[string, unknown]> = [
@@ -195,7 +196,7 @@ describe('parseAck', () => {
     ['a missing state', { v: 1, armId: 'a' }],
     ['a negative run', { v: 1, armId: 'a', state: 'consumed', run: -1 }],
     ['a fractional run', { v: 1, armId: 'a', state: 'consumed', run: 0.5 }],
-    ['a run past the limit', { v: 1, armId: 'a', state: 'consumed', run: MAX_RUNS + 1 }],
+    ['a run past the last index (runs are 0-based)', { v: 1, armId: 'a', state: 'consumed', run: MAX_RUNS }],
     ['an empty reason', { v: 1, armId: 'a', state: 'rejected', reason: '' }],
     ['a 201-char reason', { v: 1, armId: 'a', state: 'rejected', reason: 'x'.repeat(201) }],
     ['a bad armId', { v: 1, armId: 'a b', state: 'armed' }],

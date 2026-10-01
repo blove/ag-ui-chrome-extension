@@ -144,7 +144,7 @@ describe('App', () => {
    * silently lost its component would say so here rather than render blank.
    */
   it('has no placeholder left on any tab', () => {
-    for (const tab of ['timeline', 'runs', 'state', 'messages', 'session'] as TabId[]) {
+    for (const tab of ['timeline', 'runs', 'state', 'messages', 'signals', 'simulate', 'session'] as TabId[]) {
       const view = render(<App store={createPanelStore({ ...initialPanelState(), tab })} />);
       expect(screen.queryByText(/not built yet/i)).toBeNull();
       view.unmount();
@@ -171,6 +171,13 @@ describe('App', () => {
     expect(screen.getByRole('region', { name: 'Messages' })).toBeTruthy();
     // Not the placeholder: an empty Messages tab explains itself in its own words.
     expect(screen.queryByText(/not built yet/i)).toBeNull();
+  });
+
+  it('renders Simulate on the simulate tab, with Arm disabled and the reason', () => {
+    render(<App store={createPanelStore({ ...initialPanelState(), tab: 'simulate' })} />);
+    expect(screen.getByRole('region', { name: 'Simulate' })).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Arm' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Arming needs an inspected page/)).toBeTruthy();
   });
 
   it('renders Session on the session tab', () => {
@@ -384,5 +391,62 @@ describe('App', () => {
     render(<App store={store} />);
     expect(store.get().capture).toEqual({ kind: 'unsupported' });
     expect(screen.getByText(/only runs inside the DevTools panel/i)).toBeTruthy();
+  });
+
+  /*
+   * The inspected origin used to be read once, when the panel opened. After a navigation to another
+   * origin the Developer-mode switch and banner kept naming — and the switch kept storing under —
+   * the old one.
+   */
+  describe('following the inspected page to a new origin', () => {
+    function navigate(url: string): void {
+      const event = chrome.devtools.network.onNavigated as unknown as { emit: (url: string) => void };
+      act(() => {
+        event.emit(url);
+      });
+    }
+
+    it('re-labels the Developer-mode switch and banner with the origin navigated to', async () => {
+      stubEval('http://localhost:5173');
+      const store = createPanelStore({ ...initialPanelState(), tab: 'session', developerModes: { 'http://localhost:3000': true } });
+      render(<App store={store} />);
+      await waitFor(() => {
+        expect(screen.getByText('Developer mode for http://localhost:5173')).toBeTruthy();
+      });
+      expect(screen.queryByText(/next agent run can be scripted/)).toBeNull();
+
+      navigate('http://localhost:3000/checkout?step=2');
+      await waitFor(() => {
+        expect(screen.getByText('Developer mode for http://localhost:3000')).toBeTruthy();
+      });
+      expect(store.get().capture).toEqual({ kind: 'on', origin: 'http://localhost:3000' });
+      // That origin's flag is on, so the banner — about the CURRENT origin — now shows.
+      expect(screen.getByText(/next agent run can be scripted/)).toBeTruthy();
+    });
+
+    it('an origin capture is not enabled for turns the switch off, named, rather than keeping the old one', async () => {
+      stubEval('http://localhost:5173');
+      const store = createPanelStore({ ...initialPanelState(), tab: 'simulate' });
+      render(<App store={store} />);
+      await waitFor(() => {
+        expect(store.get().capture).toEqual({ kind: 'on', origin: 'http://localhost:5173' });
+      });
+      navigate('https://shop.example/');
+      expect(store.get().capture).toMatchObject({ kind: 'off', origin: 'https://shop.example' });
+      expect(screen.getByText(/Capture is not enabled for https:\/\/shop\.example/)).toBeTruthy();
+    });
+
+    it('ignores a same-origin navigation and a URL with no web origin', async () => {
+      stubEval('http://localhost:5173');
+      const store = createPanelStore();
+      render(<App store={store} />);
+      await waitFor(() => {
+        expect(store.get().capture).toEqual({ kind: 'on', origin: 'http://localhost:5173' });
+      });
+      const before = store.get().capture;
+      navigate('http://localhost:5173/other');
+      navigate('about:blank');
+      expect(store.get().capture).toBe(before);
+    });
   });
 });

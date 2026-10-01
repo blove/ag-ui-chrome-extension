@@ -66,7 +66,7 @@ export interface BinaryTransport {
   bytes: number;
 }
 
-export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'signals' | 'session';
+export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'signals' | 'simulate' | 'session';
 
 /** `null` means "all runs". */
 export type RunScope = string | null;
@@ -219,6 +219,12 @@ export interface PanelState {
   developerModes: Readonly<Record<string, boolean>>;
   /** The run simulator's arms on this tab: the hook's acks (R4) and this panel's dispatches. */
   simulator: SimulatorState;
+  /**
+   * What this panel armed, by arm id: the template's name and how many runs it scripted, so the
+   * arm list can say "Interrupt (approval) — consumed run 1 of 2". The panel's own notes, never
+   * sent anywhere; an arm with no entry (armed before this panel opened) is listed by id alone.
+   */
+  simArmLabels: Readonly<Record<string, SimArmLabel>>;
   expandChunks: boolean;
   selectedSeq: number | null;
   /** Set when a load fails; cleared on the next successful load. */
@@ -241,6 +247,11 @@ export interface SimulatorState {
   acks: Ack[];
   /** What became of each arm or disarm this panel asked for, oldest first. */
   dispatches: SimDispatch[];
+}
+
+export interface SimArmLabel {
+  template: string;
+  runs: number;
 }
 
 export function initialPanelState(): PanelState {
@@ -266,6 +277,7 @@ export function initialPanelState(): PanelState {
     signals: { reports: [], droppedBefore: 0 },
     developerModes: {},
     simulator: { acks: [], dispatches: [] },
+    simArmLabels: {},
     expandChunks: false,
     selectedSeq: null,
     loadError: null,

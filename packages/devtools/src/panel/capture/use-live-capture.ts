@@ -75,6 +75,11 @@ export interface LiveCapture {
   arm: (command: ArmCommand) => void;
   /** Withdraw an unconsumed arm. Answered with a `sim-dispatch`. */
   disarm: (armId: string) => void;
+  /**
+   * Whether the panel holds a port to the worker right now. The Simulate tab offers Arm only while
+   * it does: an arm sent down no port would vanish without a `sim-dispatch` to say so.
+   */
+  connected: boolean;
   status: EnableStatus;
   /**
    * True while capture cannot work until the inspected page is reloaded.
@@ -105,6 +110,7 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
     sessionRef.current = createLiveSession({ expandChunks: store.get().expandChunks });
   }
   const portRef = useRef<PanelPort | null>(null);
+  const [connected, setConnected] = useState(false);
 
   const capture = state.capture;
   const captureOnFor = capture.kind === 'on' ? capture.origin : null;
@@ -176,9 +182,11 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
       },
       onDisconnect: () => {
         portRef.current = null;
+        setConnected(false);
       },
     });
     portRef.current = port;
+    setConnected(port !== null);
     // Developer mode is per origin and lives in the worker's storage; ask, so the switch and the
     // banner say what is actually stored rather than defaulting to a guess.
     port?.send({ kind: 'developer-mode.get', origin: captureOnFor });
@@ -190,6 +198,7 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
       coalescer.dispose();
       port?.disconnect();
       portRef.current = null;
+      setConnected(false);
     };
   }, [store, captureOnFor]);
 
@@ -333,6 +342,7 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
     setDeveloperMode,
     arm,
     disarm,
+    connected,
     status,
     awaitingReload,
   };
