@@ -28,12 +28,14 @@ export function parsePartialJson(text: string): PartialJson {
   let justOpened = false;
   let i = 0;
   let cut = -1;
-  let cutClosers = '';
-  let cutDepth = 0;
+  /*
+   * Only the cut's offset is recorded. Every push and pop of `stack` is followed at once by
+   * `mark()`, so the stack at the last mark IS the stack when the scan stops, and its closers are
+   * built once, below. (Snapshotting the stack per mark was quadratic in the nesting depth — a
+   * hostile `[[[[…` partial cost seconds per frame.)
+   */
   const mark = (): void => {
     cut = i;
-    cutDepth = stack.length;
-    cutClosers = [...stack].reverse().join('');
   };
   /** Scans a string from its opening quote. False when the text ends inside it. */
   const scanString = (): boolean => {
@@ -140,6 +142,9 @@ export function parsePartialJson(text: string): PartialJson {
   }
 
   if (cut < 0) return { ok: true, value: undefined, complete: false, cutDepth: 0 };
+  const cutDepth = stack.length;
+  let cutClosers = '';
+  for (let index = stack.length - 1; index >= 0; index -= 1) cutClosers += stack[index] as string;
   try {
     return { ok: true, value: JSON.parse(text.slice(0, cut) + cutClosers) as unknown, complete: false, cutDepth };
   } catch {

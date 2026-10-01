@@ -236,6 +236,29 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
   });
 }
 
+/**
+ * Read the buffer once the worker reports the capture layer loaded in the page, or once
+ * `timeoutMs` has passed — whichever is first — and return that read either way.
+ *
+ * WHY. `loaded` is set by the relay's `capture-loaded` message, which crosses a `chrome.runtime`
+ * port into the MV3 worker on its own schedule; nothing orders it against the page's `load` event
+ * or against a test's own wait. A single read straight after the page settles races it. Measured
+ * on this branch with ten busy-loop processes on a 10-core machine: one `readCapture` took 5-15 s
+ * to be answered at all, and `quiet-page.spec.ts` failed its "still reports the document as
+ * loaded" check in a slow full run. Like `readSettledCapture`, the wait ends on the worker's own
+ * state, never on the clock, and it does not assert: a report that never comes is a `loaded:
+ * false` for the test about it to fail on.
+ */
+export async function readLoadedCapture(ctx: BrowserContext, timeoutMs = 20_000): Promise<CaptureSnapshot> {
+  const deadline = Date.now() + timeoutMs;
+  let latest = await readCapture(ctx);
+  while (!latest.loaded && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    latest = await readCapture(ctx);
+  }
+  return latest;
+}
+
 export interface SettleOptions {
   /** How many connections the run just driven is expected to have opened. Default 1. */
   connections?: number;

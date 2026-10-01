@@ -19,10 +19,22 @@
  * framework that reports, so a CopilotKit surface never takes one.
  */
 import type { CaptureRecord, Run } from '../../../core/model/types';
-import type { GenuiCatalog } from '../../../core/genui/catalog';
-import { inspectGenui } from '../../../core/genui/check';
+import { catalogForSurface, type GenuiCatalog } from '../../../core/genui/catalog';
+import { checkSurface } from '../../../core/genui/check';
 import { extractSurfaces, type GenuiComponent, type GenuiFinding, type GenuiRequest, type GenuiSurface } from '../../../core/genui/extract';
-import type { RenderDevtoolsReport, RenderElementState } from '../../../core/signals/render-report';
+import {
+  MAX_RENDER_NAME_LENGTH,
+  MAX_RENDER_REGISTRY,
+  type RenderDevtoolsReport,
+  type RenderElementState,
+} from '../../../core/signals/render-report';
+
+/**
+ * How deep a drawn tree goes, the root at depth 1. A surface is whatever the wire carried, and a
+ * 10,000-deep chain would otherwise be 10,000 nested list items — and as many nested renders, which
+ * overflow the stack. Real surfaces are a few levels deep; a node at the cap is drawn `truncated`.
+ */
+export const MAX_TREE_DEPTH = 64;
 
 export type NodeState = 'rendered' | 'fallback' | 'not-rendered' | 'unknown-type';
 
@@ -52,6 +64,8 @@ export interface UiNode {
   children: UiNode[];
   /** Already drawn elsewhere in this tree (a repeated child, or a cycle): not expanded again. */
   repeat?: boolean;
+  /** At `MAX_TREE_DEPTH` with children of its own, which are not drawn. */
+  truncated?: boolean;
 }
 
 export interface UiSurface {
@@ -112,6 +126,43 @@ function reportTargets(
   return targets;
 }
 
+/**
+ * The component names a surface's render report vouches for: its registry, and — because the
+ * emitter caps the registry at 500 names and drops any name over 128 characters without saying
+ * so — every type the report shows resolving (only `unresolved` means "no registry entry"). When
+ * the registry is AT the cap it may have been cut, so every wire type the report does not call
+ * `unresolved` is given the benefit of the doubt; a type too long to be reported is never judged.
+ * Without this, a component the app mounted could be reported as "not in the app's catalog".
+ */
+function vouchedRegistry(report: RenderDevtoolsReport, surface: GenuiSurface): string[] {
+  const names = new Set(report.registry);
+  const unresolved = new Set<string>();
+  for (const element of report.elements) {
+    if (element.state === 'unresolved') unresolved.add(element.key);
+    else names.add(element.type);
+  }
+  const mayBeCut = report.registry.length >= MAX_RENDER_REGISTRY;
+  for (const component of surface.components.values()) {
+    if (component.type.length > MAX_RENDER_NAME_LENGTH || (mayBeCut && !unresolved.has(component.id))) {
+      names.add(component.type);
+    }
+  }
+  return [...names];
+}
+
+/** Every component id reachable from `start` (itself included), walked without recursion. */
+function reachFrom(surface: GenuiSurface, start: string, into: Set<string>): void {
+  const stack = [start];
+  while (stack.length > 0) {
+    const id = stack.pop() as string;
+    if (into.has(id)) continue;
+    const component = surface.components.get(id);
+    if (component === undefined) continue;
+    into.add(id);
+    for (const child of component.children) if (!into.has(child)) stack.push(child);
+  }
+}
+
 function buildSurface(
   surface: GenuiSurface,
   catalog: GenuiCatalog | undefined,
@@ -128,9 +179,16 @@ function buildSurface(
   const reported = new Map<string, RenderElementState>();
   for (const element of report?.elements ?? []) if (!reported.has(element.key)) reported.set(element.key, element.state);
 
+  // Reachability is walked apart from drawing, so a component below the depth cap still counts.
+  const root = surface.root;
+  const reached = new Set<string>();
+  if (root !== undefined) reachFrom(surface, root, reached);
+
+  /** Components already drawn, so a repeat or a cycle is drawn once. */
   const visited = new Set<string>();
 
-  const node = (id: string, reachable: boolean): UiNode => {
+  // Recursion is bounded by MAX_TREE_DEPTH, so a hostile depth cannot overflow the stack.
+  const node = (id: string, depth: number): UiNode => {
     const component = surface.components.get(id);
     if (component === undefined) return { id, children: [] };
     const fromApp = reported.get(id);
@@ -142,27 +200,42 @@ function buildSurface(
     } else {
       stateFrom = 'checks';
       if (unknown.has(id)) state = 'unknown-type';
-      else if (surface.status === 'deleted' || !reachable || orphaned.has(id)) state = 'not-rendered';
+      else if (surface.status === 'deleted' || !reached.has(id) || orphaned.has(id)) state = 'not-rendered';
       else state = 'rendered';
     }
     if (visited.has(id)) return { id, component, state, stateFrom, children: [], repeat: true };
     visited.add(id);
-    return { id, component, state, stateFrom, children: component.children.map((child) => node(child, reachable)) };
+    if (depth >= MAX_TREE_DEPTH && component.children.length > 0) {
+      return { id, component, state, stateFrom, children: [], truncated: true };
+    }
+    return {
+      id,
+      component,
+      state,
+      stateFrom,
+      children: component.children.map((child) => node(child, depth + 1)),
+    };
   };
 
-  const root = surface.root;
-  const tree = root !== undefined && surface.components.has(root) ? node(root, true) : undefined;
+  const tree = root !== undefined && surface.components.has(root) ? node(root, 1) : undefined;
 
   // What the root does not reach: start from components no other unreached component references,
-  // so each subtree is drawn whole; then whatever is left (a cycle among them) on its own.
+  // so each subtree is drawn whole; then whatever is left (a cycle among them) on its own. A drawn
+  // subtree covers everything below it, drawn or past the depth cap.
   const unreachable: UiNode[] = [];
-  const rest = [...surface.components.values()].filter((component) => !visited.has(component.id));
-  const referenced = new Set(rest.flatMap((component) => component.children));
+  const rest = [...surface.components.values()].filter((component) => !reached.has(component.id));
+  const referenced = new Set<string>();
+  for (const component of rest) for (const child of component.children) referenced.add(child);
+  const covered = new Set<string>();
+  const drawFrom = (id: string): void => {
+    unreachable.push(node(id, 1));
+    reachFrom(surface, id, covered);
+  };
   for (const component of rest) {
-    if (!referenced.has(component.id) && !visited.has(component.id)) unreachable.push(node(component.id, false));
+    if (!referenced.has(component.id) && !covered.has(component.id)) drawFrom(component.id);
   }
   for (const component of rest) {
-    if (!visited.has(component.id)) unreachable.push(node(component.id, false));
+    if (!covered.has(component.id)) drawFrom(component.id);
   }
 
   return {
@@ -178,11 +251,25 @@ function buildSurface(
 
 /** Build the UI tab's model; `scope` narrows it to one run, as the shell's run selector does. */
 export function buildUiModel(input: UiInput, scope: string | null): UiModel {
+  // `inspectGenui`, unrolled so the capture is extracted once (the tab re-runs this per append):
+  // which report each surface takes is decided before checking, so its registry can be passed in.
+  const extraction = extractSurfaces(input);
   const latest = latestReports(input.renders);
-  // Which report each surface takes is decided before checking, so its registry can be passed in.
-  const targets =
-    latest.size > 0 ? reportTargets(extractSurfaces(input).surfaces, latest) : new Map<string, RenderDevtoolsReport>();
-  const result = inspectGenui(input, { registryFor: (surface) => targets.get(surface.key)?.registry });
+  const targets = latest.size > 0 ? reportTargets(extraction.surfaces, latest) : new Map<string, RenderDevtoolsReport>();
+  const context = {
+    runs: input.runs,
+    requests: input.requests,
+    registryFor: (surface: GenuiSurface): readonly string[] | undefined => {
+      const report = targets.get(surface.key);
+      return report === undefined ? undefined : vouchedRegistry(report, surface);
+    },
+  };
+  const result = { surfaces: extraction.surfaces, findings: [...extraction.findings], catalogs: new Map<string, GenuiCatalog | undefined>() };
+  for (const surface of extraction.surfaces) {
+    const catalog = catalogForSurface(surface, context);
+    result.catalogs.set(surface.key, catalog);
+    for (const finding of checkSurface(surface, catalog)) result.findings.push(finding);
+  }
 
   const runOrder = new Map(input.runs.map((run, index) => [run.runId, index]));
   const groups = new Map<string | undefined, UiRunGroup>();

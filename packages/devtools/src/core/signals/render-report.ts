@@ -154,3 +154,47 @@ export function cloneRenderReport(report: RenderDevtoolsReport): RenderDevtoolsR
     tMs: report.tMs,
   };
 }
+
+/**
+ * How many serialized characters the worker's per-tab render ring, and the panel's copy of it,
+ * may hold — beside the 500-report count. A report may legally carry 2,000 elements and 500
+ * names of 128 characters (~650 K characters), so the count alone would let one tab pin hundreds
+ * of megabytes. Typical reports are a few K, so the count is what binds them; this binds the
+ * worst case at about six maximum-size reports.
+ */
+export const MAX_RENDER_RING_CHARS = 4_000_000;
+
+const reportChars = new WeakMap<RenderDevtoolsReport, number>();
+
+/**
+ * An upper estimate of `JSON.stringify(report).length`, without building the string: every
+ * name, plus each element's keys and quoting, plus the fixed fields. Memoised per report object
+ * (reports are rebuilt once on the way in and never mutated after).
+ */
+export function renderReportChars(report: RenderDevtoolsReport): number {
+  const cached = reportChars.get(report);
+  if (cached !== undefined) return cached;
+  // `{"v":1,"kind":"render","surface":"","seq":,"registry":[],"elements":[],"tMs":}` and two numbers.
+  let chars = 120 + report.surface.length;
+  for (const name of report.registry) chars += name.length + 3;
+  // `{"key":"","type":"","state":""},` — 32 characters of structure.
+  for (const element of report.elements) chars += element.key.length + element.type.length + element.state.length + 32;
+  reportChars.set(report, chars);
+  return chars;
+}
+
+/**
+ * Where a render ring, oldest first, should start: the newest reports that fit both `maxCount`
+ * and `maxChars`, and always at least the newest one (a single report is bounded by the contract).
+ */
+export function renderRingStart(reports: readonly RenderDevtoolsReport[], maxCount: number, maxChars: number): number {
+  let start = reports.length;
+  let chars = 0;
+  while (start > 0 && reports.length - start < maxCount) {
+    const size = renderReportChars(reports[start - 1] as RenderDevtoolsReport);
+    if (start < reports.length && chars + size > maxChars) break;
+    chars += size;
+    start -= 1;
+  }
+  return start;
+}

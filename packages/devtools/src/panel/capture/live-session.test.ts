@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { AguiEvent, CaptureRecord } from '../../core/model/types';
 import type { ThreadplaneDevtoolsReport } from '../../core/signals/report';
-import type { RenderDevtoolsReport } from '../../core/signals/render-report';
+import { MAX_RENDER_RING_CHARS, renderReportChars, type RenderDevtoolsReport } from '../../core/signals/render-report';
+import { maxSizeRenderReport } from '../../test/render-reports';
 import type { RequestLine, SwMessage } from '../../sw/protocol';
 import { initialPanelState } from '../model/panel-types';
 import { createLiveSession } from './live-session';
@@ -1075,6 +1076,19 @@ describe('live session — Threadplane render reports (U5)', () => {
     expect(state.renders.reports).toHaveLength(500);
     expect(state.renders.reports[0]?.seq).toBe(2);
     expect(state.renders.droppedBefore).toBe(2);
+  });
+
+  it('also bounds its copy by size, across appends, like the worker', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshotWith([], 0));
+    for (let seq = 1; seq <= 40; seq += 1) {
+      state = session.apply(state, { kind: 'append', records: [], renders: { reports: [maxSizeRenderReport(seq)], droppedBefore: 0 } });
+    }
+    const held = state.renders.reports;
+    expect(held.length).toBeLessThan(40);
+    expect(held.at(-1)?.seq).toBe(40);
+    expect(held.reduce((total, report) => total + renderReportChars(report), 0)).toBeLessThanOrEqual(MAX_RENDER_RING_CHARS);
+    expect(state.renders.droppedBefore).toBe(40 - held.length);
   });
 
   it('a snapshot replaces them, a clear empties them, a refold keeps them', () => {

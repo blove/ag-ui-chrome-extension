@@ -8,8 +8,12 @@ import {
   MAX_RENDER_ELEMENTS,
   MAX_RENDER_NAME_LENGTH,
   MAX_RENDER_REGISTRY,
+  MAX_RENDER_RING_CHARS,
+  renderReportChars,
+  renderRingStart,
   type RenderDevtoolsReport,
 } from './render-report';
+import { maxSizeRenderReport } from '../../test/render-reports';
 
 const REPORT: RenderDevtoolsReport = {
   v: 1,
@@ -193,5 +197,28 @@ describe('cloneRenderReport', () => {
     expect(isRenderReport(detail)).toBe(true);
     const copy = cloneRenderReport(detail as RenderDevtoolsReport);
     expect(isRenderReport(copy)).toBe(false);
+  });
+});
+
+describe('the render ring’s size bound', () => {
+  it('measures a report at no less than its serialized length', () => {
+    for (const report of [REPORT, maxSizeRenderReport(1)]) {
+      expect(renderReportChars(report)).toBeGreaterThanOrEqual(JSON.stringify(report).length);
+      expect(renderReportChars(report)).toBeLessThan(JSON.stringify(report).length * 1.5);
+    }
+  });
+
+  it('keeps the newest reports that fit both the count and the size, and always the newest one', () => {
+    const big = Array.from({ length: 50 }, (_, i) => maxSizeRenderReport(i + 1));
+    const start = renderRingStart(big, 500, MAX_RENDER_RING_CHARS);
+    const kept = big.slice(start);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(50);
+    expect(kept.at(-1)?.seq).toBe(50);
+    expect(kept.reduce((total, report) => total + renderReportChars(report), 0)).toBeLessThanOrEqual(MAX_RENDER_RING_CHARS);
+    // The count bound still applies to small reports, and one report over the budget is still kept.
+    expect(renderRingStart(Array.from({ length: 503 }, () => REPORT), 500, MAX_RENDER_RING_CHARS)).toBe(3);
+    expect(renderRingStart([maxSizeRenderReport(1)], 500, 10)).toBe(0);
+    expect(renderRingStart([], 500, 10)).toBe(0);
   });
 });

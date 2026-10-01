@@ -249,6 +249,16 @@ function closedEnvelopes(parsed: Extract<PartialJson, { ok: true }>): unknown[] 
   return out;
 }
 
+/**
+ * The largest of `values` (0 for none). A loop, not `Math.max(...values)`: a spread passes one
+ * argument per element and overflows the stack for a message streamed in ~100k deltas.
+ */
+function maxOf(values: readonly number[]): number {
+  let max = 0;
+  for (const value of values) if (value > max) max = value;
+  return max;
+}
+
 function parseMaybeJson(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   try {
@@ -378,6 +388,8 @@ export function extractSurfaces(capture: GenuiCapture): GenuiExtraction {
           return state;
         }
         const seen = new Set<string>();
+        // A Set beside the list: `includes` per duplicate was quadratic in a hostile update.
+        const duplicates = new Set(state.surface.duplicateIds);
         body.components.forEach((item: unknown, index: number) => {
           const id = isObject(item) ? item.id : undefined;
           let type: string | undefined;
@@ -402,7 +414,10 @@ export function extractSurfaces(capture: GenuiCapture): GenuiExtraction {
             });
             return;
           }
-          if (seen.has(id) && !state.surface.duplicateIds.includes(id)) state.surface.duplicateIds.push(id);
+          if (seen.has(id) && !duplicates.has(id)) {
+            duplicates.add(id);
+            state.surface.duplicateIds.push(id);
+          }
           seen.add(id);
           state.surface.components.set(id, { id, type, props, children: childRefs(type, props), seq: origin.seq });
         });
@@ -551,7 +566,7 @@ export function extractSurfaces(capture: GenuiCapture): GenuiExtraction {
       if (message.kind !== 'text' || message.contentSeqs.length === 0) continue;
       offer(texts, `${run.runId}#${message.messageId}`, {
         runId: run.runId,
-        anchor: Math.max(...message.contentSeqs),
+        anchor: maxOf(message.contentSeqs),
         seqs: [...message.contentSeqs],
         value: message.content,
         closed: message.closed,
@@ -578,7 +593,7 @@ export function extractSurfaces(capture: GenuiCapture): GenuiExtraction {
       if (seqs.length === 0) continue;
       offer(tools, `${run.runId}#${call.toolCallId}`, {
         runId: run.runId,
-        anchor: Math.max(...seqs),
+        anchor: maxOf(seqs),
         seqs,
         value: { name, args: call.argsText },
         closed: call.closed,
@@ -617,7 +632,13 @@ export function extractSurfaces(capture: GenuiCapture): GenuiExtraction {
         messages.forEach((message: unknown, index: number) => {
           if (!isObject(message) || roleOf(message.type) !== 'ai') return;
           const id = typeof message.id === 'string' && message.id !== '' ? message.id : `${String(record.seq)}:${String(index)}`;
-          const fingerprint = JSON.stringify([message.content, message.tool_calls]);
+          let fingerprint: string;
+          try {
+            fingerprint = JSON.stringify([message.content, message.tool_calls]);
+          } catch {
+            // Nested too deep to stringify (or a cycle): nothing a renderer could show either.
+            return;
+          }
           if (isFirstValues) {
             history?.set(id, fingerprint);
             return;
@@ -708,11 +729,12 @@ export function extractSurfaces(capture: GenuiCapture): GenuiExtraction {
       const isPrefix = previous.length <= ops.length && previous.every((op, i) => jsonEqual(op, ops[i]));
       const fresh = isPrefix ? ops.slice(previous.length) : ops;
       state.ops = [...ops];
-      const touched: SurfaceState[] = [];
+      const touchedSet = new Set<SurfaceState>();
       for (const op of fresh) {
         const surface = applyA2ui(op, origin);
-        if (surface !== undefined && !touched.includes(surface)) touched.push(surface);
+        if (surface !== undefined) touchedSet.add(surface);
       }
+      const touched = [...touchedSet];
       for (const surface of touched) {
         state.surfaceKeys.add(surface.surface.key);
         if (surface.surface.status !== 'deleted') delete surface.surface.status;
@@ -722,7 +744,7 @@ export function extractSurfaces(capture: GenuiCapture): GenuiExtraction {
       const heir = touched[0];
       if (placeholder !== undefined && heir !== undefined) {
         surfaces.delete(placeholder.surface.key);
-        heir.surface.sourceSeqs.push(...placeholder.surface.sourceSeqs);
+        for (const seq of placeholder.surface.sourceSeqs) heir.surface.sourceSeqs.push(seq);
         delete state.placeholder;
       }
       return;

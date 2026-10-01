@@ -37,4 +37,13 @@ describe('parsePartialJson', () => {
     expect(parsePartialJson('{a:1')).toEqual({ ok: false });
     expect(parsePartialJson('hello')).toEqual({ ok: false });
   });
+
+  it('stays linear on a deeply nested prefix (a hostile a2ui-partial)', () => {
+    // Each opener used to snapshot the whole open stack: quadratic in the nesting depth.
+    const depth = 200_000;
+    const started = performance.now();
+    const parsed = parsePartialJson('['.repeat(depth));
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(parsed).toMatchObject({ ok: true, complete: false, cutDepth: depth });
+  });
 });

@@ -94,26 +94,26 @@ export function checkSurface(surface: GenuiSurface, catalog: GenuiCatalog | unde
       }
     }
 
+    // Linear over the whole surface: a component already marked has had its own subtree queued
+    // when it was marked, so no walk goes below it again (a chain of unknown types used to be
+    // walked once per link — quadratic). Each walk still skips its own parent, so a cycle back to
+    // an unknown parent is not reported under itself.
     const orphaned = new Set<string>();
     for (const parent of unknown) {
       const queue = [...parent.children];
-      const seen = new Set<string>([parent.id]);
-      while (queue.length > 0) {
-        const id = queue.shift() as string;
-        if (seen.has(id)) continue;
-        seen.add(id);
+      for (let head = 0; head < queue.length; head += 1) {
+        const id = queue[head] as string;
+        if (id === parent.id || orphaned.has(id)) continue;
         const child = components.get(id);
         if (child === undefined) continue;
-        if (!orphaned.has(id)) {
-          orphaned.add(id);
-          add(
-            'orphaned_subtree',
-            catalog.basis,
-            `Under ${parent.type} (${parent.id}), which has no renderer: this component does not render either`,
-            id,
-          );
-        }
-        queue.push(...child.children);
+        orphaned.add(id);
+        add(
+          'orphaned_subtree',
+          catalog.basis,
+          `Under ${parent.type} (${parent.id}), which has no renderer: this component does not render either`,
+          id,
+        );
+        for (const grandchild of child.children) queue.push(grandchild);
       }
     }
 
@@ -153,7 +153,7 @@ export function inspectGenui(
   for (const surface of surfaces) {
     const catalog = catalogForSurface(surface, context);
     catalogs.set(surface.key, catalog);
-    all.push(...checkSurface(surface, catalog));
+    for (const finding of checkSurface(surface, catalog)) all.push(finding);
   }
   return { surfaces, findings: all, catalogs };
 }

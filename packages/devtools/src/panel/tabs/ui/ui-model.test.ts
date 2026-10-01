@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { RenderDevtoolsReport } from '../../../core/signals/render-report';
 import { loadJsonl } from '../../import/load-jsonl';
-import { buildUiModel, type UiNode, type UiSurface } from './ui-model';
+import { MAX_RENDER_NAME_LENGTH, MAX_RENDER_REGISTRY } from '../../../core/signals/render-report';
+import { a2uiText, textRun } from '../../../test/genui-capture';
+import { buildUiModel, MAX_TREE_DEPTH, type UiNode, type UiSurface } from './ui-model';
 
 /** The golden fixtures (provenance in core/genui/extract.test.ts), through the panel's own import path. */
 function fixture(name: string): { records: ReturnType<typeof loadJsonl>['records']; requests: ReturnType<typeof loadJsonl>['requests']; runs: ReturnType<typeof loadJsonl>['runs'] } {
@@ -190,5 +192,96 @@ describe('buildUiModel — states from the app’s render report', () => {
     const hotels = surfaceOf(model, 'hotels');
     expect(hotels.stateSource).toBe('checks');
     expect(flat(hotels.tree)).toContain('badge:unknown-type');
+  });
+});
+
+describe('buildUiModel — hostile surfaces', () => {
+  /** The deepest path in a tree, counting the root as 1. */
+  function depthOf(node: UiNode | undefined): number {
+    if (node === undefined) return 0;
+    let deepest = 0;
+    const stack: Array<[UiNode, number]> = [[node, 1]];
+    while (stack.length > 0) {
+      const [current, depth] = stack.pop() as [UiNode, number];
+      deepest = Math.max(deepest, depth);
+      for (const child of current.children) stack.push([child, depth + 1]);
+    }
+    return deepest;
+  }
+
+  it('caps a 10,000-deep chain at MAX_TREE_DEPTH, says so, and still counts the rest as reachable', () => {
+    const n = 10_000;
+    const components = Array.from({ length: n }, (_, i) => ({
+      id: i === 0 ? 'root' : `c${String(i)}`,
+      component: 'Column',
+      children: i + 1 < n ? [`c${String(i + 1)}`] : [],
+    }));
+    const model = buildUiModel({ ...textRun([a2uiText(components)]), renders: [] }, null);
+    const surface = surfaceOf(model, 's');
+    expect(depthOf(surface.tree)).toBe(MAX_TREE_DEPTH);
+    let deepest = surface.tree;
+    while (deepest !== undefined && deepest.children.length > 0) deepest = deepest.children[0];
+    expect(deepest?.truncated).toBe(true);
+    // Below the cap is still reached from the root: not listed as unreachable, not "not rendered".
+    expect(surface.unreachable).toEqual([]);
+  });
+
+  it('draws a long unreachable chain as one capped subtree, not one entry per level', () => {
+    const n = 5_000;
+    const components = [
+      { id: 'root', component: 'Text', text: '' },
+      ...Array.from({ length: n }, (_, i) => ({ id: `u${String(i)}`, component: 'Column', children: i + 1 < n ? [`u${String(i + 1)}`] : [] })),
+    ];
+    const surface = surfaceOf(buildUiModel({ ...textRun([a2uiText(components)]), renders: [] }, null), 's');
+    expect(surface.unreachable).toHaveLength(1);
+    expect(depthOf(surface.unreachable[0])).toBe(MAX_TREE_DEPTH);
+  });
+});
+
+describe('buildUiModel — a reported registry that does not list every type it renders', () => {
+  it('does not call a type unknown when the report says its element mounted (registry capped at 500)', () => {
+    const registry = Array.from({ length: MAX_RENDER_REGISTRY }, (_, i) => `Comp${String(i)}`);
+    const capture = textRun([
+      a2uiText([
+        { id: 'root', component: 'Column', children: ['late', 'wide', 'gone'] },
+        { id: 'late', component: 'LateRegistered' },
+        { id: 'wide', component: 'NotInTheReport' },
+        { id: 'gone', component: 'Mystery' },
+      ]),
+    ]);
+    const renders = [
+      report(
+        's',
+        [
+          { key: 'root', type: 'Column', state: 'mounted' },
+          { key: 'late', type: 'LateRegistered', state: 'mounted' },
+          { key: 'gone', type: 'Mystery', state: 'unresolved' },
+        ],
+        // At the cap: the emitter dropped every name past the 500th, Column and LateRegistered among them.
+        registry,
+      ),
+    ];
+    const surface = surfaceOf(buildUiModel({ ...capture, renders }, null), 's');
+    expect(surface.findings.map((finding) => `${finding.code} ${finding.componentId ?? ''}`)).toEqual([
+      'unknown_component gone',
+    ]);
+    expect(flat(surface.tree)).toEqual(['root:rendered', 'late:rendered', 'wide:rendered', 'gone:unknown-type']);
+  });
+
+  it('does not judge a type too long for the report to carry', () => {
+    const long = 'X'.repeat(MAX_RENDER_NAME_LENGTH + 1);
+    const capture = textRun([a2uiText([{ id: 'root', component: 'Column', children: ['x'] }, { id: 'x', component: long }])]);
+    const renders = [report('s', [{ key: 'root', type: 'Column', state: 'mounted' }], ['Column'])];
+    const surface = surfaceOf(buildUiModel({ ...capture, renders }, null), 's');
+    expect(surface.findings).toEqual([]);
+  });
+
+  it('still calls a type unknown when the registry is complete and the report does not name it', () => {
+    const capture = textRun([a2uiText([{ id: 'root', component: 'Column', children: ['x'] }, { id: 'x', component: 'Mystery' }])]);
+    const renders = [report('s', [{ key: 'root', type: 'Column', state: 'mounted' }], ['Column'])];
+    const surface = surfaceOf(buildUiModel({ ...capture, renders }, null), 's');
+    expect(surface.findings.map((finding) => `${finding.code} ${finding.basis} ${finding.componentId ?? ''}`)).toEqual([
+      'unknown_component exact x',
+    ]);
   });
 });

@@ -131,6 +131,7 @@ function NodeRow({
             {NODE_STATE_LABEL[node.state]}
           </span>
           {node.repeat === true ? <span class="agui-ui__repeat">(again)</span> : null}
+          {node.truncated === true ? <span class="agui-ui__truncated">(deeper levels not shown)</span> : null}
         </button>
       )}
       {node.children.length > 0 ? (
@@ -313,7 +314,7 @@ function findNode(view: UiSurface, id: string): UiNode | undefined {
   while (stack.length > 0) {
     const node = stack.pop() as UiNode;
     if (node.id === id && node.component !== undefined && node.repeat !== true) return node;
-    stack.push(...node.children);
+    for (const child of node.children) stack.push(child);
   }
   return undefined;
 }

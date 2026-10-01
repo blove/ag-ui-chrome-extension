@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureRecord } from '../core/model/types';
 import type { WireFrame } from '../inject/protocol';
+import { MAX_RENDER_RING_CHARS, renderReportChars } from '../core/signals/render-report';
+import { maxSizeRenderReport } from '../test/render-reports';
 import {
   PANEL_PORT_NAME,
   RELAY_PORT_NAME,
@@ -2663,6 +2665,18 @@ describe('service worker — Threadplane render reports', () => {
       { kind: 'append', records: [], droppedBefore: 0, renders: { reports: [RENDER], droppedBefore: 0 } },
     ]);
     expect(messagesOfKind(other, 'append')).toEqual([]);
+  });
+
+  it('also bounds the ring by size, so 500 maximum-size reports cannot pile up', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    for (let seq = 1; seq <= 40; seq += 1) send(relay, { v: 1, kind: 'render', report: maxSizeRenderReport(seq) });
+    const held = testHook().renders();
+    expect(held.length).toBeGreaterThan(0);
+    expect(held.length).toBeLessThan(40);
+    expect(held.at(-1)?.seq).toBe(40);
+    expect(held.reduce((total, report) => total + renderReportChars(report), 0)).toBeLessThanOrEqual(MAX_RENDER_RING_CHARS);
+    expect(testHook().rendersDropped()).toBe(40 - held.length);
   });
 
   it('keeps at most 500 per tab and counts what it evicted', () => {

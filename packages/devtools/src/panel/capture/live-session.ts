@@ -12,7 +12,7 @@
 import type { RuntimeInfo } from '../../core/detect/info';
 import type { CaptureRecord } from '../../core/model/types';
 import type { ThreadplaneDevtoolsReport } from '../../core/signals/report';
-import type { RenderDevtoolsReport } from '../../core/signals/render-report';
+import { MAX_RENDER_RING_CHARS, renderRingStart, type RenderDevtoolsReport } from '../../core/signals/render-report';
 import type { Ack } from '../../core/simulate/commands';
 import { createRunBuilder, type RunBuilder } from '../../core/normalizer/run-builder';
 import type { ClosedConn, RegistrationState, RequestLine, SimDispatch, SwMessage } from '../../sw/protocol';
@@ -163,10 +163,10 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     simDispatches = [];
   }
 
-  /** Oldest-first eviction of render reports, counted. */
+  /** Oldest-first eviction of render reports past the count or the size bound (the worker's), counted. */
   function trimRenders(): void {
-    if (renders.length <= maxRenders) return;
-    const excess = renders.length - maxRenders;
+    const excess = renderRingStart(renders, maxRenders, MAX_RENDER_RING_CHARS);
+    if (excess === 0) return;
     renders = renders.slice(excess);
     rendersPanelDropped += excess;
   }

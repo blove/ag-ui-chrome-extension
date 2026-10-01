@@ -7,7 +7,9 @@ import type { RenderDevtoolsReport } from '../../../core/signals/render-report';
 import { loadJsonl } from '../../import/load-jsonl';
 import { initialPanelState, type PanelState } from '../../model/panel-types';
 import { createPanelStore, type PanelStore } from '../../model/store';
+import { a2uiText, textRun } from '../../../test/genui-capture';
 import { Ui, UI_EMPTY_TEXT } from './ui';
+import { MAX_TREE_DEPTH } from './ui-model';
 
 const FAULT_WORDS =
   /\b(not detected|detection|failed|failure|error|unable|could not|missing|broken|none found|no agents)\b/i;
@@ -167,5 +169,60 @@ describe('UI tab', () => {
   it('notes that an imported capture’s states come from the checks', () => {
     renderTab({ ...stateOf(copilotkitJsonl), source: { kind: 'imported', filename: 'x.agui.jsonl', importedAtMs: 1 } });
     expect(screen.getByText(/carries no render reports/)).toBeTruthy();
+  });
+});
+
+describe('UI tab — what it never does with captured content', () => {
+  function liveState(components: Record<string, unknown>[]): PanelState {
+    const capture = textRun([a2uiText(components)]);
+    return {
+      ...initialPanelState(),
+      source: { kind: 'live', origin: 'http://localhost:5173' },
+      tab: 'ui',
+      records: [...capture.records],
+      requests: capture.requests.map((request) => ({ ...request, tMs: 0 })),
+      runs: [...capture.runs],
+    };
+  }
+
+  it('shows an Image or link prop as JSON text, and never loads or links it', () => {
+    const url = 'https://tracker.example/pixel.png?who=me';
+    renderTab(
+      liveState([
+        { id: 'root', component: 'Column', children: ['img', 'html'] },
+        { id: 'img', component: 'Image', url },
+        { id: 'html', component: 'Text', text: `<img src="${url}"><a href="${url}">x</a><script>window.__owned = 1</script>` },
+      ]),
+    );
+    for (const id of ['img', 'html']) {
+      const node = document.querySelector<HTMLElement>(`.agui-ui__node[data-component="${id}"]`);
+      if (node === null) throw new Error(`no node ${id}`);
+      fireEvent.click(node);
+      const details = screen.getByRole('complementary', { name: 'Component details' });
+      for (const toggle of within(details).queryAllByRole('button', { expanded: false })) fireEvent.click(toggle);
+      expect(details.textContent).toContain(url);
+    }
+    expect(document.querySelectorAll('img, a[href], script, iframe, object, embed, video, audio, source')).toHaveLength(0);
+    for (const element of document.querySelectorAll('*')) {
+      for (const attribute of element.getAttributeNames()) {
+        expect(element.getAttribute(attribute) ?? '').not.toContain('tracker.example');
+      }
+    }
+    expect((window as { __owned?: number }).__owned).toBeUndefined();
+  });
+
+  it('draws a 5,000-deep surface without overflowing, capped and marked', () => {
+    const n = 5_000;
+    renderTab(
+      liveState(
+        Array.from({ length: n }, (_, i) => ({
+          id: i === 0 ? 'root' : `c${String(i)}`,
+          component: 'Column',
+          children: i + 1 < n ? [`c${String(i + 1)}`] : [],
+        })),
+      ),
+    );
+    expect(document.querySelectorAll('.agui-ui__node[data-state]')).toHaveLength(MAX_TREE_DEPTH);
+    expect(document.querySelectorAll('.agui-ui__truncated')).toHaveLength(1);
   });
 });

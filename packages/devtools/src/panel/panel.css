@@ -2679,6 +2679,10 @@ code {
   color: var(--agui-fg-muted);
 }
 
+.agui-ui__truncated {
+  color: var(--agui-fg-muted);
+}
+
 .agui-ui__badge {
   margin-left: auto;
   padding: 0 6px;

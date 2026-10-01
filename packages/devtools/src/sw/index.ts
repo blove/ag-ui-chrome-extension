@@ -35,6 +35,8 @@ import {
 import {
   cloneRenderReport,
   isRenderReport,
+  MAX_RENDER_RING_CHARS,
+  renderRingStart,
   type RenderDevtoolsReport,
 } from '../core/signals/render-report';
 import { parseAck, parseArmCommand, parseDisarmCommand, type Ack, type ArmCommand } from '../core/simulate/commands';
@@ -422,10 +424,14 @@ function rendersFor(state: TabState): RenderReports {
   return { reports: [...state.renders], droppedBefore: state.rendersDropped };
 }
 
-/** Append one render report, evicting (and counting) from the front past `MAX_RENDER_REPORTS`. */
+/**
+ * Append one render report, evicting (and counting) from the front past `MAX_RENDER_REPORTS` or
+ * `MAX_RENDER_RING_CHARS`, whichever binds first — the size bound is what keeps a page sending
+ * maximum-size reports from holding hundreds of megabytes in the worker.
+ */
 function pushRender(state: TabState, report: RenderDevtoolsReport): void {
   state.renders.push(report);
-  const over = state.renders.length - MAX_RENDER_REPORTS;
+  const over = renderRingStart(state.renders, MAX_RENDER_REPORTS, MAX_RENDER_RING_CHARS);
   if (over > 0) {
     state.renders.splice(0, over);
     state.rendersDropped += over;
@@ -825,9 +831,9 @@ async function restoreFromSession(): Promise<void> {
       state.signals = mirrored.signals.slice(-MAX_SIGNAL_REPORTS);
       state.signalsDropped =
         mirrored.signalsDropped + Math.max(0, mirrored.signals.length - MAX_SIGNAL_REPORTS);
-      state.renders = mirrored.renders.slice(-MAX_RENDER_REPORTS);
-      state.rendersDropped =
-        mirrored.rendersDropped + Math.max(0, mirrored.renders.length - MAX_RENDER_REPORTS);
+      const renderStart = renderRingStart(mirrored.renders, MAX_RENDER_REPORTS, MAX_RENDER_RING_CHARS);
+      state.renders = mirrored.renders.slice(renderStart);
+      state.rendersDropped = mirrored.rendersDropped + renderStart;
       state.simAcks = mirrored.simAcks.slice(-MAX_SIM_ACKS);
       /*
        * Re-applied from the restored state rather than trusted to still be showing. Chrome does
