@@ -36,6 +36,22 @@ describe('exportFilename', () => {
       'agui-etc-passwd-2026-08-15T12-00-00.000Z.agui.jsonl',
     );
   });
+  test('strips path separators out of capturedAt too — an imported header sets it', () => {
+    // `capturedAt` is preserved from the file being re-exported, so it is as untrusted as `url`.
+    expect(exportFilename('http://localhost:3000/', '../../etc/passwd')).toBe(
+      'agui-localhost-3000-etc-passwd.agui.jsonl',
+    );
+    expect(exportFilename('http://localhost:3000/', 'a\\b/c d')).toBe('agui-localhost-3000-a-b-c-d.agui.jsonl');
+  });
+
+  test('reduces a capturedAt of nothing but separators to `unknown`', () => {
+    expect(exportFilename('http://localhost:3000/', '/ :')).toBe('agui-localhost-3000-unknown.agui.jsonl');
+  });
+
+  test('keeps a stamp that is already "unknown" readable', () => {
+    // What `loadJsonl` reads a non-string capturedAt as.
+    expect(exportFilename('unknown', 'unknown')).toBe('agui-unknown-unknown.agui.jsonl');
+  });
 });
 
 describe('fixtureFilename', () => {
@@ -51,5 +67,10 @@ describe('threadplaneFilename', () => {
     expect(threadplaneFilename('http://127.0.0.1:2024', '2026-05-08T00:00:00.000Z')).toBe(
       'threadplane-127.0.0.1-2024-2026-05-08T00-00-00.000Z.spec.ts',
     );
+  });
+
+  test('cannot be steered out of its directory by capturedAt either', () => {
+    expect(threadplaneFilename('http://127.0.0.1:2024', '../x')).toBe('threadplane-127.0.0.1-2024-x.spec.ts');
+    expect(fixtureFilename('http://127.0.0.1:2024', '../x')).toBe('agui-127.0.0.1-2024-x.fixture.ts');
   });
 });

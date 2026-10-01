@@ -32,9 +32,16 @@ function hostOf(url: string): string {
   }
 }
 
-/** `12:00:00` is not a legal filename on Windows and is awkward everywhere else. */
+/**
+ * The time part of a name, from a header `capturedAt`.
+ *
+ * Slugged like the host, and for the same reason: re-export preserves `capturedAt` from the
+ * imported file, so it is whatever that file said — usually an ISO timestamp, which passes through
+ * unchanged apart from its colons (`12:00:00` is not a legal filename on Windows and is awkward
+ * everywhere else), but possibly `../../x` or nothing at all.
+ */
 function stamp(iso: string): string {
-  return iso.replace(/:/g, '-');
+  return slug(iso.replace(/:/g, '-'));
 }
 
 export function exportFilename(url: string, iso: string): string {
