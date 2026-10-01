@@ -1,6 +1,6 @@
 # Privacy Policy — AG-UI DevTools
 
-**Effective 30 September 2026.** Applies to the AG-UI DevTools Chrome extension and this repository.
+**Effective 1 October 2026.** Applies to the AG-UI DevTools Chrome extension and this repository.
 
 ## The short version
 
@@ -78,7 +78,7 @@ development build, so on a production app there is nothing for the panel to scri
 
 | Permission | Why |
 |---|---|
-| `storage` | Remembers which origins you enabled, which of them you turned Developer mode on for, and your panel preferences. Captured events live in `chrome.storage.session`, cleared by Chrome on browser close. |
+| `storage` | Remembers which origins you turned Developer mode on for (`chrome.storage.local`, and nothing else is kept there). Captured events, and what was detected on each tab, live in `chrome.storage.session`, cleared by Chrome on browser close. Which origins you enabled capture on is Chrome's own record of the permission you granted, not something the extension stores. |
 | `scripting` | Registers the capture scripts at runtime on origins you grant. Required *because* the extension ships with no standing access to any site. |
 | `optional_host_permissions` | Requested one origin at a time, only when you click to enable capture there. Never granted at install. |
 

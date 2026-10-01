@@ -9,7 +9,7 @@ privacy_policy_url: https://github.com/blove/ag-ui-chrome-extension/blob/main/PR
 website: https://threadplane.ai
 support_url: https://github.com/blove/ag-ui-chrome-extension/issues
 permissions:
-  storage: Stores the user's per-origin capture opt-in, the per-origin Developer mode switch (off by default), and panel preferences. Captured events live in chrome.storage.session, which Chrome clears when the browser closes. Nothing is synced and nothing is written to disk unless the user exports a capture themselves.
+  storage: chrome.storage.local holds one thing - the per-origin Developer mode switch, off by default, removed when the user turns it off or revokes the origin. chrome.storage.session mirrors each inspected tab's captured events and detection state so they survive the service worker being suspended; Chrome clears it when the browser closes. Nothing is synced and nothing is written to disk unless the user exports a capture themselves. The per-origin capture opt-in is Chrome's own optional host permission grant, not a stored value.
   scripting: Registers the capture content scripts at runtime on origins the user has explicitly granted, via chrome.scripting.registerContentScripts. This is required precisely because the extension ships with no static remote host permissions - without it, capture could only ever work on localhost.
   optional_host_permissions: Requested one origin at a time, only when the user clicks to enable capture on that page. It is needed to read the server-sent-event response bodies the page is already receiving. No origin is granted at install time.
 ---
