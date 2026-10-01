@@ -1,4 +1,4 @@
-{"kind":"header","schemaVersion":1,"tool":"ag-ui-devtools@0.1.0","capturedAt":"2026-08-15T09:00:00.000Z","url":"http://localhost:3000/","framework":"react/copilotkit","transport":"sse","redacted":[]}
+{"kind":"header","schemaVersion":1,"tool":"ag-ui-devtools@0.2.0","capturedAt":"2026-08-15T09:00:00.000Z","url":"http://localhost:3000/","framework":"react/copilotkit","transport":"sse","redacted":[]}
 {"kind":"request","connId":"c1","tMs":0,"method":"POST","url":"/api/copilotkit/agent/support/run","input":{"threadId":"t_demo","runId":"r_demo_1","state":{"order":null,"steps":0},"messages":[{"id":"m_user_r_demo_1","role":"user","content":"Where is my order 4417?"}],"tools":[],"context":[],"forwardedProps":{}}}
 {"kind":"event","connId":"c1","seq":1,"tMs":12,"event":{"type":"RUN_STARTED","threadId":"t_demo","runId":"r_demo_1"}}
 {"kind":"event","connId":"c1","seq":2,"tMs":28,"event":{"type":"STEP_STARTED","stepName":"plan"}}
