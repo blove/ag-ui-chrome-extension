@@ -12,7 +12,8 @@
     "test:ci": "playwright test",
     "test:e2e": "playwright test e2e",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "acceptance:threadplane": "tsx acceptance/threadplane.ts"
   },
   "devDependencies": {
     "@ag-ui/client": "0.0.58",
