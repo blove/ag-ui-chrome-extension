@@ -67,7 +67,7 @@ export type RelayMessage =
 
 /**
  * What the worker sends a tab's TOP-FRAME relay with `chrome.tabs.sendMessage(tabId, …,
- * { frameId: 0 })` — the only direction in which the extension ever initiates anything in a page,
+ * { frameId: 0 })` — the only message the worker ever sends a content script,
  * and only for a panel's explicit Arm or Cancel.
  *
  * `chrome.tabs.sendMessage` rather than the relay's port: the port exists only while the relay has

@@ -81,12 +81,13 @@ let page: Page;
 let child: Frame;
 let tabId: number;
 let origin: string;
+let extensionId: string;
 const pageErrors: string[] = [];
 
 test.beforeAll(async () => {
   harness = await startHarnessServer();
   pageServer = await startPageServer({ agentUrl: harness.url });
-  ({ ctx } = await launchWithExtension());
+  ({ ctx, extensionId } = await launchWithExtension());
   await clearCapture(ctx);
 
   page = await ctx.newPage();
@@ -158,6 +159,40 @@ test('the page hears no message traffic from the simulator, and nothing broke', 
   expect((await probeOf(page)).messages).toEqual([]);
   expect((await probeOf(page)).errors).toEqual([]);
   expect(pageErrors).toEqual([]);
+});
+
+test('the worker answers a panel port from an extension page', async () => {
+  // The worker hears the panel port only from this extension's own pages (a content script
+  // must never speak as the panel). This is the positive half, against real Chrome's
+  // `sender.url`: the panel page — here in a tab, as `screenshot:panel` loads it — is answered.
+  const panelPage = await ctx.newPage();
+  try {
+    await panelPage.goto(`chrome-extension://${extensionId}/src/panel/panel.html`);
+    const answer = await panelPage.evaluate(
+      (origin) =>
+        new Promise<unknown>((resolve, reject) => {
+          interface PanelPort {
+            onMessage: { addListener(listener: (message: unknown) => void): void };
+            postMessage(message: unknown): void;
+            disconnect(): void;
+          }
+          const runtime = (globalThis as unknown as { chrome: { runtime: { connect(info: { name: string }): PanelPort } } })
+            .chrome.runtime;
+          const port = runtime.connect({ name: 'agui-devtools-panel' });
+          const timer = setTimeout(() => reject(new Error('the worker never answered')), 5000);
+          port.onMessage.addListener((message: unknown) => {
+            clearTimeout(timer);
+            port.disconnect();
+            resolve(message);
+          });
+          port.postMessage({ kind: 'developer-mode.get', origin });
+        }),
+      origin,
+    );
+    expect(answer).toEqual({ kind: 'developer-mode', origin, enabled: false });
+  } finally {
+    await panelPage.close();
+  }
 });
 
 test('acks are cleared with the tab’s buffer', async () => {

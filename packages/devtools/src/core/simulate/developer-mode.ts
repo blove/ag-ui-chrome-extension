@@ -3,7 +3,7 @@
  *
  * One flag per ORIGIN, held in `chrome.storage.local` under `developerModeKey(origin)` and present
  * only while on (`true`); off is the key's absence, so there is no stored state to get wrong. The
- * worker writes it (for a granted origin only) and the ISOLATED-world relay reads it for its own
+ * worker writes it (for a granted origin only), clears it when the grant goes, and the ISOLATED-world relay reads it for its own
  * `location.origin` before dispatching an arm into the page. This module only names the key and
  * says what an origin is; the Chrome calls stay in `sw/` and `relay/`.
  */
@@ -31,16 +31,4 @@ export function isWebOrigin(origin: unknown): origin is string {
 
 export function developerModeKey(origin: string): string {
   return `${DEVELOPER_MODE_KEY_PREFIX}${origin}`;
-}
-
-/**
- * The origin a host-permission match pattern grants, when it names exactly one — `https://a.com/*`
- * → `https://a.com`. `null` for a wildcard host, a wildcard scheme, or anything else: those never
- * had a developer-mode flag of their own to clear.
- */
-export function originOfPattern(pattern: string): string | null {
-  const match = /^(https?):\/\/([^/*]+)\/\*$/.exec(pattern);
-  if (match === null) return null;
-  const origin = `${match[1] ?? ''}://${match[2] ?? ''}`;
-  return isWebOrigin(origin) ? origin : null;
 }

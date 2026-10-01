@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { developerModeKey, isWebOrigin, originOfPattern } from './developer-mode';
+import { developerModeKey, isWebOrigin } from './developer-mode';
 
 describe('isWebOrigin', () => {
   it('accepts a canonical http(s) origin, with or without a port', () => {
@@ -31,18 +31,5 @@ describe('developerModeKey', () => {
   it('is one key per origin', () => {
     expect(developerModeKey('https://example.com')).toBe('agui-dt:devmode:https://example.com');
     expect(developerModeKey('https://example.com:8443')).not.toBe(developerModeKey('https://example.com'));
-  });
-});
-
-describe('originOfPattern', () => {
-  it('reads the one origin a granted pattern names', () => {
-    expect(originOfPattern('https://example.com/*')).toBe('https://example.com');
-    expect(originOfPattern('https://example.com:8443/*')).toBe('https://example.com:8443');
-  });
-
-  it('is null for a pattern that names no single origin', () => {
-    for (const pattern of ['<all_urls>', 'https://*.example.com/*', '*://example.com/*', 'https://example.com/app/*', 'file:///*']) {
-      expect(originOfPattern(pattern)).toBeNull();
-    }
   });
 });

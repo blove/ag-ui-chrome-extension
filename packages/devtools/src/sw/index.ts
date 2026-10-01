@@ -33,7 +33,7 @@ import {
   type ThreadplaneDevtoolsReport,
 } from '../core/signals/report';
 import { parseAck, parseArmCommand, parseDisarmCommand, type Ack, type ArmCommand } from '../core/simulate/commands';
-import { developerModeKey, isWebOrigin, originOfPattern } from '../core/simulate/developer-mode';
+import { DEVELOPER_MODE_KEY_PREFIX, developerModeKey, isWebOrigin } from '../core/simulate/developer-mode';
 import type { WireFrame } from '../inject/protocol';
 import { isAutoEnabledOrigin, originPattern } from '../panel/capture/grant';
 import {
@@ -1249,8 +1249,15 @@ function broadcastDeveloperMode(origin: string, enabled: boolean): void {
 async function writeDeveloperMode(origin: string, enabled: boolean): Promise<boolean> {
   const key = developerModeKey(origin);
   try {
-    if (enabled && (await isGrantedOrigin(origin))) await chrome.storage.local.set({ [key]: true });
-    else if (!enabled) await chrome.storage.local.remove(key);
+    if (enabled && (await isGrantedOrigin(origin))) {
+      await chrome.storage.local.set({ [key]: true });
+      /*
+       * Asked again AFTER the write. A revoke that lands between the check above and the write has
+       * already run its sweep, found no flag, and gone; without this the flag would outlive the
+       * grant it required.
+       */
+      if (!(await isGrantedOrigin(origin))) await chrome.storage.local.remove(key);
+    } else if (!enabled) await chrome.storage.local.remove(key);
   } catch {
     // Reported below as whatever is actually stored.
   }
@@ -1259,12 +1266,30 @@ async function writeDeveloperMode(origin: string, enabled: boolean): Promise<boo
   return now;
 }
 
-/** A revoked origin loses its Developer mode with its grant, so a later re-grant starts off. */
-function clearDeveloperModeFor(patterns: readonly string[]): void {
-  for (const pattern of patterns) {
-    const origin = originOfPattern(pattern);
-    if (origin === null) continue;
-    void writeDeveloperMode(origin, false);
+/**
+ * A revoked origin loses its Developer mode with its grant, so a later re-grant starts off.
+ *
+ * EVERY stored flag is re-checked against `chrome.permissions`, not just the origins the revoked
+ * patterns name: a scheme-wide pattern (Chrome's "On all sites", every host on `https:`) names no
+ * single origin, yet revoking it ungrants every origin it covered.
+ */
+async function clearUngrantedDeveloperModes(): Promise<void> {
+  let stored: Record<string, unknown>;
+  try {
+    stored = await chrome.storage.local.get(null);
+  } catch {
+    return;
+  }
+  for (const key of Object.keys(stored)) {
+    if (!key.startsWith(DEVELOPER_MODE_KEY_PREFIX)) continue;
+    const origin = key.slice(DEVELOPER_MODE_KEY_PREFIX.length);
+    if (isWebOrigin(origin) && (await isGrantedOrigin(origin))) continue;
+    try {
+      await chrome.storage.local.remove(key);
+    } catch {
+      continue;
+    }
+    if (isWebOrigin(origin)) broadcastDeveloperMode(origin, await readDeveloperMode(origin));
   }
 }
 
@@ -1641,9 +1666,25 @@ function unregisterForMatches(matches: readonly string[]): Promise<void> {
 /* Wiring                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Is this port's sender one of this extension's own pages — the DevTools panel?
+ *
+ * The panel port can arm the run simulator and switch Developer mode, so it is not left open to
+ * every extension context: a content script also reaches `chrome.runtime.connect`, runs in a
+ * renderer the page shares, and must never be able to speak as the panel. `sender.url` is set by
+ * Chrome, not by the connecting code.
+ */
+function isExtensionPage(sender: chrome.runtime.MessageSender | undefined): boolean {
+  const url = sender?.url;
+  return sender?.id === chrome.runtime.id && typeof url === 'string' && url.startsWith(chrome.runtime.getURL(''));
+}
+
 chrome.runtime.onConnect.addListener((port: chrome.runtime.Port): void => {
   if (port.name === RELAY_PORT_NAME) attachRelayPort(port);
-  else if (port.name === PANEL_PORT_NAME) attachPanelPort(port);
+  else if (port.name === PANEL_PORT_NAME) {
+    if (isExtensionPage(port.sender)) attachPanelPort(port);
+    else port.disconnect();
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId: number): void => {
@@ -1660,7 +1701,7 @@ chrome.permissions.onRemoved.addListener((permissions: chrome.permissions.Permis
   // §11 is opt-in per origin, so a revoked origin must stop being captured.
   void unregisterForMatches(permissions.origins ?? []);
   // ...and stop being scriptable: Developer mode does not outlive the grant it required (R6).
-  clearDeveloperModeFor(permissions.origins ?? []);
+  void clearUngrantedDeveloperModes();
 });
 
 /**

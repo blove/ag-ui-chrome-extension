@@ -36,7 +36,7 @@ class FakePort {
   readonly sent: SwMessage[] = [];
   constructor(
     readonly name: string,
-    readonly sender?: { tab?: { id: number }; frameId?: number },
+    readonly sender?: { tab?: { id: number }; frameId?: number; id?: string; url?: string },
   ) {}
   postMessage(message: unknown): void {
     this.sent.push(message as SwMessage);
@@ -45,6 +45,8 @@ class FakePort {
     this.onDisconnect.emit(this);
   }
 }
+
+const EXTENSION_ID = 'abcdefghijklmnopabcdefghijklmnop';
 
 /** The two content scripts `manifest.config.ts` declares, as `getManifest()` reports them. */
 const MANIFEST_CONTENT_SCRIPTS = [
@@ -147,15 +149,16 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
 
   const local = new Map<string, unknown>();
   const storageLocal = {
-    get(key: string): Promise<Record<string, unknown>> {
+    get(key: string | null): Promise<Record<string, unknown>> {
+      if (key === null) return Promise.resolve(Object.fromEntries(local));
       return Promise.resolve(local.has(key) ? { [key]: local.get(key) } : {});
     },
     set(items: Record<string, unknown>): Promise<void> {
       for (const [key, value] of Object.entries(items)) local.set(key, value);
       return Promise.resolve();
     },
-    remove(key: string): Promise<void> {
-      local.delete(key);
+    remove(keys: string | string[]): Promise<void> {
+      for (const key of typeof keys === 'string' ? [keys] : keys) local.delete(key);
       return Promise.resolve();
     },
   };
@@ -233,6 +236,8 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
   globalThis.chrome = {
     runtime: {
       onConnect,
+      id: EXTENSION_ID,
+      getURL: (path: string) => `chrome-extension://${EXTENSION_ID}/${path}`,
       getManifest: () => ({ content_scripts: MANIFEST_CONTENT_SCRIPTS }),
     },
     storage: { session: storageSession, local: storageLocal },
@@ -259,7 +264,14 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
        * second, dynamic copy of both scripts for the localhost family.
        */
       contains: (query: { origins?: string[] }): Promise<boolean> =>
-        Promise.resolve((query.origins ?? []).every((origin) => grantedOrigins.includes(origin))),
+        Promise.resolve(
+          (query.origins ?? []).every((origin) =>
+            grantedOrigins.some(
+              // Exact, or the scheme-wide `https://*/*` that Chrome's "On all sites" grants.
+              (granted) => granted === origin || (/^https?:\/\/\*\/\*$/.test(granted) && origin.startsWith(granted.slice(0, -3))),
+            ),
+          ),
+        ),
       getAll: (): Promise<{ origins: string[] }> =>
         Promise.resolve({
           origins: [
@@ -373,8 +385,9 @@ function relayPort(tabId: number, frameId = 0): FakePort {
 
 const loadedReport: RelayMessage = { v: 1, kind: 'capture-loaded' };
 
+/** A DevTools panel: an extension page, as Chrome describes its sender. */
 function panelPort(): FakePort {
-  return new FakePort(PANEL_PORT_NAME);
+  return new FakePort(PANEL_PORT_NAME, { id: EXTENSION_ID, url: `chrome-extension://${EXTENSION_ID}/src/panel/panel.html` });
 }
 
 function send(port: FakePort, message: RelayMessage | PanelCommand): void {
@@ -2764,6 +2777,65 @@ describe('service worker — the run simulator (§14.4)', () => {
       stub.removeOrigins(['https://app.test/*']);
       await settle(5);
       expect(stub.local.has('agui-dt:devmode:https://app.test')).toBe(false);
+    });
+
+    it('clears every flag a wildcard revoke leaves ungranted, and tells the panels', async () => {
+      // Chrome's "On all sites" grants `https://*/*`; turning it off revokes that pattern, which
+      // names no single origin.
+      stub.grantedOrigins.push('https://*/*');
+      const panel = subscribed();
+      await expect(testHook().setDeveloperMode('https://app.test', true)).resolves.toBe(true);
+      await testHook().setDeveloperMode('http://localhost:5173', true);
+      stub.removeOrigins(['https://*/*']);
+      await settle(5);
+      expect(stub.local.has('agui-dt:devmode:https://app.test')).toBe(false);
+      // The localhost family needs no grant, so its flag is not the revoke's to clear.
+      expect(stub.local.get('agui-dt:devmode:http://localhost:5173')).toBe(true);
+      expect(messagesOfKind(panel, 'developer-mode').at(-1)).toEqual({
+        kind: 'developer-mode',
+        origin: 'https://app.test',
+        enabled: false,
+      });
+    });
+
+    it('does not leave ON stored when the origin is revoked while it is being stored', async () => {
+      stub.grantedOrigins.push('https://app.test/*');
+      const permissions = chrome.permissions as unknown as { contains: (query: { origins?: string[] }) => Promise<boolean> };
+      const contains = permissions.contains;
+      let first = true;
+      permissions.contains = async (query) => {
+        const answer = await contains(query);
+        if (first) {
+          first = false;
+          // The user revokes between the grant check and the write.
+          stub.removeOrigins(['https://app.test/*']);
+        }
+        return answer;
+      };
+      await expect(testHook().setDeveloperMode('https://app.test', true)).resolves.toBe(false);
+      await settle(5);
+      expect(stub.local.has('agui-dt:devmode:https://app.test')).toBe(false);
+    });
+  });
+
+  describe('the panel port', () => {
+    it('hears only an extension page: a content script cannot arm, read a tab, or switch Developer mode', async () => {
+      stub.tabAnswer = () => Promise.resolve({ outcome: 'dispatched' });
+      for (const sender of [
+        { tab: { id: 7 }, frameId: 0, id: EXTENSION_ID, url: 'http://localhost:5173/' },
+        { id: EXTENSION_ID },
+        { id: EXTENSION_ID, url: 'chrome-extension://someotherextensionidabcdefghijk/panel.html' },
+      ]) {
+        const port = new FakePort(PANEL_PORT_NAME, sender);
+        stub.connect(port);
+        send(port, { kind: 'subscribe', tabId: 7 });
+        send(port, { kind: 'developer-mode.set', origin: 'http://localhost:5173', enabled: true });
+        send(port, { kind: 'simulate.arm', command: COMMAND });
+        await settle(5);
+        expect(port.sent).toEqual([]);
+      }
+      expect(stub.local.size).toBe(0);
+      expect(stub.tabMessages).toEqual([]);
     });
   });
 });

@@ -48,10 +48,12 @@ CopilotKit runtime version if the page fetched one — never its content; the pa
 - **Browsing history, bookmarks, saved credentials, or autofill data.** The extension requests no
   permission that would allow it to read any of these.
 
-## Developer mode: the one thing that writes to a page
+## Developer mode: the only feature that changes what your app does
 
-Everything else in this extension only observes. The **Simulate** tab is the exception, and it is
-off until you turn it on. Developer mode is a switch in the panel, **per origin**, **off by
+Capture has to touch the page to see anything: it wraps the page's `fetch`, `XMLHttpRequest`, and
+`EventSource` so it can read a copy of each stream, and hands every request and response on to your app
+with the same content. It does not change what your app sends, receives, or does. The **Simulate** tab is the
+exception, and it is off until you turn it on. Developer mode is a switch in the panel, **per origin**, **off by
 default**, offered only on an origin you have already enabled capture on, and remembered in
 `chrome.storage.local` until you turn it off or revoke the origin. While it is on, a banner on every
 panel tab says so.
