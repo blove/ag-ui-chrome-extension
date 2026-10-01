@@ -103,9 +103,17 @@ export function encodeJsonl(lines: JsonlLine[]): string {
 /**
  * Blank lines are skipped. Every unparseable or unrecognized line contributes one message
  * to `errors` and decoding continues, so a truncated or corrupted capture still loads.
+ *
+ * `lineNumbers[i]` is the 1-based physical line `lines[i]` came from, so a caller that checks
+ * field shapes — which this codec does not — can say where the bad value is.
  */
-export function decodeJsonl(text: string): { lines: JsonlLine[]; errors: string[] } {
+export function decodeJsonl(text: string): {
+  lines: JsonlLine[];
+  lineNumbers: number[];
+  errors: string[];
+} {
   const lines: JsonlLine[] = [];
+  const lineNumbers: number[] = [];
   const errors: string[] = [];
 
   // `entries()` walks the same indices in the same order as an index loop, but yields
@@ -137,7 +145,8 @@ export function decodeJsonl(text: string): { lines: JsonlLine[]; errors: string[
     }
 
     lines.push(parsed as JsonlLine);
+    lineNumbers.push(lineNo);
   }
 
-  return { lines, errors };
+  return { lines, lineNumbers, errors };
 }

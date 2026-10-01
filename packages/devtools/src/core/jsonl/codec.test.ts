@@ -229,7 +229,14 @@ describe('decodeJsonl', () => {
   });
 
   it('returns empty results for empty input', () => {
-    expect(decodeJsonl('')).toEqual({ lines: [], errors: [] });
-    expect(decodeJsonl('\n\n')).toEqual({ lines: [], errors: [] });
+    expect(decodeJsonl('')).toEqual({ lines: [], lineNumbers: [], errors: [] });
+    expect(decodeJsonl('\n\n')).toEqual({ lines: [], lineNumbers: [], errors: [] });
+  });
+
+  it('says which physical line each decoded line came from', () => {
+    const text = '\n{"kind":"keepalive","connId":"c","seq":1,"tMs":0,"comment":""}\nnot json\n\n{"kind":"header"}\n';
+    const decoded = decodeJsonl(text);
+    expect(decoded.lineNumbers).toEqual([2, 5]);
+    expect(decoded.errors).toHaveLength(1);
   });
 });
