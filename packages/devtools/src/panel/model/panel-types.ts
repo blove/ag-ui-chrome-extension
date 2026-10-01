@@ -8,7 +8,7 @@
 import type { RuntimeInfo } from '../../core/detect/info';
 import type { Run, Issue, CaptureRecord } from '../../core/model/types';
 import type { JsonlHeader } from '../../core/jsonl/codec';
-import type { RegistrationState, RequestLine } from '../../sw/protocol';
+import type { RegistrationState, RequestLine, SignalReports } from '../../sw/protocol';
 
 /** Where the panel's data came from. Drives empty states and which controls are live. */
 export type PanelSource =
@@ -65,7 +65,7 @@ export interface BinaryTransport {
   bytes: number;
 }
 
-export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'session';
+export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'signals' | 'session';
 
 /** `null` means "all runs". */
 export type RunScope = string | null;
@@ -201,6 +201,14 @@ export interface PanelState {
    * cannot make.
    */
   binaryTransport: BinaryTransport | null;
+  /**
+   * The Threadplane devtools reports the live capture has delivered (design G6), oldest first, and
+   * how many were evicted before the earliest one held — by the worker's ring or the panel's own
+   * bound, summed exactly like `droppedBefore` for records.
+   *
+   * LIVE ONLY (G8): an imported capture never carries any, so an import empties this.
+   */
+  signals: SignalReports;
   expandChunks: boolean;
   selectedSeq: number | null;
   /** Set when a load fails; cleared on the next successful load. */
@@ -238,6 +246,7 @@ export function initialPanelState(): PanelState {
     recording: true,
     preserveLog: false,
     binaryTransport: null,
+    signals: { reports: [], droppedBefore: 0 },
     expandChunks: false,
     selectedSeq: null,
     loadError: null,

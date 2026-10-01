@@ -19,6 +19,7 @@ import { Messages } from './tabs/messages/messages';
 import { Runs } from './tabs/runs/runs';
 import { State } from './tabs/state/state';
 import { Session } from './tabs/session/session';
+import { Signals } from './tabs/signals/signals';
 
 /**
  * Resolve the inspected page's origin, so the capture banner can name it.
@@ -188,6 +189,9 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
       break;
     case 'messages':
       body = <Messages store={store} />;
+      break;
+    case 'signals':
+      body = <Signals store={store} />;
       break;
   }
 

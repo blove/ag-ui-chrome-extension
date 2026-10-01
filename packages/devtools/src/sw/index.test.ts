@@ -2287,3 +2287,247 @@ describe('service worker — the toolbar badge after a worker restart', () => {
     expect(badgeOf(stub, RESTORED_TAB)).toEqual({ text: '', title: DEFAULT_TITLE });
   });
 });
+
+/**
+ * Threadplane devtools reports in the worker (design G5).
+ *
+ * A bounded per-tab ring, retained for a late panel, pushed to a watching one, cleared with the
+ * tab's buffer, mirrored (its tail) across a worker termination. Never a record, never a seq.
+ */
+describe('service worker — Threadplane signal reports', () => {
+  let stub: ChromeStub;
+
+  const REPORT = {
+    v: 1 as const,
+    agent: 'agent-1',
+    adapter: 'langgraph' as const,
+    seq: 1,
+    eventType: 'values',
+    wrote: ['values', 'messages'],
+    tMs: 10,
+  };
+
+  function signalsMessage(overrides: Partial<typeof REPORT> = {}): RelayMessage {
+    return { v: 1, kind: 'signals', report: { ...REPORT, ...overrides } };
+  }
+
+  function seqs(reports: readonly { seq: number }[]): number[] {
+    return reports.map((report) => report.seq);
+  }
+
+  beforeEach(async () => {
+    stub = installChrome();
+    await loadWorker();
+    await settle();
+  });
+
+  it('holds none until a report arrives — the common case', () => {
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    expect(snapshotOf(panel).signals).toEqual({ reports: [], droppedBefore: 0 });
+    expect(testHook().signals()).toEqual([]);
+    expect(testHook().signalsDropped()).toBe(0);
+  });
+
+  it('retains reports in arrival order and gives them to a panel that subscribes afterwards', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    for (const seq of [1, 2, 3]) send(relay, signalsMessage({ seq }));
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    expect(seqs(snapshotOf(panel).signals.reports)).toEqual([1, 2, 3]);
+    expect(snapshotOf(panel).signals.reports[0]).toEqual(REPORT);
+    expect(seqs(testHook().signals())).toEqual([1, 2, 3]);
+  });
+
+  it('pushes each report to the panel watching that tab, and only that tab', () => {
+    const watcher = panelPort();
+    stub.connect(watcher);
+    send(watcher, { kind: 'subscribe', tabId: 7 });
+    const other = panelPort();
+    stub.connect(other);
+    send(other, { kind: 'subscribe', tabId: 9 });
+
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, signalsMessage());
+
+    expect(messagesOfKind(watcher, 'append')).toEqual([
+      {
+        kind: 'append',
+        records: [],
+        droppedBefore: 0,
+        signals: { reports: [REPORT], droppedBefore: 0 },
+      },
+    ]);
+    expect(messagesOfKind(other, 'append')).toEqual([]);
+  });
+
+  it('creates no record and consumes no seq', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, signalsMessage());
+    send(relay, {
+      v: 1,
+      kind: 'frames',
+      connId: 'c1',
+      frames: [eventFrame(12, { type: 'RUN_STARTED' })],
+    });
+    expect(testHook().records().map((record) => record.seq)).toEqual([1]);
+  });
+
+  it('keeps at most 5,000 per tab and counts what it evicted', () => {
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    const relay = relayPort(7);
+    stub.connect(relay);
+    for (let seq = 1; seq <= 5003; seq += 1) send(relay, signalsMessage({ seq }));
+
+    const held = testHook().signals();
+    expect(held).toHaveLength(5000);
+    expect(held[0]?.seq).toBe(4);
+    expect(held.at(-1)?.seq).toBe(5003);
+    expect(testHook().signalsDropped()).toBe(3);
+    // Re-stated on every push, not only on the snapshot (P9's reasoning, for this ring).
+    expect(messagesOfKind(panel, 'append').at(-1)?.signals?.droppedBefore).toBe(3);
+
+    const late = panelPort();
+    stub.connect(late);
+    send(late, { kind: 'subscribe', tabId: 7 });
+    expect(snapshotOf(late).signals.droppedBefore).toBe(3);
+    expect(snapshotOf(late).signals.reports).toHaveLength(5000);
+  });
+
+  it('rebuilds each report rather than keeping the object it was handed', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    const wrote = Object.assign(['values'], { smuggled: 'x' });
+    send(relay, { v: 1, kind: 'signals', report: { ...REPORT, wrote } });
+    expect(JSON.stringify(testHook().signals())).not.toContain('muggled');
+    expect(testHook().signals()[0]?.wrote).not.toBe(wrote);
+  });
+
+  it('drops a malformed report instead of storing it', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, signalsMessage({ wrote: ['password'] }));
+    send(relay, { v: 1, kind: 'signals', report: null } as unknown as RelayMessage);
+    send(relay, { v: 1, kind: 'signals' } as unknown as RelayMessage);
+    send(relay, { v: 1, kind: 'signals', report: { ...REPORT, extra: 1 } } as unknown as RelayMessage);
+    expect(testHook().signals()).toEqual([]);
+  });
+
+  it('does not record while recording is paused', () => {
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    send(panel, { kind: 'set-recording', recording: false });
+
+    const relay = relayPort(7);
+    stub.connect(relay);
+    send(relay, signalsMessage());
+    expect(testHook().signals()).toEqual([]);
+    expect(messagesOfKind(panel, 'append')).toEqual([]);
+  });
+
+  it('forgets them, and the eviction count, on a clear', () => {
+    const relay = relayPort(7);
+    stub.connect(relay);
+    for (let seq = 1; seq <= 5001; seq += 1) send(relay, signalsMessage({ seq }));
+    expect(testHook().signalsDropped()).toBe(1);
+
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    send(panel, { kind: 'clear' });
+
+    expect(testHook().signals()).toEqual([]);
+    expect(testHook().signalsDropped()).toBe(0);
+    const later = panelPort();
+    stub.connect(later);
+    send(later, { kind: 'subscribe', tabId: 7 });
+    expect(snapshotOf(later).signals).toEqual({ reports: [], droppedBefore: 0 });
+  });
+
+  it('survives a worker termination through the mirror, counting the tail it could not hold', async () => {
+    const session = new Map<string, unknown>();
+    let restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const relay = relayPort(7);
+    restarted.connect(relay);
+    for (let seq = 1; seq <= 1200; seq += 1) send(relay, signalsMessage({ seq }));
+    await settle(300);
+
+    restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    restarted.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    const { signals } = snapshotOf(panel);
+    expect(signals.reports).toHaveLength(1000);
+    expect(signals.reports[0]?.seq).toBe(201);
+    expect(signals.droppedBefore).toBe(200);
+
+    // And the ring goes on from there rather than starting over.
+    const next = relayPort(7);
+    restarted.connect(next);
+    send(next, signalsMessage({ seq: 1201 }));
+    expect(testHook().signals().at(-1)?.seq).toBe(1201);
+    expect(testHook().signalsDropped()).toBe(200);
+  });
+
+  it('declines mirrored reports it cannot read, rather than trusting its own storage', async () => {
+    const session = new Map<string, unknown>();
+    session.set('agui-dt:tab:7', {
+      v: 1,
+      records: [],
+      requests: [],
+      droppedBefore: 0,
+      nextSeq: 1,
+      recording: true,
+      loadedFrames: [],
+      closedConns: [],
+      info: null,
+      signals: [REPORT, { ...REPORT, seq: 2, wrote: ['password'] }, 'nonsense', { ...REPORT, seq: 3 }],
+      signalsDropped: 'many',
+    });
+
+    const restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    restarted.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    expect(seqs(snapshotOf(panel).signals.reports)).toEqual([1, 3]);
+    expect(snapshotOf(panel).signals.droppedBefore).toBe(0);
+  });
+
+  it('restores a mirror written by a build without signals as holding none', async () => {
+    const session = new Map<string, unknown>();
+    session.set('agui-dt:tab:7', {
+      v: 1,
+      records: [],
+      requests: [],
+      droppedBefore: 0,
+      nextSeq: 1,
+      recording: true,
+    });
+    const restarted = installChrome(session);
+    await loadWorker();
+    await settle();
+
+    const panel = panelPort();
+    restarted.connect(panel);
+    send(panel, { kind: 'subscribe', tabId: 7 });
+    expect(snapshotOf(panel).signals).toEqual({ reports: [], droppedBefore: 0 });
+  });
+});

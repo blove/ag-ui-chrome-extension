@@ -14,9 +14,12 @@ the wire: every event in order, grouped into runs, with the protocol violations 
 
 Capture works end to end: `src/inject/` patches `fetch`, `XMLHttpRequest`, and `EventSource` in the
 page's own world, tees the SSE bodies, and relays them across the world boundary to a service-worker
-ring buffer that the panel reads live. All five panel tabs are real — **Timeline**, **Runs**,
-**State**, **Messages**, **Session** — with protocol issues annotated inline and a toolbar issue
-count that doubles as a filter. Captures export and re-import as `.agui.jsonl`, redacted or not.
+ring buffer that the panel reads live. All six panel tabs are real — **Timeline**, **Runs**,
+**State**, **Messages**, **Signals**, **Session** — with protocol issues annotated inline and a
+toolbar issue count that doubles as a filter. **Signals** shows, for a Threadplane app running in
+development mode, which of its agent's signals each event wrote — names and timing reported by the
+app's own dev-only hook (cacheplane/threadplane#1203, in review), never values; a column click finds
+the event's wire frame in Timeline. Captures export and re-import as `.agui.jsonl`, redacted or not.
 A LangGraph Platform capture also exports as a ready-to-run Threadplane test — Export →
 **Download Threadplane test (.spec.ts)** replays it through `@threadplane/langgraph`'s
 `MockAgentTransport` and passes as generated; edit an assertion and it becomes a regression test.

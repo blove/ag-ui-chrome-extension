@@ -384,3 +384,75 @@ describe('installInject — on the real window', () => {
     expect(open.contentType).toBe(SSE);
   });
 });
+
+/**
+ * The Threadplane devtools hook (design G5) rides the same install: one listener per document,
+ * which posts only in answer to the page's own `threadplane:devtools` dispatch.
+ */
+describe('installInject — the Threadplane devtools listener', () => {
+  const REPORT = {
+    v: 1,
+    agent: 'agent-1',
+    adapter: 'langgraph',
+    seq: 1,
+    eventType: 'values',
+    wrote: ['values', 'messages'],
+    tMs: 5,
+  };
+
+  function hookHost(): FakeHost & { events: EventTarget } {
+    const events = new EventTarget();
+    return Object.assign(
+      fakeHost({
+        addEventListener: (type: string, listener: (event: Event) => void): void => {
+          events.addEventListener(type, listener);
+        },
+      }),
+      { events },
+    );
+  }
+
+  it('installs it, and it says nothing until the page dispatches a report', async () => {
+    const host = hookHost();
+    expect(installInject(host)).toBe(true);
+    await settle();
+    expect(host.sent).toEqual([]);
+
+    host.events.dispatchEvent(new CustomEvent('threadplane:devtools', { detail: REPORT }));
+    expect(host.sent).toEqual([
+      {
+        message: { source: AGUI_DT_SOURCE, v: PROTOCOL_VERSION, kind: 'signals', report: REPORT },
+        targetOrigin: 'http://localhost:3000',
+      },
+    ]);
+  });
+
+  it('posts nothing for a report that fails validation', () => {
+    const host = hookHost();
+    installInject(host);
+    host.events.dispatchEvent(
+      new CustomEvent('threadplane:devtools', { detail: { ...REPORT, wrote: ['secret'] } }),
+    );
+    expect(host.sent).toEqual([]);
+  });
+
+  it('installs the transports on a host that cannot take listeners at all', () => {
+    // A stand-in host with no `addEventListener` is still a host the transports run on.
+    const host = fakeHost();
+    const original = host.fetch;
+    expect(installInject(host)).toBe(true);
+    expect(host.fetch).not.toBe(original);
+  });
+
+  it('is live on the real window the entry installed into', async () => {
+    const received: unknown[] = [];
+    const listener = (event: MessageEvent): void => {
+      received.push(event.data);
+    };
+    window.addEventListener('message', listener);
+    window.dispatchEvent(new CustomEvent('threadplane:devtools', { detail: REPORT }));
+    await settleUntil(() => received.length > 0);
+    window.removeEventListener('message', listener);
+    expect(received.filter(isInjectMessage).filter((m) => m.kind === 'signals').length).toBeGreaterThan(0);
+  });
+});

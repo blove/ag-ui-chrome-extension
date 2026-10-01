@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AguiEvent, CaptureRecord } from '../../core/model/types';
+import type { ThreadplaneDevtoolsReport } from '../../core/signals/report';
 import type { RequestLine, SwMessage } from '../../sw/protocol';
 import { initialPanelState } from '../model/panel-types';
 import { createLiveSession } from './live-session';
@@ -45,6 +46,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -68,6 +70,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     state = session.apply(state, { kind: 'append', records: tail });
@@ -133,6 +136,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -158,6 +162,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -179,6 +184,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     expect(state.runs[0]?.outcome).toBe('aborted');
@@ -193,6 +199,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -212,6 +219,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -229,6 +237,7 @@ describe('createLiveSession', () => {
       droppedBefore: 7,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -250,6 +259,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     expect(state.droppedBefore).toBe(0);
@@ -274,6 +284,7 @@ describe('createLiveSession', () => {
       droppedBefore: 6,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     nextSeq = 5;
@@ -295,6 +306,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     // Two evicted by the panel already.
@@ -321,6 +333,7 @@ describe('createLiveSession', () => {
       droppedBefore: 4,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     state = { ...state, selectedSeq: 2, scope: 'r1' };
@@ -352,6 +365,7 @@ describe('createLiveSession', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     state = session.apply(state, { kind: 'closed', connId: 'c1', tMs: 40 });
@@ -399,6 +413,7 @@ describe('createLiveSession', () => {
         droppedBefore: 0,
         loaded: false,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
       const before = state.records.map((r) => r.seq);
@@ -422,6 +437,7 @@ describe('createLiveSession', () => {
           droppedBefore: 0,
           loaded: true,
           info: null,
+          signals: { reports: [], droppedBefore: 0 },
           registration: { matches: [], error: null },
         },
       );
@@ -438,13 +454,13 @@ describe('createLiveSession', () => {
       // prevent — the finding is made by the timeout in `use-live-capture`, never here.
       const fresh = session.apply(
         { ...initialPanelState(), loaded: null },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, registration: { matches: [], error: null } },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, signals: { reports: [], droppedBefore: 0 }, registration: { matches: [], error: null } },
       );
       expect(fresh.loaded).toBeNull();
 
       const known = session.apply(
         { ...initialPanelState(), loaded: true },
-        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, registration: { matches: [], error: null } },
+        { kind: 'snapshot', records: [], requests: [], closed: [], droppedBefore: 0, loaded: false, info: null, signals: { reports: [], droppedBefore: 0 }, registration: { matches: [], error: null } },
       );
       expect(known.loaded).toBe(true);
     });
@@ -473,6 +489,7 @@ describe('createLiveSession', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       },
     );
@@ -585,6 +602,7 @@ describe('createLiveSession', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
 
@@ -620,6 +638,7 @@ describe('the request lines an export has to put back', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 
@@ -702,6 +721,7 @@ describe('createLiveSession — /info agent discovery', () => {
       droppedBefore: 0,
       loaded: true,
       info: RUNTIME,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     expect(next.runtime).toEqual(RUNTIME);
@@ -727,6 +747,7 @@ describe('createLiveSession — /info agent discovery', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     expect(state.runtime).toBeNull();
@@ -801,6 +822,7 @@ describe('live session — content-script registration', () => {
       droppedBefore: 0,
       loaded: false,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration,
     };
   }
@@ -872,5 +894,85 @@ describe('live session — content-script registration', () => {
     // back to "not known yet" for a page it had just explained.
     expect(state.registration).toEqual(REGISTERED);
     expect(state.records).toEqual([]);
+  });
+});
+
+describe('live session — Threadplane devtools reports (G5, G6)', () => {
+  function signal(seq: number, eventType = 'RUN_STARTED'): ThreadplaneDevtoolsReport {
+    return { v: 1, agent: 'a1', adapter: 'ag-ui', seq, eventType, wrote: ['status'], tMs: seq };
+  }
+
+  function snapshotWith(reports: ThreadplaneDevtoolsReport[], droppedBefore = 0): SwMessage {
+    return {
+      kind: 'snapshot',
+      records: [],
+      requests: [],
+      closed: [],
+      droppedBefore: 0,
+      loaded: true,
+      info: null,
+      registration: { matches: [], error: null },
+      signals: { reports, droppedBefore },
+    };
+  }
+
+  it('starts empty', () => {
+    expect(initialPanelState().signals).toEqual({ reports: [], droppedBefore: 0 });
+  });
+
+  it('takes the snapshot’s reports and eviction count as stated', () => {
+    const session = createLiveSession();
+    const state = session.apply(initialPanelState(), snapshotWith([signal(1), signal(2)], 3));
+    expect(state.signals.reports.map((r) => r.seq)).toEqual([1, 2]);
+    expect(state.signals.droppedBefore).toBe(3);
+  });
+
+  it('appends pushed reports, re-stating the worker’s eviction total', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshotWith([signal(1)]));
+    state = session.apply(state, {
+      kind: 'append',
+      records: [],
+      signals: { reports: [signal(2), signal(3)], droppedBefore: 1 },
+    });
+    expect(state.signals.reports.map((r) => r.seq)).toEqual([1, 2, 3]);
+    expect(state.signals.droppedBefore).toBe(1);
+  });
+
+  it('leaves the reports alone on an append that carries none', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshotWith([signal(1)], 2));
+    state = session.apply(state, { kind: 'append', records: happyRun() });
+    expect(state.signals.reports.map((r) => r.seq)).toEqual([1]);
+    expect(state.signals.droppedBefore).toBe(2);
+  });
+
+  it('bounds its own copy and counts what it evicts (P9)', () => {
+    const session = createLiveSession({ maxSignals: 2 });
+    let state = session.apply(initialPanelState(), snapshotWith([signal(1), signal(2)], 5));
+    state = session.apply(state, {
+      kind: 'append',
+      records: [],
+      signals: { reports: [signal(3)], droppedBefore: 5 },
+    });
+    expect(state.signals.reports.map((r) => r.seq)).toEqual([2, 3]);
+    expect(state.signals.droppedBefore).toBe(6);
+  });
+
+  it('a snapshot replaces them, and a clear empties them', () => {
+    const session = createLiveSession();
+    let state = session.apply(initialPanelState(), snapshotWith([signal(1), signal(2)]));
+    state = session.apply(state, snapshotWith([signal(9)]));
+    expect(state.signals.reports.map((r) => r.seq)).toEqual([9]);
+    state = session.apply(state, { kind: 'cleared' });
+    expect(state.signals).toEqual({ reports: [], droppedBefore: 0 });
+  });
+
+  it('survives a refold', () => {
+    const session = createLiveSession();
+    const state = session.apply(initialPanelState(), snapshotWith([signal(1)], 4));
+    const refolded = session.refold(state, { expandChunks: false });
+    expect(refolded.signals.reports.map((r) => r.seq)).toEqual([1]);
+    expect(refolded.signals.droppedBefore).toBe(4);
   });
 });

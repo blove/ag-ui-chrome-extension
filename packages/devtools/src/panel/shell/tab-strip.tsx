@@ -10,7 +10,7 @@ export interface TabStripProps {
 }
 
 /**
- * The five tabs from requirements §9. Runs, State and Messages are deferred to a later phase but
+ * The tabs from requirements §9, plus Signals (§14.3, design G6). Runs, State and Messages are deferred to a later phase but
  * stay selectable — the panel renders a placeholder for them rather than hiding the tab, so the
  * shape of the finished tool is visible from the first build.
  *
@@ -21,6 +21,8 @@ export const TABS: ReadonlyArray<{ id: TabId; label: string }> = [
   { id: 'runs', label: 'Runs' },
   { id: 'state', label: 'State' },
   { id: 'messages', label: 'Messages' },
+  // Design G6. Always present, like the others: its empty state says what it needs (G7).
+  { id: 'signals', label: 'Signals' },
   { id: 'session', label: 'Session' },
 ];
 

@@ -11,6 +11,7 @@
  */
 import type { RuntimeInfo } from '../../core/detect/info';
 import type { CaptureRecord } from '../../core/model/types';
+import type { ThreadplaneDevtoolsReport } from '../../core/signals/report';
 import { createRunBuilder, type RunBuilder } from '../../core/normalizer/run-builder';
 import type { ClosedConn, RegistrationState, RequestLine, SwMessage } from '../../sw/protocol';
 import type { BinaryTransport, PanelState } from '../model/panel-types';
@@ -22,6 +23,8 @@ export interface LiveSessionOptions {
    * (contract: `maxRecords` 5000) so the two ends evict at the same scale.
    */
   maxRecords?: number;
+  /** How many Threadplane reports the panel keeps. Matches the worker's ring (5000). */
+  maxSignals?: number;
 }
 
 export interface LiveSession {
@@ -53,9 +56,13 @@ export interface LiveSession {
  */
 const DEFAULT_MAX_RECORDS = 5000;
 
+/** The panel's bound on retained Threadplane reports, for the same reason as `DEFAULT_MAX_RECORDS`. */
+const DEFAULT_MAX_SIGNALS = 5000;
+
 export function createLiveSession(options: LiveSessionOptions = {}): LiveSession {
   let expandChunks = options.expandChunks ?? true;
   let maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
+  let maxSignals = options.maxSignals ?? DEFAULT_MAX_SIGNALS;
   let builder: RunBuilder = createRunBuilder({ expandChunks });
   let records: CaptureRecord[] = [];
   /**
@@ -103,10 +110,20 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
    * with no message due to restate it. Only a `snapshot` or a `registration` push replaces it.
    */
   let registration: RegistrationState | null = null;
+  /**
+   * Threadplane devtools reports (G6), and the two eviction counts behind them — the worker's,
+   * re-stated on every message that carries reports, and the panel's own, which only grows. Kept
+   * apart for exactly the reason `workerDropped`/`panelDropped` are. Not part of the run fold, so
+   * `refold` keeps them untouched.
+   */
+  let signals: ThreadplaneDevtoolsReport[] = [];
+  let signalsWorkerDropped = 0;
+  let signalsPanelDropped = 0;
 
   function restart(next: LiveSessionOptions = {}): void {
     expandChunks = next.expandChunks ?? expandChunks;
     maxRecords = next.maxRecords ?? maxRecords;
+    maxSignals = next.maxSignals ?? maxSignals;
     builder = createRunBuilder({ expandChunks });
     records = [];
     requests = [];
@@ -115,6 +132,17 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     panelDropped = 0;
     binary = null;
     runtime = null;
+    signals = [];
+    signalsWorkerDropped = 0;
+    signalsPanelDropped = 0;
+  }
+
+  /** Oldest-first eviction of reports, counted — P9 for the Signals tab. */
+  function trimSignals(): void {
+    if (signals.length <= maxSignals) return;
+    const excess = signals.length - maxSignals;
+    signals = signals.slice(excess);
+    signalsPanelDropped += excess;
   }
 
   /** Oldest-first eviction, counted. Never silent — that is the whole of P9. */
@@ -140,6 +168,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
       binaryTransport: binary,
       runtime,
       registration,
+      signals: { reports: signals, droppedBefore: signalsWorkerDropped + signalsPanelDropped },
     };
   }
 
@@ -172,6 +201,9 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     const heldBinary = binary;
     const heldRuntime = runtime;
     const heldRegistration = registration;
+    const heldSignals = signals;
+    const heldSignalsWorkerDropped = signalsWorkerDropped;
+    const heldSignalsPanelDropped = signalsPanelDropped;
     restart(next);
     for (const request of heldRequests) addRequest(request);
     for (const record of heldRecords) builder.addRecord(record);
@@ -183,6 +215,9 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     binary = heldBinary;
     runtime = heldRuntime;
     registration = heldRegistration;
+    signals = heldSignals;
+    signalsWorkerDropped = heldSignalsWorkerDropped;
+    signalsPanelDropped = heldSignalsPanelDropped;
     return project(s);
   }
 
@@ -230,6 +265,10 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
         // panel ever saw them, and `trim()` may add to it below.
         workerDropped = message.droppedBefore;
         trim();
+        // The worker's whole ring, as of now: the snapshot is the authority, like `info`.
+        signals = [...message.signals.reports];
+        signalsWorkerDropped = message.signals.droppedBefore;
+        trimSignals();
         // The snapshot is a new dataset: a selection made against the previous one would point
         // at a seq this one may not contain, and a scope at a run it may not have.
         return {
@@ -251,6 +290,12 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
         // — a producer that omits it must not silently un-report eviction already reported.
         if (message.droppedBefore !== undefined) workerDropped = message.droppedBefore;
         trim();
+        // Absent means "no new reports", never "none held" (`sw/protocol`).
+        if (message.signals !== undefined) {
+          signals = [...signals, ...message.signals.reports];
+          signalsWorkerDropped = message.signals.droppedBefore;
+          trimSignals();
+        }
         return project(s);
       }
       case 'request': {

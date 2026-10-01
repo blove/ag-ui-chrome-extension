@@ -88,7 +88,105 @@ export const HARNESS_INSPECTED_ORIGIN = 'https://app.example.com';
  * panel that capture WORKS; this tells it, in the panel's own wire format, that it does not. The
  * snapshot is empty in every other field, so nothing here stages captured data either.
  */
-export type ShimKind = 'no-devtools' | 'devtools-ungranted' | 'devtools-granted-unregistered';
+export type ShimKind =
+  | 'no-devtools'
+  | 'devtools-ungranted'
+  | 'devtools-granted-unregistered'
+  | 'devtools-live-signals';
+
+/** The localhost origin `devtools-live-signals` reports — auto-enabled (D3), so capture turns on. */
+export const SIGNALS_INSPECTED_ORIGIN = 'http://localhost:5173';
+
+/**
+ * The live state `devtools-live-signals` stages: one AG-UI run on the wire, and the Threadplane
+ * devtools reports (design G2) its app dispatched while reducing it — plus a LangGraph agent that
+ * reported without any frame on the wire, so the gate can see a block with nothing to match.
+ *
+ * TEST-ONLY. It lives in `scripts/`, reaches the panel only through Playwright's
+ * `addInitScript`, and nothing under `src/` imports it — the production bundle never contains it
+ * (`verify:build` checks the built files).
+ */
+function seedRecord(seq: number, type: string, extra: Record<string, unknown> = {}) {
+  const event = { type, ...extra };
+  return { kind: 'event', seq, tMs: 100 + seq * 40, connId: 'c1', raw: event, event, issues: [] };
+}
+
+const SEED_RECORDS = [
+  seedRecord(0, 'RUN_STARTED', { threadId: 't1', runId: 'r1' }),
+  seedRecord(1, 'TEXT_MESSAGE_START', { messageId: 'm1', role: 'assistant' }),
+  seedRecord(2, 'TEXT_MESSAGE_CONTENT', { messageId: 'm1', delta: 'Hello' }),
+  seedRecord(3, 'TEXT_MESSAGE_CONTENT', { messageId: 'm1', delta: ', ' }),
+  seedRecord(4, 'TEXT_MESSAGE_CONTENT', { messageId: 'm1', delta: 'world' }),
+  seedRecord(5, 'TEXT_MESSAGE_END', { messageId: 'm1' }),
+  seedRecord(6, 'STATE_SNAPSHOT', { snapshot: { step: 1 } }),
+  seedRecord(7, 'RUN_FINISHED', { threadId: 't1', runId: 'r1' }),
+];
+
+const AG_UI_AGENT = '7c1e9a42-5d3b-4f8e-a0b1-2c3d4e5f6a7b';
+const LANGGRAPH_AGENT = 'e93f0d18-1a2b-4c3d-8e9f-0a1b2c3d4e5f';
+
+function seedReport(
+  agent: string,
+  adapter: 'ag-ui' | 'langgraph',
+  seq: number,
+  eventType: string,
+  wrote: string[],
+  tMs: number,
+) {
+  return { v: 1, agent, adapter, seq, eventType, wrote, tMs };
+}
+
+/**
+ * The `wrote` lists are what Threadplane's instrumentation actually reports for these events (its
+ * own tests on cacheplane/threadplane#1203): TEXT_MESSAGE_END writes nothing, so it has no report,
+ * and a LangGraph run settles in two `run:end` steps.
+ */
+const SEED_REPORTS = [
+  seedReport(AG_UI_AGENT, 'ag-ui', 1, 'submit', ['messages'], 90),
+  seedReport(AG_UI_AGENT, 'ag-ui', 2, 'RUN_STARTED', ['status', 'isLoading', 'error', 'interrupt', 'customEvents', 'activities'], 101),
+  seedReport(AG_UI_AGENT, 'ag-ui', 3, 'TEXT_MESSAGE_START', ['messages'], 141),
+  seedReport(AG_UI_AGENT, 'ag-ui', 4, 'TEXT_MESSAGE_CONTENT', ['messages'], 181),
+  seedReport(AG_UI_AGENT, 'ag-ui', 5, 'TEXT_MESSAGE_CONTENT', ['messages'], 221),
+  seedReport(AG_UI_AGENT, 'ag-ui', 6, 'TEXT_MESSAGE_CONTENT', ['messages'], 261),
+  seedReport(AG_UI_AGENT, 'ag-ui', 7, 'STATE_SNAPSHOT', ['state', 'messages'], 341),
+  seedReport(AG_UI_AGENT, 'ag-ui', 8, 'RUN_FINISHED', ['messages', 'status', 'isLoading', 'interruptSession', 'interrupt'], 381),
+  seedReport(LANGGRAPH_AGENT, 'langgraph', 1, 'run:start', ['status', 'error', 'custom', 'toolProgress', 'messages'], 50),
+  seedReport(LANGGRAPH_AGENT, 'langgraph', 2, 'values', ['values', 'messages', 'subagents', 'toolCalls'], 60),
+  seedReport(LANGGRAPH_AGENT, 'langgraph', 3, 'run:end', ['subagents'], 70),
+  seedReport(LANGGRAPH_AGENT, 'langgraph', 4, 'run:end', ['status'], 71),
+];
+
+/**
+ * What the gate asserts against: the third TEXT_MESSAGE_CONTENT report (agent seq 6) is the third
+ * TEXT_MESSAGE_CONTENT frame on the wire, record seq 4 — matched by name and order.
+ */
+export const SIGNALS_SEED = {
+  agUiAgent: AG_UI_AGENT,
+  langGraphAgent: LANGGRAPH_AGENT,
+  litCells: SEED_REPORTS.reduce((total, report) => total + report.wrote.length, 0),
+  clickReportSeq: 6,
+  expectedRecordSeq: 4,
+} as const;
+
+const SIGNALS_SNAPSHOT = {
+  kind: 'snapshot',
+  records: SEED_RECORDS,
+  requests: [
+    {
+      connId: 'c1',
+      tMs: 100,
+      method: 'POST',
+      url: `${SIGNALS_INSPECTED_ORIGIN}/agent`,
+      input: { threadId: 't1', runId: 'r1', messages: [], tools: [], context: [], state: {} },
+    },
+  ],
+  closed: [{ connId: 'c1', tMs: 420 }],
+  droppedBefore: 0,
+  loaded: true,
+  info: null,
+  registration: { matches: [], error: null },
+  signals: { reports: SEED_REPORTS, droppedBefore: 0 },
+};
 
 export const SHIMS: Record<ShimKind, string> = {
   'no-devtools': `
@@ -137,6 +235,7 @@ export const SHIMS: Record<ShimKind, string> = {
                     // A real answer, not \`null\`: the worker HAS read Chrome and nothing is
                     // registered. \`null\` would mean "not known yet", which warns about nothing.
                     registration: { matches: [], error: null },
+                    signals: { reports: [], droppedBefore: 0 },
                   });
                 }
               }, 0);
@@ -156,6 +255,41 @@ export const SHIMS: Record<ShimKind, string> = {
           tabId: 1,
           eval: (expression, callback) => {
             callback(expression === 'location.origin' ? ${JSON.stringify(HARNESS_INSPECTED_ORIGIN)} : null);
+          },
+        },
+      },
+    };
+  `,
+  // A live, auto-enabled localhost tab whose worker answers `subscribe` with SIGNALS_SNAPSHOT —
+  // the panel's own wire format, delivered through the panel's own port code.
+  'devtools-live-signals': `
+    globalThis.chrome = {
+      runtime: {
+        getManifest: () => ({ version: '0.0.0-harness' }),
+        connect: () => {
+          const listeners = [];
+          return {
+            onMessage: {
+              addListener: (fn) => { listeners.push(fn); },
+              removeListener: () => {},
+            },
+            onDisconnect: { addListener: () => {}, removeListener: () => {} },
+            postMessage: (command) => {
+              if (!command || command.kind !== 'subscribe') return;
+              setTimeout(() => {
+                for (const fn of listeners.slice()) fn(${JSON.stringify(SIGNALS_SNAPSHOT)});
+              }, 0);
+            },
+            disconnect: () => {},
+          };
+        },
+      },
+      permissions: { contains: () => Promise.resolve(true) },
+      devtools: {
+        inspectedWindow: {
+          tabId: 1,
+          eval: (expression, callback) => {
+            callback(expression === 'location.origin' ? ${JSON.stringify(SIGNALS_INSPECTED_ORIGIN)} : null);
           },
         },
       },

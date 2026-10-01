@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { PanelStore } from '../model/store';
 import { captureOn, setLoaded, setRecording as setRecordingAction } from '../model/store';
 import { usePanelState } from '../model/use-panel-state';
+import { createSignalCoalescer } from './coalesce';
 import { createLiveSession, type LiveSession } from './live-session';
 import { connectToServiceWorker, type PanelPort } from './port';
 import {
@@ -150,12 +151,17 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
     const tabId = inspectedTabId();
     if (tabId === null) return;
 
+    // Report-only appends arrive one per protocol event; folding a burst as one write keeps the
+    // panel from re-rendering per report. Everything else passes straight through (`./coalesce`).
+    const coalescer = createSignalCoalescer((message) => {
+      const session = sessionRef.current;
+      if (session === null) return;
+      store.update((s) => session.apply(s, message));
+    });
     const port = connectToServiceWorker({
       tabId,
       onMessage: (message) => {
-        const session = sessionRef.current;
-        if (session === null) return;
-        store.update((s) => session.apply(s, message));
+        coalescer.push(message);
       },
       onDisconnect: () => {
         portRef.current = null;
@@ -167,6 +173,7 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
     if (!store.get().recording) port?.send({ kind: 'set-recording', recording: false });
 
     return () => {
+      coalescer.dispose();
       port?.disconnect();
       portRef.current = null;
     };

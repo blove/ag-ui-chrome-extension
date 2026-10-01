@@ -76,6 +76,7 @@ function afterLateOpen(stream: CapturedStream): PanelState {
     droppedBefore: 0,
     loaded: true,
     info: null,
+    signals: { reports: [], droppedBefore: 0 },
     registration: { matches: [], error: null },
   });
 }
@@ -183,6 +184,7 @@ describe('a run that finished before the panel opened', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
     const twice = session.apply(once, { kind: 'closed', connId: CONN_ID, tMs: 999 });
@@ -208,6 +210,7 @@ describe('a run that finished before the panel opened', () => {
       droppedBefore: 0,
       loaded: true,
       info: null,
+      signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
     });
 

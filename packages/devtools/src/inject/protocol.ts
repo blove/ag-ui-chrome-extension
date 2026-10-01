@@ -6,6 +6,7 @@
  */
 
 import { isRuntimeInfo, type RuntimeInfo } from '../core/detect/info';
+import { isThreadplaneReport, type ThreadplaneDevtoolsReport } from '../core/signals/report';
 
 export const AGUI_DT_SOURCE = 'agui-dt';
 export const PROTOCOL_VERSION = 1;
@@ -40,8 +41,11 @@ export type WireFrame =
 /**
  * Everything the MAIN world posts across the boundary — and, since 2026-08-15, nothing else.
  *
- * EVERY arm here belongs to a connection. That is a privacy property, not a coincidence, and it
- * is the reason this union no longer has a `capture-installed` arm: a message posted through
+ * EVERY arm here is downstream of something the page itself did. That is a privacy property, not
+ * a coincidence. Every arm but one belongs to a connection the page opened; the exception,
+ * `signals`, is posted only in answer to a `threadplane:devtools` event the page dispatched on its
+ * own window (design G5) — still traffic the page caused, never an announcement. It is the reason
+ * this union no longer has a `capture-installed` arm: a message posted through
  * `window.postMessage` reaches the page's own `message` listeners, so an arm that fired at
  * `document_start` announced the extension to every page on a granted origin, including the vast
  * majority that never speak AG-UI. The presence signal now travels the ISOLATED world's
@@ -111,7 +115,33 @@ export type InjectMessage =
       /** The URL the runtime answered on. Recorded so a reader knows WHICH runtime replied. */
       url: string;
       info: RuntimeInfo;
-    };
+    }
+  /**
+   * A Threadplane app in development reported which of its signals one event wrote (design G2–G5).
+   *
+   * NO `connId`, and that is the one exemption from the connection rule in this union. The report
+   * is about the app's own state, not a stream; matching it to a frame is the panel's inference
+   * (by event name, order and time), never a claim the page makes. It is posted only in response
+   * to the page's own `threadplane:devtools` dispatch.
+   *
+   * WHAT THE PAGE CAN LEARN (#39), stated exactly. This is posted on the page's own window, so a
+   * page that dispatches a valid report and listens for `message` sees the copy arrive — the
+   * extension is present. That is NOT new: on a granted origin a page learns the same by opening
+   * any `text/event-stream` fetch, whose `conn-open` and `frames` are posted the same way. The
+   * #39 property is about the UNPROMPTED case and is unchanged: nothing is posted at
+   * `document_start`, and a page that never dispatches the event never hears from this arm
+   * (`e2e/quiet-page.spec.ts`). The probe is cheaper than a fetch, not more revealing.
+   *
+   * WHY THE EXEMPTION DOES NOT WEAKEN THE RELAY. The relay's order (source, origin, shape) runs
+   * before this arm is looked at, and the arm is accepted only as a fully valid report. Lacking a
+   * `connId`, it reaches no per-connection state anywhere — not the worker's `seenConns`, closes,
+   * stack detection or record ring — only its own bounded report ring. A page forging this
+   * message directly gains nothing over dispatching the event: both carry only what the validator
+   * admits, and the page can already forge every other arm the same way.
+   *
+   * `report` is the validated, field-by-field copy (`cloneReport`) — never the page's object.
+   */
+  | { source: 'agui-dt'; v: 1; kind: 'signals'; report: ThreadplaneDevtoolsReport };
 
 const CLOSE_REASONS: ReadonlySet<string> = new Set(['complete', 'error', 'aborted']);
 
@@ -153,9 +183,16 @@ function check(value: unknown): boolean {
   if (!hasOwn(value, 'v') || value.v !== PROTOCOL_VERSION) return false;
   if (!hasOwn(value, 'kind')) return false;
 
-  // Unconditional now that every arm belongs to a connection. The `capture-installed` arm used to
-  // be checked ahead of this line and exempted from it; it is gone, and with it the one path
-  // across this boundary that did not have to name a connection.
+  // The one connectionless arm, checked ahead of the connection rule and exempted from it by
+  // name — see the `signals` arm above. Nothing else may reach the switch without a connection.
+  if (value.kind === 'signals') {
+    return hasOwn(value, 'report') && isThreadplaneReport(value.report);
+  }
+
+  // Unconditional for every other arm, which all belong to a connection. The `capture-installed`
+  // arm used to be checked ahead of this line and exempted from it; it is gone, and the page could
+  // not provoke it. `signals` above can only be provoked by the page, which is why it may stand
+  // where `capture-installed` stood.
   if (!hasOwn(value, 'connId') || typeof value.connId !== 'string' || value.connId === '') {
     return false;
   }

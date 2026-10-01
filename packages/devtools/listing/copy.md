@@ -41,6 +41,7 @@ This is a wire-level tool. It attaches to the protocol instead of the framework.
 - **Measures** time to first token, run duration, and streaming stalls — in the run table and on the timeline
 - **Records and replays** — export a capture as `.agui.jsonl` and reopen it anywhere
 - **Flags** an enabled tab in the toolbar once it speaks AG-UI or LangGraph Platform
+- **Shows** which agent signals each event wrote, for Threadplane apps in development mode
 
 ## Privacy, stated as fact
 

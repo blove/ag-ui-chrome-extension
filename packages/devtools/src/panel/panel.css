@@ -2322,3 +2322,169 @@ code {
 .agui-runs__cell[data-tone='info'] {
   color: var(--agui-severity-info);
 }
+
+/* -------------------------------------------------------------------------- */
+/* Signals (design G6, G7)                                                      */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * A matrix per agent instance: signal names down the side, Threadplane events across the top in
+ * `seq` order, a filled cell where that event wrote that signal. Every colour is a token, so both
+ * schemes follow the DevTools theme unchanged. The lit fill is `--agui-accent` — a lit cell is a
+ * fact about the app, not a finding, so it never borrows the danger or severity colours.
+ */
+.agui-signals {
+  padding: 8px 12px 16px;
+  overflow-y: auto;
+  color: var(--agui-fg);
+}
+
+.agui-signals__empty,
+.agui-signals__lede,
+.agui-signals__note {
+  max-width: 78ch;
+  margin: 0 0 6px;
+  color: var(--agui-fg-muted);
+}
+
+.agui-signals__empty {
+  padding: 4px 4px 0;
+}
+
+.agui-signals__status {
+  margin: 0 0 6px;
+  color: var(--agui-fg-muted);
+}
+
+/* Kept in the DOM while empty so it stays a live region; it just takes no room. */
+.agui-signals__status:empty {
+  margin: 0;
+}
+
+.agui-signals__block {
+  margin: 0 0 16px;
+}
+
+.agui-signals__heading {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agui-signals__scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  background: var(--agui-surface);
+}
+
+.agui-signals__matrix {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.agui-signals__corner,
+.agui-signals__rowhead {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  padding: 0 10px 0 8px;
+  border-right: 1px solid var(--agui-border);
+  background: var(--agui-surface);
+  color: var(--agui-fg);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.agui-signals__corner {
+  vertical-align: bottom;
+  padding-bottom: 4px;
+  color: var(--agui-fg-muted);
+  font-weight: 600;
+}
+
+.agui-signals__rowhead {
+  height: 18px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.agui-signals__colhead {
+  width: 18px;
+  min-width: 18px;
+  padding: 0;
+  vertical-align: bottom;
+  border-bottom: 1px solid var(--agui-border);
+}
+
+/*
+ * The event name reads bottom-to-top. Monospace, like the row names, so the header's height is a
+ * known function of its length: `columnLabel` (matrix.ts) paints at most 20 characters — every
+ * common AG-UI name whole, so TEXT_MESSAGE_START/_CONTENT/_END are three different columns — and
+ * the cap below fits exactly that. The ellipsis is only a backstop; the full name is in `title`.
+ */
+.agui-signals__col {
+  display: block;
+  box-sizing: border-box;
+  width: 18px;
+  max-height: calc(20ch + 8px);
+  padding: 4px 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--agui-fg-muted);
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  cursor: pointer;
+}
+
+.agui-signals__col:hover {
+  background: var(--agui-hover);
+  color: var(--agui-fg);
+}
+
+.agui-signals__col:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
+}
+
+.agui-signals__col[data-selected='true'] {
+  background: var(--agui-row-selected);
+  color: var(--agui-fg);
+}
+
+.agui-signals__cell {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-right: 1px solid var(--agui-border);
+  border-bottom: 1px solid var(--agui-border);
+}
+
+.agui-signals__cell[data-selected='true'] {
+  background: var(--agui-row-selected);
+}
+
+.agui-signals__cell[data-lit='true'] {
+  background: var(--agui-accent);
+  background-clip: content-box;
+  padding: 3px;
+}
+
+/* Present for a screen reader, which cannot see the fill. */
+.agui-signals__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

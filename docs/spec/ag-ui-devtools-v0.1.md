@@ -492,6 +492,12 @@ which of `messages()`, `status()`, `toolCalls()`, `interrupt()`, `subagents()`,
 `history()`, `queue()` recomputed on each event. Worth flagging early: this is a
 Threadplane release dependency, not just extension work. It is also the single feature
 CopilotKit cannot copy.
+*Built (extension); Threadplane hook: cacheplane/threadplane#1203 (in review). The hook lives
+inside the existing adapters, dev-only, and reports which signals each event WROTE (names and
+timing, never values) as a `threadplane:devtools` event; the Signals tab draws it — see
+[the design](../superpowers/specs/2026-09-30-signals-view-design.md). Acceptance: a real
+Threadplane build (both adapters, dev mode) delivered every report to the extension's worker
+unchanged — `pnpm --filter ag-ui-harness acceptance:threadplane <threadplane-checkout>`.*
 
 **14.4 Interrupt / HITL simulator.** Inject a synthetic interrupt, subagent handoff, or
 malformed event into the running app to exercise approval UI without a model call. Also

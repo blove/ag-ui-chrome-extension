@@ -203,6 +203,7 @@ describe('panel live wiring', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -215,6 +216,57 @@ describe('panel live wiring', () => {
 
     expect(await screen.findByRole('option', { name: /seq 2 TEXT_MESSAGE_CONTENT/ })).toBeTruthy();
     expect(store.get().source).toEqual({ kind: 'live', origin: 'http://localhost:5173' });
+  });
+
+  it('folds a burst of Threadplane reports as one store write, not one per report', async () => {
+    stubOrigin('http://localhost:5173');
+    const { port } = stubPort();
+    const store = createPanelStore();
+
+    render(<App store={store} />);
+    await waitFor(() => {
+      expect(port.posted).toHaveLength(1);
+    });
+    act(() => {
+      port.emit({
+        kind: 'snapshot',
+        records: [],
+        requests: [],
+        closed: [],
+        droppedBefore: 0,
+        loaded: true,
+        info: null,
+        signals: { reports: [], droppedBefore: 0 },
+        registration: { matches: [], error: null },
+      });
+    });
+
+    let writes = 0;
+    const unsubscribe = store.subscribe(() => {
+      writes += 1;
+    });
+    act(() => {
+      for (let seq = 1; seq <= 20; seq += 1) {
+        port.emit({
+          kind: 'append',
+          records: [],
+          droppedBefore: 0,
+          signals: {
+            reports: [
+              { v: 1, agent: 'a1', adapter: 'ag-ui', seq, eventType: 'X', wrote: ['status'], tMs: seq },
+            ],
+            droppedBefore: 0,
+          },
+        });
+      }
+    });
+    expect(writes).toBe(0);
+
+    await waitFor(() => {
+      expect(store.get().signals.reports).toHaveLength(20);
+    });
+    expect(writes).toBe(1);
+    unsubscribe();
   });
 
   it("surfaces the worker's eviction count in the toolbar (P9)", async () => {
@@ -236,6 +288,7 @@ describe('panel live wiring', () => {
         droppedBefore: 12,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -263,6 +316,7 @@ describe('panel live wiring', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -463,6 +517,7 @@ describe('panel live wiring', () => {
           droppedBefore: 0,
           loaded: false,
           info: null,
+          signals: { reports: [], droppedBefore: 0 },
           registration: { matches: [], error: null },
         });
       });
@@ -490,6 +545,7 @@ describe('panel live wiring', () => {
           droppedBefore: 0,
           loaded: false,
           info: null,
+          signals: { reports: [], droppedBefore: 0 },
           registration: { matches: [], error: null },
         });
       });
@@ -671,6 +727,7 @@ describe('panel live wiring', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
       port.emit({ kind: 'closed', connId: 'c1', tMs: 40 });
@@ -713,6 +770,7 @@ describe('panel live wiring', () => {
         droppedBefore: 0,
         loaded: true,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -776,6 +834,7 @@ describe('panel live wiring — a granted origin with nothing registered for it'
         loaded: false,
         info: null,
         // Granted, and nothing registered. The state an extension update leaves behind.
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -807,6 +866,7 @@ describe('panel live wiring — a granted origin with nothing registered for it'
         droppedBefore: 0,
         loaded: false,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
@@ -841,6 +901,7 @@ describe('panel live wiring — a granted origin with nothing registered for it'
         droppedBefore: 0,
         loaded: false,
         info: null,
+        signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
       });
     });
