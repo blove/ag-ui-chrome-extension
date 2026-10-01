@@ -38,7 +38,7 @@ export default defineManifest({
   // that field's limit is 132 — `listing/copy.md`'s `summary` is the same sentence for the same
   // reason. If you change one, change the other.
   description:
-    'Inspect, validate, and replay AG-UI agent event streams from any page. No SDK, no code change, no data leaves your browser.',
+    'Inspect, validate, and replay AG-UI and LangGraph Platform agent streams. No SDK, no code change, no data leaves your browser.',
   // Static world: 'MAIN' content scripts require Chrome 111+. On older Chrome this key is
   // silently ignored and BOTH scripts below load into ISOLATED instead — a silent failure
   // of the world-isolation design, not a loud one. Pin the floor explicitly.
