@@ -8,7 +8,8 @@
 import type { RuntimeInfo } from '../../core/detect/info';
 import type { Run, Issue, CaptureRecord } from '../../core/model/types';
 import type { JsonlHeader } from '../../core/jsonl/codec';
-import type { RegistrationState, RequestLine, SignalReports } from '../../sw/protocol';
+import type { Ack } from '../../core/simulate/commands';
+import type { RegistrationState, RequestLine, SignalReports, SimDispatch } from '../../sw/protocol';
 
 /** Where the panel's data came from. Drives empty states and which controls are live. */
 export type PanelSource =
@@ -65,7 +66,7 @@ export interface BinaryTransport {
   bytes: number;
 }
 
-export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'signals' | 'session';
+export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'signals' | 'simulate' | 'session';
 
 /** `null` means "all runs". */
 export type RunScope = string | null;
@@ -209,6 +210,21 @@ export interface PanelState {
    * LIVE ONLY (G8): an imported capture never carries any, so an import empties this.
    */
   signals: SignalReports;
+  /**
+   * Developer mode (§14.4, design R6) per origin, as the worker last reported it. Keyed by origin
+   * because the flag is, and because the worker broadcasts every change to every panel: a panel
+   * shows only its own inspected origin's entry. Absent means "not asked yet", which reads as off.
+   * Not capture data, so a Clear or a navigation leaves it alone.
+   */
+  developerModes: Readonly<Record<string, boolean>>;
+  /** The run simulator's arms on this tab: the hook's acks (R4) and this panel's dispatches. */
+  simulator: SimulatorState;
+  /**
+   * What this panel armed, by arm id: the template's name and how many runs it scripted, so the
+   * arm list can say "Interrupt (approval) — consumed run 1 of 2". The panel's own notes, never
+   * sent anywhere; an arm with no entry (armed before this panel opened) is listed by id alone.
+   */
+  simArmLabels: Readonly<Record<string, SimArmLabel>>;
   expandChunks: boolean;
   selectedSeq: number | null;
   /** Set when a load fails; cleared on the next successful load. */
@@ -226,6 +242,18 @@ export interface PanelState {
  * answered — the panel is driven entirely by import until `setCapture` or `captureOn` is called
  * with something better.
  */
+export interface SimulatorState {
+  /** Acknowledgements the hook dispatched, oldest first — LIVE ONLY, cleared with the buffer. */
+  acks: Ack[];
+  /** What became of each arm or disarm this panel asked for, oldest first. */
+  dispatches: SimDispatch[];
+}
+
+export interface SimArmLabel {
+  template: string;
+  runs: number;
+}
+
 export function initialPanelState(): PanelState {
   return {
     source: { kind: 'empty' },
@@ -247,6 +275,9 @@ export function initialPanelState(): PanelState {
     preserveLog: false,
     binaryTransport: null,
     signals: { reports: [], droppedBefore: 0 },
+    developerModes: {},
+    simulator: { acks: [], dispatches: [] },
+    simArmLabels: {},
     expandChunks: false,
     selectedSeq: null,
     loadError: null,

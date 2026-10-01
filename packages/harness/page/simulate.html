@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AG-UI harness — run simulator</title>
+    <script>
+      // A stand-in for Threadplane's run-simulator hook (design R1/R4) in a development build: it
+      // listens for `threadplane:devtools:arm` / `:disarm` on its own window, records exactly what
+      // it was handed, and answers each arm with acks — the real ones (`armed` at once, `consumed`
+      // a moment later) interleaved with forgeries a page could dispatch: a bad state, an extra key,
+      // and a well-formed ack for an arm that never existed. `e2e/simulate.spec.ts` asserts that
+      // only the real acks reach the worker.
+      //
+      // `?child` is the same page as a SUBFRAME: its hook must never be armed (top frame only, R7).
+      // No bundle and no request.
+      (function () {
+        var isChild = new URLSearchParams(location.search).has('child');
+        var probe = { arms: [], disarms: [], messages: [], errors: [] };
+        window.__SIMULATE_PROBE__ = probe;
+        window.addEventListener('error', function (event) {
+          probe.errors.push(String(event.message));
+        });
+        // Everything the page can hear on `message`: the simulator must add nothing here.
+        window.addEventListener('message', function (event) {
+          probe.messages.push(event.data);
+        });
+
+        function ack(detail) {
+          window.dispatchEvent(new CustomEvent('threadplane:devtools:ack', { detail: detail }));
+        }
+
+        window.addEventListener('threadplane:devtools:arm', function (event) {
+          var command = event.detail;
+          probe.arms.push(command);
+          if (isChild || !command || typeof command.armId !== 'string') return;
+          var armId = command.armId;
+          ack({ v: 1, armId: armId, state: 'armed' });
+          ack({ v: 1, armId: armId, state: 'pwned' });
+          ack({ v: 1, armId: armId, state: 'consumed', run: 0, secret: 'an ack must never carry this' });
+          ack({ v: 1, armId: 'never-armed', state: 'consumed', run: 0 });
+          ack(null);
+          setTimeout(function () {
+            ack({ v: 1, armId: armId, state: 'consumed', run: 0 });
+          }, 10);
+        });
+        window.addEventListener('threadplane:devtools:disarm', function (event) {
+          probe.disarms.push(event.detail);
+          var detail = event.detail;
+          if (detail && typeof detail.armId === 'string') ack({ v: 1, armId: detail.armId, state: 'disarmed' });
+        });
+
+        if (isChild) {
+          document.documentElement.setAttribute('data-simulate', 'ready');
+          return;
+        }
+        document.addEventListener('DOMContentLoaded', function () {
+          var frame = document.createElement('iframe');
+          frame.src = 'simulate.html?child';
+          frame.addEventListener('load', function () {
+            document.documentElement.setAttribute('data-simulate', 'ready');
+          });
+          document.body.appendChild(frame);
+        });
+      })();
+    </script>
+  </head>
+  <body>
+    <h1>Run simulator</h1>
+  </body>
+</html>

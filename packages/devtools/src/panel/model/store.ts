@@ -6,7 +6,7 @@
  * outside the store so they can be tested without constructing one, and so a component can compose
  * two of them into a single `update` without an intermediate render.
  */
-import type { CaptureStatus, DetectionSignal, PanelState, RunScope, TabId } from './panel-types';
+import type { CaptureStatus, DetectionSignal, PanelState, RunScope, SimArmLabel, TabId } from './panel-types';
 import { initialPanelState } from './panel-types';
 
 export interface PanelStore {
@@ -98,6 +98,31 @@ export function setCapture(s: PanelState, capture: CaptureStatus): PanelState {
 }
 
 /**
+ * The inspected page navigated and its document now has `origin`.
+ *
+ * The panel used to read the origin once, when it opened, so after a navigation to another origin
+ * the capture banner, the Developer-mode switch and its banner all kept naming the OLD one — and
+ * the switch would have stored the flag under an origin the page no longer had. A new origin
+ * restarts at `off`: the grant check (`useLiveCapture`) turns it back on when it is the localhost
+ * family or granted, and asks the worker for that origin's Developer mode. The same origin is a
+ * no-op, so an in-app navigation does not flap the port.
+ */
+export function inspectedOriginChanged(s: PanelState, origin: string): PanelState {
+  if (s.capture.kind !== 'unsupported' && s.capture.origin === origin) return s;
+  // A new document on a new origin: whether the old one had the capture layer says nothing here.
+  return { ...setCapture(s, { kind: 'off', origin, signal: { level: 'none' } }), loaded: null };
+}
+
+/** How many armed scripts' labels the panel remembers — the live session's bound on the arm list. */
+const MAX_ARM_LABELS = 200;
+
+/** Remember what an arm was made from, for the arm list (§14.4). Oldest forgotten first. */
+export function noteArm(s: PanelState, armId: string, label: SimArmLabel): PanelState {
+  const entries = [...Object.entries(s.simArmLabels).filter(([id]) => id !== armId), [armId, label] as const];
+  return { ...s, simArmLabels: Object.fromEntries(entries.slice(-MAX_ARM_LABELS)) };
+}
+
+/**
  * Capture is on for `origin`: set the status AND the source in one write.
  *
  * The two must move together. `source` is what the capture banner and the empty state read to
@@ -118,6 +143,7 @@ export function captureOn(s: PanelState, origin: string): PanelState {
     droppedBefore: wasImported ? 0 : s.droppedBefore,
     binaryTransport: wasImported ? null : s.binaryTransport,
     signals: wasImported ? { reports: [], droppedBefore: 0 } : s.signals,
+    simulator: wasImported ? { acks: [], dispatches: [] } : s.simulator,
     // An imported file's runtime metadata describes the page THAT capture was taken on, not the
     // tab now being watched. Keeping it would put another app's agent list beside a live stream.
     runtime: wasImported ? null : s.runtime,

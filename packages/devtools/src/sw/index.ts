@@ -32,16 +32,22 @@ import {
   isThreadplaneReport,
   type ThreadplaneDevtoolsReport,
 } from '../core/signals/report';
+import { parseAck, parseArmCommand, parseDisarmCommand, type Ack, type ArmCommand } from '../core/simulate/commands';
+import { DEVELOPER_MODE_KEY_PREFIX, developerModeKey, isWebOrigin } from '../core/simulate/developer-mode';
 import type { WireFrame } from '../inject/protocol';
+import { isAutoEnabledOrigin, originPattern } from '../panel/capture/grant';
 import {
   PANEL_PORT_NAME,
   RELAY_PORT_NAME,
   type ClosedConn,
   type PanelCommand,
   type RegistrationState,
+  type RelayCommand,
   type RelayMessage,
   type RequestLine,
   type SignalReports,
+  type SimDispatch,
+  type SimDispatchOutcome,
   type SwMessage,
 } from './protocol';
 import { createRingBuffer, type RingBuffer } from './ring-buffer';
@@ -113,6 +119,18 @@ declare global {
         signals(): ThreadplaneDevtoolsReport[];
         /** Reports evicted from (or trimmed off the mirror of) every tab's signal ring. */
         signalsDropped(): number;
+        /** Run-simulator acknowledgements held, across every tab — read through `snapshotFor`. */
+        simAcks(): Ack[];
+        /**
+         * The panel's `simulate.arm` for `tabId`, through the same function the panel command
+         * calls — the harness cannot drive the panel (H4/H5), so this is its Arm button.
+         */
+        arm(tabId: number, command: unknown): Promise<SimDispatch | null>;
+        /** The panel's `simulate.disarm`, likewise. */
+        disarm(tabId: number, armId: unknown): Promise<SimDispatch | null>;
+        /** The panel's `developer-mode.set`, likewise: refused for an origin that is not granted. */
+        setDeveloperMode(origin: string, enabled: boolean): Promise<boolean>;
+        developerMode(origin: string): Promise<boolean>;
         clear(): void;
       }
     | undefined;
@@ -219,6 +237,12 @@ interface TabState {
    * mirror trimmed — the P9 total, so a panel can say the matrix starts mid-session.
    */
   signalsDropped: number;
+  /**
+   * Run-simulator acknowledgements (design R4), oldest first, at most `MAX_SIM_ACKS`. The relay
+   * forwards only acks for arms it dispatched, so this is a handful per arm; the cap is for a page
+   * that acks the same arm forever.
+   */
+  simAcks: Ack[];
 }
 
 /** `frameId` 0 is the top-level document. Everything else is a subframe (§12 `all_frames`). */
@@ -246,6 +270,8 @@ const MAX_SIGNAL_REPORTS = 5000;
  */
 const MIRROR_MAX_SIGNALS = 1000;
 const MIRROR_DEBOUNCE_MS = 250;
+/** How many simulator acks one tab keeps. Oldest go first; the arm list only needs the latest. */
+const MAX_SIM_ACKS = 200;
 
 interface MirroredTab {
   v: 1;
@@ -305,6 +331,8 @@ interface MirroredTab {
    */
   signals: ThreadplaneDevtoolsReport[];
   signalsDropped: number;
+  /** The tab's simulator acks — mirrored so a worker restart does not lose what became of an arm. */
+  simAcks: Ack[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -328,6 +356,7 @@ function ensureTab(tabId: number): TabState {
     badge: { text: '', title: BADGE_DEFAULT_TITLE },
     signals: [],
     signalsDropped: 0,
+    simAcks: [],
   };
   tabs.set(tabId, created);
   return created;
@@ -544,6 +573,7 @@ async function writeMirror(tabId: number): Promise<void> {
     signals: state.signals.slice(-MIRROR_MAX_SIGNALS),
     signalsDropped:
       state.signalsDropped + Math.max(0, state.signals.length - MIRROR_MAX_SIGNALS),
+    simAcks: state.simAcks,
   };
   await chrome.storage.session.set({ [sessionKey(tabId)]: mirrored });
 }
@@ -629,6 +659,7 @@ function asMirroredTab(value: unknown): MirroredTab | null {
   const stack = value['stack'];
   const signals = value['signals'];
   const signalsDropped = value['signalsDropped'];
+  const simAcks = value['simAcks'];
   return {
     v: 1,
     records: records.filter(isCaptureRecord),
@@ -657,6 +688,13 @@ function asMirroredTab(value: unknown): MirroredTab | null {
       typeof signalsDropped === 'number' && Number.isSafeInteger(signalsDropped) && signalsDropped >= 0
         ? signalsDropped
         : 0,
+    // Re-validated like the reports: absent in an older mirror, and rendered by this build.
+    simAcks: Array.isArray(simAcks)
+      ? simAcks.flatMap((ack) => {
+          const parsed = parseAck(ack);
+          return parsed.ok ? [parsed.value] : [];
+        })
+      : [],
   };
 }
 
@@ -711,6 +749,7 @@ async function restoreFromSession(): Promise<void> {
       state.signals = mirrored.signals.slice(-MAX_SIGNAL_REPORTS);
       state.signalsDropped =
         mirrored.signalsDropped + Math.max(0, mirrored.signals.length - MAX_SIGNAL_REPORTS);
+      state.simAcks = mirrored.simAcks.slice(-MAX_SIM_ACKS);
       /*
        * Re-applied from the restored state rather than trusted to still be showing. Chrome does
        * keep a tab's action state across a worker restart, but "what the previous incarnation last
@@ -743,6 +782,7 @@ const RELAY_KINDS: ReadonlySet<string> = new Set([
   'binary',
   'info',
   'signals',
+  'sim-ack',
 ]);
 
 function asRelayMessage(value: unknown): RelayMessage | null {
@@ -760,6 +800,12 @@ function asRelayMessage(value: unknown): RelayMessage | null {
     return Object.hasOwn(value, 'report') && isThreadplaneReport(value['report'])
       ? (value as unknown as RelayMessage)
       : null;
+  }
+  // The relay's own simulator ack: about an arm, not a stream. Re-validated here as at the relay.
+  if (kind === 'sim-ack') {
+    if (!Object.hasOwn(value, 'ack')) return null;
+    const parsed = parseAck(value['ack']);
+    return parsed.ok ? { v: 1, kind: 'sim-ack', ack: parsed.value } : null;
   }
   if (typeof value['connId'] !== 'string') return null;
   if (kind === 'frames' && !Array.isArray(value['frames'])) return null;
@@ -797,6 +843,17 @@ function handleRelayMessage(
       applyBadge(tabId, state);
     }
     broadcast(tabId, { kind: 'capture-loaded' });
+    scheduleMirror(tabId);
+    return;
+  }
+  /*
+   * Also BEFORE the recording gate: an ack is the answer to an Arm the user pressed, not captured
+   * traffic, and a paused panel that never heard what became of its own arm would look broken.
+   */
+  if (message.kind === 'sim-ack') {
+    state.simAcks.push(message.ack);
+    if (state.simAcks.length > MAX_SIM_ACKS) state.simAcks.splice(0, state.simAcks.length - MAX_SIM_ACKS);
+    broadcast(tabId, { kind: 'sim-ack', ack: message.ack });
     scheduleMirror(tabId);
     return;
   }
@@ -980,6 +1037,7 @@ function snapshotFor(tabId: number): Snapshot {
     registration: registrationState(),
     // The Threadplane reports this tab has produced — normally long before a panel is opened.
     signals: signalsFor(state),
+    simAcks: [...state.simAcks],
   };
 }
 
@@ -1007,6 +1065,8 @@ function clearTab(tabId: number, state: TabState): void {
   // Reports describe the app the buffer described, and the next document may be a different app.
   state.signals = [];
   state.signalsDropped = 0;
+  // An ack describes an arm of the app the buffer described; it goes with the buffer (A2).
+  state.simAcks = [];
   // What the tab has spoken is a claim about the buffer's contents, and the buffer is now empty.
   // A navigation clears too, and the next document may speak nothing at all.
   state.stack = createStackTracker();
@@ -1049,6 +1109,30 @@ function handlePanelCommand(port: chrome.runtime.Port, command: PanelCommand): v
       void reconcileRegistrations();
       return;
     }
+    case 'simulate.arm':
+    case 'simulate.disarm': {
+      const tabId = panelPorts.get(port) ?? null;
+      if (tabId === null) return;
+      const pending =
+        command.kind === 'simulate.arm' ? simulateArm(tabId, command.command) : simulateDisarm(tabId, command.armId);
+      // Answered to the asking panel only: it is that panel's button that is waiting.
+      void pending.then((dispatch) => {
+        if (dispatch !== null && panelPorts.has(port)) port.postMessage({ kind: 'sim-dispatch', ...dispatch });
+      });
+      return;
+    }
+    case 'developer-mode.get': {
+      void readDeveloperMode(command.origin).then((enabled) => {
+        if (panelPorts.has(port)) port.postMessage({ kind: 'developer-mode', origin: command.origin, enabled });
+      });
+      return;
+    }
+    case 'developer-mode.set': {
+      // The answer is broadcast to every panel by `writeDeveloperMode`, the asking one included —
+      // refused or not, so the switch always ends up showing what is stored.
+      void writeDeveloperMode(command.origin, command.enabled);
+      return;
+    }
   }
 }
 
@@ -1086,6 +1170,24 @@ function asPanelCommand(value: unknown): PanelCommand | null {
     const recording = ownValue(value, 'recording');
     return typeof recording === 'boolean' ? { kind, recording } : null;
   }
+  if (kind === 'simulate.arm') {
+    // Validated and copied here, at the first boundary past the panel, as well as at the relay.
+    const parsed = parseArmCommand(ownValue(value, 'command'));
+    return parsed.ok ? { kind, command: parsed.value } : null;
+  }
+  if (kind === 'simulate.disarm') {
+    const parsed = parseDisarmCommand({ v: 1, armId: ownValue(value, 'armId') });
+    return parsed.ok ? { kind, armId: parsed.value.armId } : null;
+  }
+  if (kind === 'developer-mode.get') {
+    const origin = ownValue(value, 'origin');
+    return isWebOrigin(origin) ? { kind, origin } : null;
+  }
+  if (kind === 'developer-mode.set') {
+    const origin = ownValue(value, 'origin');
+    const enabled = ownValue(value, 'enabled');
+    return isWebOrigin(origin) && typeof enabled === 'boolean' ? { kind, origin, enabled } : null;
+  }
   return null;
 }
 
@@ -1103,6 +1205,133 @@ function attachPanelPort(port: chrome.runtime.Port): void {
   port.onDisconnect.addListener((): void => {
     panelPorts.delete(port);
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Run simulator (§14.4, design R6/R7)                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Is capture enabled for `origin` — the localhost family the manifest covers, or an origin the
+ * user granted? Asked of `chrome.permissions`, never of the panel. A failed read is a no.
+ */
+async function isGrantedOrigin(origin: string): Promise<boolean> {
+  if (isAutoEnabledOrigin(origin)) return true;
+  try {
+    return await chrome.permissions.contains({ origins: [originPattern(origin)] });
+  } catch {
+    return false;
+  }
+}
+
+async function readDeveloperMode(origin: string): Promise<boolean> {
+  try {
+    const key = developerModeKey(origin);
+    const stored: Record<string, unknown> = await chrome.storage.local.get(key);
+    return stored[key] === true;
+  } catch {
+    return false;
+  }
+}
+
+function broadcastDeveloperMode(origin: string, enabled: boolean): void {
+  // Every panel: the flag is per ORIGIN, and two panels may be inspecting tabs on the same one.
+  for (const port of panelPorts.keys()) port.postMessage({ kind: 'developer-mode', origin, enabled });
+}
+
+/**
+ * Turn Developer mode on or off for `origin`, and tell every panel what is now stored.
+ *
+ * ON requires a granted origin (R6: "never allow it on an origin the user hasn't enabled"); OFF is
+ * always allowed. The flag is stored only while on — off is the key's absence — so the relay's
+ * check is a strict `=== true` on a key that, for an origin never enabled, does not exist.
+ */
+async function writeDeveloperMode(origin: string, enabled: boolean): Promise<boolean> {
+  const key = developerModeKey(origin);
+  try {
+    if (enabled && (await isGrantedOrigin(origin))) {
+      await chrome.storage.local.set({ [key]: true });
+      /*
+       * Asked again AFTER the write. A revoke that lands between the check above and the write has
+       * already run its sweep, found no flag, and gone; without this the flag would outlive the
+       * grant it required.
+       */
+      if (!(await isGrantedOrigin(origin))) await chrome.storage.local.remove(key);
+    } else if (!enabled) await chrome.storage.local.remove(key);
+  } catch {
+    // Reported below as whatever is actually stored.
+  }
+  const now = await readDeveloperMode(origin);
+  broadcastDeveloperMode(origin, now);
+  return now;
+}
+
+/**
+ * A revoked origin loses its Developer mode with its grant, so a later re-grant starts off.
+ *
+ * EVERY stored flag is re-checked against `chrome.permissions`, not just the origins the revoked
+ * patterns name: a scheme-wide pattern (Chrome's "On all sites", every host on `https:`) names no
+ * single origin, yet revoking it ungrants every origin it covered.
+ */
+async function clearUngrantedDeveloperModes(): Promise<void> {
+  let stored: Record<string, unknown>;
+  try {
+    stored = await chrome.storage.local.get(null);
+  } catch {
+    return;
+  }
+  for (const key of Object.keys(stored)) {
+    if (!key.startsWith(DEVELOPER_MODE_KEY_PREFIX)) continue;
+    const origin = key.slice(DEVELOPER_MODE_KEY_PREFIX.length);
+    if (isWebOrigin(origin) && (await isGrantedOrigin(origin))) continue;
+    try {
+      await chrome.storage.local.remove(key);
+    } catch {
+      continue;
+    }
+    if (isWebOrigin(origin)) broadcastDeveloperMode(origin, await readDeveloperMode(origin));
+  }
+}
+
+const SIM_OUTCOMES: ReadonlySet<string> = new Set<SimDispatchOutcome>([
+  'dispatched',
+  'developer-mode-off',
+  'not-top-frame',
+  'unknown-arm',
+  'invalid',
+  'not-delivered',
+]);
+
+/**
+ * Send one command to the tab's TOP-FRAME relay and report what it says.
+ *
+ * `frameId: 0` is Chrome's choice of frame, not the page's. No relay there — an ungranted origin,
+ * a document that predates the registration, a tab mid-navigation — is `not-delivered`, never a
+ * throw. The relay's answer is read as one of the known outcomes or not at all.
+ */
+async function sendToTopFrame(tabId: number, message: RelayCommand): Promise<SimDispatchOutcome> {
+  try {
+    const answer: unknown = await chrome.tabs.sendMessage(tabId, message, { frameId: MAIN_FRAME_ID });
+    if (typeof answer !== 'object' || answer === null || !Object.hasOwn(answer, 'outcome')) return 'not-delivered';
+    const outcome = (answer as { outcome: unknown }).outcome;
+    return typeof outcome === 'string' && SIM_OUTCOMES.has(outcome) ? (outcome as SimDispatchOutcome) : 'not-delivered';
+  } catch {
+    return 'not-delivered';
+  }
+}
+
+async function simulateArm(tabId: number, command: unknown): Promise<SimDispatch | null> {
+  const parsed = parseArmCommand(command);
+  if (!parsed.ok) return null;
+  const relayCommand: { kind: 'simulate.arm'; command: ArmCommand } = { kind: 'simulate.arm', command: parsed.value };
+  return { armId: parsed.value.armId, action: 'arm', outcome: await sendToTopFrame(tabId, relayCommand) };
+}
+
+async function simulateDisarm(tabId: number, armId: unknown): Promise<SimDispatch | null> {
+  const parsed = parseDisarmCommand({ v: 1, armId });
+  if (!parsed.ok) return null;
+  const outcome = await sendToTopFrame(tabId, { kind: 'simulate.disarm', armId: parsed.value.armId });
+  return { armId: parsed.value.armId, action: 'disarm', outcome };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1437,9 +1666,25 @@ function unregisterForMatches(matches: readonly string[]): Promise<void> {
 /* Wiring                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Is this port's sender one of this extension's own pages — the DevTools panel?
+ *
+ * The panel port can arm the run simulator and switch Developer mode, so it is not left open to
+ * every extension context: a content script also reaches `chrome.runtime.connect`, runs in a
+ * renderer the page shares, and must never be able to speak as the panel. `sender.url` is set by
+ * Chrome, not by the connecting code.
+ */
+function isExtensionPage(sender: chrome.runtime.MessageSender | undefined): boolean {
+  const url = sender?.url;
+  return sender?.id === chrome.runtime.id && typeof url === 'string' && url.startsWith(chrome.runtime.getURL(''));
+}
+
 chrome.runtime.onConnect.addListener((port: chrome.runtime.Port): void => {
   if (port.name === RELAY_PORT_NAME) attachRelayPort(port);
-  else if (port.name === PANEL_PORT_NAME) attachPanelPort(port);
+  else if (port.name === PANEL_PORT_NAME) {
+    if (isExtensionPage(port.sender)) attachPanelPort(port);
+    else port.disconnect();
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId: number): void => {
@@ -1455,6 +1700,8 @@ chrome.permissions.onAdded.addListener((permissions: chrome.permissions.Permissi
 chrome.permissions.onRemoved.addListener((permissions: chrome.permissions.Permissions): void => {
   // §11 is opt-in per origin, so a revoked origin must stop being captured.
   void unregisterForMatches(permissions.origins ?? []);
+  // ...and stop being scriptable: Developer mode does not outlive the grant it required (R6).
+  void clearUngrantedDeveloperModes();
 });
 
 /**
@@ -1525,6 +1772,21 @@ globalThis.__AGUI_DT_TEST__ = {
   },
   signalsDropped(): number {
     return everySnapshot().reduce((total, snapshot) => total + snapshot.signals.droppedBefore, 0);
+  },
+  simAcks(): Ack[] {
+    return everySnapshot().flatMap((snapshot) => snapshot.simAcks);
+  },
+  arm(tabId: number, command: unknown): Promise<SimDispatch | null> {
+    return simulateArm(tabId, command);
+  },
+  disarm(tabId: number, armId: unknown): Promise<SimDispatch | null> {
+    return simulateDisarm(tabId, armId);
+  },
+  setDeveloperMode(origin: string, enabled: boolean): Promise<boolean> {
+    return isWebOrigin(origin) ? writeDeveloperMode(origin, enabled) : Promise.resolve(false);
+  },
+  developerMode(origin: string): Promise<boolean> {
+    return readDeveloperMode(origin);
   },
   clear(): void {
     for (const [tabId, state] of tabs) clearTab(tabId, state);

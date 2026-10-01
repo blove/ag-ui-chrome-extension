@@ -9,6 +9,7 @@ import type { LoadedCapture } from '../../import/load-jsonl';
 import { applyLoaded } from '../../import/apply-loaded';
 import { ExportPanel } from '../../export/export-panel';
 import type { ExportIo } from '../../export/download';
+import { DeveloperModeSwitch } from '../../simulate/developer-mode';
 
 export interface SessionProps {
   store: PanelStore;
@@ -22,6 +23,8 @@ export interface SessionProps {
    * Optional so `Session` stays renderable from a test with nothing but a store.
    */
   onLoaded?: (loaded: LoadedCapture, filename: string, text: string) => void;
+  /** Store Developer mode for the inspected origin (§14.4). Absent outside a live panel. */
+  onSetDeveloperMode?: (enabled: boolean) => void;
 }
 
 function describeSource(source: PanelSource): string {
@@ -239,7 +242,7 @@ function Agents({ runtime }: { runtime: RuntimeInfo | null }): JSX.Element {
  * Design §4 also lists export controls, and this is where E5 puts the full-control surface: the
  * scope, the redaction groups, and a statement of what the file will contain.
  */
-export function Session({ store, onLoaded, exportIo }: SessionProps): JSX.Element {
+export function Session({ store, onLoaded, exportIo, onSetDeveloperMode }: SessionProps): JSX.Element {
   const state: PanelState = usePanelState(store);
   const counts = issueCounts(state);
   const scopeLabel = state.scope === null ? 'all runs' : `run ${state.scope}`;
@@ -295,6 +298,9 @@ export function Session({ store, onLoaded, exportIo }: SessionProps): JSX.Elemen
         <Row label="Status" value={describeCapture(state.capture, state.loaded)} />
         <Row label="Expand chunks" value={state.expandChunks ? 'on' : 'off'} />
       </dl>
+
+      <h3 class="agui-session__heading">Run simulator</h3>
+      <DeveloperModeSwitch store={store} {...(onSetDeveloperMode !== undefined ? { onSet: onSetDeveloperMode } : {})} />
 
       <h3 class="agui-session__heading">Export</h3>
       <ExportPanel store={store} io={exportIo} />

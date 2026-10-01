@@ -12,8 +12,23 @@
  * `http://localhost:<port>/` (the localhost family is captured without a grant), load it in
  * Chromium with the built extension, wait for the page's runs to finish, then compare the reports
  * the page heard itself with the reports the worker holds (`__AGUI_DT_TEST__.signals()`).
+ *
+ * THE RUN SIMULATOR (§14.4, cacheplane/threadplane#1204). Then, per adapter: turn Developer mode on
+ * for the page's origin through the worker hook (the panel's switch), arm the extension's OWN
+ * Interrupt (approval) template through the hook's `arm` (the panel's Arm button), submit on an
+ * agent whose transport is a real network one, and hold: the hook acks `armed` → `consumed` run 0,
+ * the agent shows the template's interrupt, a resume acks `consumed` run 1 and completes the run —
+ * with ZERO requests to the agent endpoints (a Playwright request listener and the server both
+ * count) — and the Signals reports the scripted runs produce reach the worker like any others. One
+ * unarmed submit per adapter afterwards must make a request, so the zero is not vacuous.
+ *
+ * BUILDING THREADPLANE. When `dist/libs/{chat,ag-ui,langgraph}` is missing, or older than any file
+ * under those libraries' `src/`, the three packages are built with the checkout's own Nx. The
+ * checkout's `git status --porcelain` is read before and after and must not change: the build
+ * writes only `dist/` (ignored), and this script never writes anywhere else in it.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
@@ -25,8 +40,12 @@ import { build, type Plugin } from 'esbuild';
 
 import type { ThreadplaneDevtoolsReport } from '@devtools/core/signals/report';
 import { isThreadplaneReport } from '@devtools/core/signals/report';
+import { parseArmCommand, type Ack } from '@devtools/core/simulate/commands';
+import { armCommand, templateScript } from '@devtools/core/simulate/templates';
 
-import { clearCapture, launchWithExtension, readCapture } from '../e2e/fixtures.js';
+import type { BrowserContext, Page } from '@playwright/test';
+
+import { clearCapture, launchWithExtension, readCapture, simulator, tabIdOf } from '../e2e/fixtures.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const threadplane = resolve(
@@ -105,13 +124,55 @@ function threadplaneDist(): Plugin {
   };
 }
 
-async function bundle(): Promise<void> {
-  for (const pkg of ['chat', 'ag-ui', 'langgraph']) {
-    const file = join(distLibs, pkg, `fesm2022/threadplane-${pkg}.mjs`);
-    if (!existsSync(file)) throw new Error(`${file} is missing: build Threadplane first.`);
+const LIBS = ['chat', 'ag-ui', 'langgraph'] as const;
+const bundleOf = (pkg: string): string => join(distLibs, pkg, `fesm2022/threadplane-${pkg}.mjs`);
+
+/** The newest modification time of any file under `dir`. */
+function newestUnder(dir: string): number {
+  let newest = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    newest = Math.max(newest, entry.isDirectory() ? newestUnder(path) : statSync(path).mtimeMs);
   }
-  if (!readFileSync(join(distLibs, 'chat/fesm2022/threadplane-chat.mjs'), 'utf8').includes('threadplane:devtools')) {
+  return newest;
+}
+
+function gitStatus(): string {
+  return execFileSync('git', ['status', '--porcelain'], { cwd: threadplane, encoding: 'utf8' });
+}
+
+/** Build Threadplane's three packages if their dist is missing or older than their sources. */
+function ensureThreadplaneBuilt(): void {
+  const stale = LIBS.filter(
+    (pkg) => !existsSync(bundleOf(pkg)) || statSync(bundleOf(pkg)).mtimeMs < newestUnder(join(threadplane, 'libs', pkg, 'src')),
+  );
+  const before = gitStatus();
+  console.log(`Threadplane git status before: ${before.trim() === '' ? 'clean' : `\n${before}`}`);
+  if (stale.length > 0) {
+    console.log(`Building Threadplane (${stale.join(', ')} missing or older than its sources)…`);
+    execFileSync(join(threadplane, 'node_modules/.bin/nx'), ['run-many', '-t', 'build', '-p', LIBS.join(',')], {
+      cwd: threadplane,
+      stdio: ['ignore', 'ignore', 'inherit'],
+      env: { ...process.env, NX_DAEMON: 'false', NX_NO_CLOUD: 'true' },
+    });
+  } else {
+    console.log('Threadplane dist is up to date with its sources; not rebuilding.');
+  }
+  const after = gitStatus();
+  console.log(`Threadplane git status after:  ${after.trim() === '' ? 'clean' : `\n${after}`}`);
+  if (after !== before) throw new Error('building Threadplane changed its git status; refusing to go on.');
+}
+
+async function bundle(): Promise<void> {
+  for (const pkg of LIBS) {
+    if (!existsSync(bundleOf(pkg))) throw new Error(`${bundleOf(pkg)} is missing: build Threadplane first.`);
+  }
+  const chat = readFileSync(bundleOf('chat'), 'utf8');
+  if (!chat.includes('threadplane:devtools')) {
     throw new Error('the built @threadplane/chat carries no devtools emitter: wrong branch or a stale build.');
+  }
+  if (!chat.includes('threadplane:devtools:arm')) {
+    throw new Error('the built @threadplane/chat has no scripted runs: build cacheplane/threadplane#1204.');
   }
   await build({
     entryPoints: [join(here, 'threadplane-page.ts')],
@@ -128,6 +189,10 @@ async function bundle(): Promise<void> {
   });
 }
 
+/** Requests that reached the server's agent endpoints — what a scripted run must never cause. */
+const agentHits: string[] = [];
+const isAgentPath = (path: string): boolean => /^\/(langgraph|agui)(\/|\?|$)/.test(path);
+
 function serve(): Promise<Server> {
   const html =
     '<!doctype html><meta charset="utf-8"><title>Threadplane acceptance</title>' +
@@ -140,6 +205,7 @@ function serve(): Promise<Server> {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(html);
     } else {
+      if (isAgentPath(req.url ?? '')) agentHits.push(`${req.method ?? '?'} ${req.url ?? ''}`);
       res.writeHead(404).end();
     }
   });
@@ -148,8 +214,128 @@ function serve(): Promise<Server> {
 
 const pairs = (reports: ThreadplaneDevtoolsReport[]): Pair[] => reports.map((r) => [r.eventType, r.wrote]);
 
+/* -------------------------------------------------------------------------- */
+/* The run simulator, against the real build                                    */
+/* -------------------------------------------------------------------------- */
+
+type SimAdapter = 'langgraph' | 'ag-ui';
+
+interface SimResult {
+  status: string;
+  interrupt: unknown;
+  error: string | null;
+  messages: string[];
+  threw: string | null;
+}
+
+/** The acks the worker holds for `armId`, once one in `state` (with `run`, if given) is among them. */
+async function waitForAck(ctx: BrowserContext, armId: string, state: Ack['state'], run?: number): Promise<Ack[]> {
+  const mine = async (): Promise<Ack[]> => (await simulator.acks(ctx)).filter((ack) => ack.armId === armId);
+  const deadline = Date.now() + 15_000;
+  let acks = await mine();
+  while (!acks.some((ack) => ack.state === state && ack.run === run) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 25));
+    acks = await mine();
+  }
+  return acks;
+}
+
+const QUESTION = 'Send the refund of $42 to the customer?';
+const DONE = 'Approved — the refund has been sent.';
+
+async function simulate(
+  ctx: BrowserContext,
+  page: Page,
+  tabId: number,
+  adapter: SimAdapter,
+  requests: string[],
+  failures: string[],
+): Promise<void> {
+  const fail = (message: string): void => {
+    failures.push(`simulator (${adapter}): ${message}`);
+  };
+  const armId = `acceptance-${adapter}-${String(Date.now())}`;
+  // The extension's own template — what the Simulate tab arms for "Interrupt (approval)".
+  const command = armCommand(armId, templateScript(adapter, 'interrupt'));
+  if (!parseArmCommand(command).ok) fail('the extension’s own interrupt template does not validate');
+  const requestsBefore = requests.length;
+  const hitsBefore = agentHits.length;
+
+  const dispatch = await simulator.arm(ctx, tabId, command);
+  console.log(`\n${adapter}: arm ${armId} → ${JSON.stringify(dispatch)}`);
+  if (dispatch?.outcome !== 'dispatched') fail(`the arm was not dispatched: ${JSON.stringify(dispatch)}`);
+  let acks = await waitForAck(ctx, armId, 'armed');
+  console.log(`  acks after arm:    ${JSON.stringify(acks)}`);
+
+  const first = await page.evaluate(
+    ({ adapter }) => {
+      const sim = (window as unknown as { __TP_SIM__: { submit(a: string, i: unknown): Promise<SimResult> } }).__TP_SIM__;
+      return sim.submit(adapter, { message: 'Refund order 1234.' });
+    },
+    { adapter },
+  );
+  acks = await waitForAck(ctx, armId, 'consumed', 0);
+  console.log(`  acks after submit: ${JSON.stringify(acks)}`);
+  console.log(`  agent after submit: status=${first.status} interrupt=${JSON.stringify(first.interrupt)} error=${String(first.error)}`);
+  console.log(`                      messages=${JSON.stringify(first.messages)}`);
+  if (first.threw !== null) fail(`submit threw: ${first.threw}`);
+  if (first.error !== null) fail(`the agent errored after run 0: ${first.error}`);
+  if (first.interrupt === null) fail('no interrupt after run 0');
+  else if (!JSON.stringify(first.interrupt).includes(QUESTION)) fail(`the interrupt does not carry the template's question: ${JSON.stringify(first.interrupt)}`);
+
+  const second = await page.evaluate(
+    ({ adapter }) => {
+      const sim = (window as unknown as { __TP_SIM__: { submit(a: string, i: unknown): Promise<SimResult> } }).__TP_SIM__;
+      return sim.submit(adapter, { resume: { approved: true } });
+    },
+    { adapter },
+  );
+  acks = await waitForAck(ctx, armId, 'consumed', 1);
+  console.log(`  acks after resume: ${JSON.stringify(acks)}`);
+  console.log(`  agent after resume: status=${second.status} interrupt=${JSON.stringify(second.interrupt)} error=${String(second.error)}`);
+  console.log(`                      messages=${JSON.stringify(second.messages)}`);
+  if (second.threw !== null) fail(`resume threw: ${second.threw}`);
+  if (second.error !== null) fail(`the agent errored after run 1: ${second.error}`);
+  if (second.interrupt !== null) fail(`the interrupt is still set after the resume: ${JSON.stringify(second.interrupt)}`);
+  if (second.status !== 'idle') fail(`the run did not complete: status ${second.status}`);
+  if (second.messages.at(-1) !== DONE) fail(`the last message is not the template's answer: ${JSON.stringify(second.messages.at(-1))}`);
+
+  const expected: Ack[] = [
+    { v: 1, armId, state: 'armed' },
+    { v: 1, armId, state: 'consumed', run: 0 },
+    { v: 1, armId, state: 'consumed', run: 1 },
+  ];
+  if (!isDeepStrictEqual(acks, expected)) fail(`acks differ:\n  expected ${JSON.stringify(expected)}\n  actual   ${JSON.stringify(acks)}`);
+
+  const madeRequests = requests.slice(requestsBefore);
+  const madeHits = agentHits.slice(hitsBefore);
+  console.log(`  agent-endpoint requests during the scripted runs: browser ${String(madeRequests.length)}, server ${String(madeHits.length)}`);
+  if (madeRequests.length > 0 || madeHits.length > 0) {
+    fail(`the scripted runs reached the network: ${JSON.stringify([...madeRequests, ...madeHits])}`);
+  }
+}
+
+/** One UNARMED submit per adapter must reach the network — proof the zero above can fail. */
+async function controlRequests(page: Page, requests: string[], failures: string[]): Promise<void> {
+  for (const adapter of ['ag-ui', 'langgraph'] as const) {
+    const before = requests.length;
+    const hitsBefore = agentHits.length;
+    await page.evaluate(
+      ({ adapter }) => {
+        const sim = (window as unknown as { __TP_SIM__: { submit(a: string, i: unknown): Promise<unknown> } }).__TP_SIM__;
+        return sim.submit(adapter, { message: 'unarmed' });
+      },
+      { adapter },
+    );
+    const made = requests.slice(before);
+    console.log(`\ncontrol (${adapter}, unarmed): browser ${String(made.length)} request(s), server ${String(agentHits.length - hitsBefore)} hit(s): ${JSON.stringify(made)}`);
+    if (made.length === 0) failures.push(`control (${adapter}): an unarmed submit made no request, so the listener proves nothing`);
+  }
+}
+
 async function main(): Promise<void> {
   console.log(`Threadplane: ${threadplane}`);
+  ensureThreadplaneBuilt();
   await bundle();
   const server = await serve();
   const port = (server.address() as AddressInfo).port;
@@ -160,6 +346,11 @@ async function main(): Promise<void> {
     const page = await ctx.newPage();
     const pageErrors: string[] = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
+    // Every request the page makes to an agent endpoint, from the browser's side.
+    const requests: string[] = [];
+    page.on('request', (request) => {
+      if (isAgentPath(new URL(request.url()).pathname)) requests.push(`${request.method()} ${request.url()}`);
+    });
     await page.goto(`http://localhost:${String(port)}/`);
     await page.waitForFunction(() => (window as { __TP_DONE__?: boolean }).__TP_DONE__ === true, null, {
       timeout: 30_000,
@@ -212,6 +403,34 @@ async function main(): Promise<void> {
       console.log(`\n${name}:`);
       for (const r of list) console.log(`  #${String(r.seq).padStart(2)} ${r.eventType.padEnd(22)} ${JSON.stringify(r.wrote)}`);
     }
+
+    // The run simulator.
+    const origin = `http://localhost:${String(port)}`;
+    const tabId = await tabIdOf(ctx, page);
+    const enabled = await simulator.setDeveloperMode(ctx, origin, true);
+    console.log(`\nDeveloper mode for ${origin}: ${String(enabled)}`);
+    if (!enabled) failures.push('Developer mode could not be turned on for the harness origin');
+    for (const adapter of ['langgraph', 'ag-ui'] as const) {
+      await simulate(ctx, page, tabId, adapter, requests, failures);
+    }
+    // The scripted runs went through the adapters' real code, so they produced Signals reports like
+    // any run — and every one of those reached the worker too. Read before the control submits.
+    const allDispatched = await page.evaluate(() => (window as unknown as { __TP_REPORTS__: unknown[] }).__TP_REPORTS__);
+    const reportDeadline = Date.now() + 15_000;
+    let allHeld = (await readCapture(ctx)).signals;
+    while (allHeld.reports.length < allDispatched.length && Date.now() < reportDeadline) {
+      await new Promise((r) => setTimeout(r, 25));
+      allHeld = (await readCapture(ctx)).signals;
+    }
+    const scriptedReports = allDispatched.slice(dispatched.length).filter(isThreadplaneReport);
+    console.log(`\nSignals reports from the scripted runs: ${String(scriptedReports.length)} (all held by the worker: ${String(isDeepStrictEqual(allHeld.reports, allDispatched))})`);
+    if (scriptedReports.length === 0) failures.push('the scripted runs produced no Signals reports');
+    if (!isDeepStrictEqual(allHeld.reports, allDispatched)) {
+      failures.push('after the scripted runs, the worker’s Signals reports differ from the page’s');
+    }
+
+    await controlRequests(page, requests, failures);
+    if (pageErrors.length) failures.push(`page errors after the simulator: ${pageErrors.join(' | ')}`);
   } finally {
     await ctx.close();
     await new Promise((r) => server.close(r));
@@ -222,6 +441,7 @@ async function main(): Promise<void> {
     process.exitCode = 1;
   } else {
     console.log('\nPASS: every report the real Threadplane build dispatched reached the worker, in order, unchanged.');
+    console.log('PASS: the extension’s interrupt templates scripted both adapters through armed → consumed 0 → interrupt → resume → consumed 1 → idle, with no agent-endpoint request.');
   }
 }
 

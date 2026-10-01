@@ -38,6 +38,8 @@ export function applyLoaded(
     // G8: reports are live only and never written to a file, so a file brings none — and the
     // previous live tab's reports do not describe it.
     signals: { reports: [], droppedBefore: 0 },
+    // Likewise the run simulator's arms: live only, and about the tab, not the file.
+    simulator: { acks: [], dispatches: [] },
     loadError:
       bad === 0
         ? null

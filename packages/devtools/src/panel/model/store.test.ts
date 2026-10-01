@@ -5,6 +5,8 @@ import { initialPanelState, type DetectionSignal, type PanelState } from './pane
 import {
   captureOn,
   createPanelStore,
+  inspectedOriginChanged,
+  noteArm,
   loadFailed,
   raiseSignal,
   selectScope,
@@ -494,5 +496,40 @@ describe('recording and preserve-log', () => {
     const once = togglePreserveLog(initialPanelState());
     expect(once.preserveLog).toBe(true);
     expect(togglePreserveLog(once).preserveLog).toBe(false);
+  });
+});
+
+describe('inspectedOriginChanged (the inspected page navigated)', () => {
+  it('re-labels capture with the new origin, off until the grant check turns it back on', () => {
+    const s = captureOn(initialPanelState(), 'http://localhost:5173');
+    expect(inspectedOriginChanged(s, 'https://other.test').capture).toEqual({
+      kind: 'off',
+      origin: 'https://other.test',
+      signal: { level: 'none' },
+    });
+  });
+
+  it('reopens the capture-layer question: the old document’s report says nothing about the new one', () => {
+    const s = { ...captureOn(initialPanelState(), 'http://localhost:5173'), loaded: true };
+    expect(inspectedOriginChanged(s, 'https://other.test').loaded).toBeNull();
+  });
+
+  it('leaves state alone for a navigation within the same origin', () => {
+    const s = captureOn(initialPanelState(), 'http://localhost:5173');
+    expect(inspectedOriginChanged(s, 'http://localhost:5173')).toBe(s);
+  });
+
+  it('names an origin the panel had not resolved yet', () => {
+    expect(inspectedOriginChanged(initialPanelState(), 'https://a.test').capture).toMatchObject({ kind: 'off', origin: 'https://a.test' });
+  });
+});
+
+describe('noteArm', () => {
+  it('remembers what was armed, bounded', () => {
+    let s = initialPanelState();
+    for (let i = 0; i < 250; i += 1) s = noteArm(s, `a${String(i)}`, { template: 'Malformed event', runs: 1 });
+    expect(Object.keys(s.simArmLabels)).toHaveLength(200);
+    expect(s.simArmLabels['a249']).toEqual({ template: 'Malformed event', runs: 1 });
+    expect(s.simArmLabels['a0']).toBeUndefined();
   });
 });

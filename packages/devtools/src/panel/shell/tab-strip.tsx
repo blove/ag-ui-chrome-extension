@@ -23,6 +23,8 @@ export const TABS: ReadonlyArray<{ id: TabId; label: string }> = [
   { id: 'messages', label: 'Messages' },
   // Design G6. Always present, like the others: its empty state says what it needs (G7).
   { id: 'signals', label: 'Signals' },
+  // §14.4, design R9. Always present; Arm stays disabled, with the reason, until Developer mode is on.
+  { id: 'simulate', label: 'Simulate' },
   { id: 'session', label: 'Session' },
 ];
 

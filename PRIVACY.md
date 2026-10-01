@@ -48,11 +48,35 @@ CopilotKit runtime version if the page fetched one — never its content; the pa
 - **Browsing history, bookmarks, saved credentials, or autofill data.** The extension requests no
   permission that would allow it to read any of these.
 
+## Developer mode: the only feature that changes what your app does
+
+Capture has to touch the page to see anything: it wraps the page's `fetch`, `XMLHttpRequest`, and
+`EventSource` so it can read a copy of each stream, and hands every request and response on to your app
+with the same content. It does not change what your app sends, receives, or does. The **Simulate** tab is the
+exception, and it is off until you turn it on. Developer mode is a switch in the panel, **per origin**, **off by
+default**, offered only on an origin you have already enabled capture on, and remembered in
+`chrome.storage.local` until you turn it off or revoke the origin. While it is on, a banner on every
+panel tab says so.
+
+With Developer mode on, the panel can script the **next agent run** on that origin: when you press
+Arm, the extension hands the page's Threadplane app a script of events (an interrupt, a subagent
+handoff, a malformed event, or a run you captured), and the app plays it instead of calling its
+model. The script is what you see in the panel's editor and nothing else; it goes to the page's top
+frame only, and nothing leaves your machine. What comes back is only what became of the script —
+armed, consumed, expired, cancelled or rejected — shown in the arm list. The extension checks the switch inside the page's
+isolated content script, for that page's own origin, before anything is handed over.
+
+An honest limit: any script already running on a development page could hand the app the same
+script itself — the app cannot tell who sent it. That is no more than page code can already do to
+its own app. Developer mode guards against scripting a page **by accident**, not against code
+already in the page. And none of this exists in a production build: Threadplane only listens in a
+development build, so on a production app there is nothing for the panel to script.
+
 ## Permissions, and why each exists
 
 | Permission | Why |
 |---|---|
-| `storage` | Remembers which origins you enabled and your panel preferences. Captured events live in `chrome.storage.session`, cleared by Chrome on browser close. |
+| `storage` | Remembers which origins you enabled, which of them you turned Developer mode on for, and your panel preferences. Captured events live in `chrome.storage.session`, cleared by Chrome on browser close. |
 | `scripting` | Registers the capture scripts at runtime on origins you grant. Required *because* the extension ships with no standing access to any site. |
 | `optional_host_permissions` | Requested one origin at a time, only when you click to enable capture there. Never granted at install. |
 

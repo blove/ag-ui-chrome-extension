@@ -12,8 +12,9 @@
 import type { RuntimeInfo } from '../../core/detect/info';
 import type { CaptureRecord } from '../../core/model/types';
 import type { ThreadplaneDevtoolsReport } from '../../core/signals/report';
+import type { Ack } from '../../core/simulate/commands';
 import { createRunBuilder, type RunBuilder } from '../../core/normalizer/run-builder';
-import type { ClosedConn, RegistrationState, RequestLine, SwMessage } from '../../sw/protocol';
+import type { ClosedConn, RegistrationState, RequestLine, SimDispatch, SwMessage } from '../../sw/protocol';
 import type { BinaryTransport, PanelState } from '../model/panel-types';
 
 export interface LiveSessionOptions {
@@ -58,6 +59,8 @@ const DEFAULT_MAX_RECORDS = 5000;
 
 /** The panel's bound on retained Threadplane reports, for the same reason as `DEFAULT_MAX_RECORDS`. */
 const DEFAULT_MAX_SIGNALS = 5000;
+/** How many simulator acks and dispatches the panel keeps — the worker's own bound. */
+const MAX_SIM_ENTRIES = 200;
 
 export function createLiveSession(options: LiveSessionOptions = {}): LiveSession {
   let expandChunks = options.expandChunks ?? true;
@@ -119,6 +122,13 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
   let signals: ThreadplaneDevtoolsReport[] = [];
   let signalsWorkerDropped = 0;
   let signalsPanelDropped = 0;
+  /**
+   * The run simulator's arms (§14.4): the hook's acks as the worker holds them (it is the authority
+   * on a snapshot and clears them with the buffer), and the answers to this panel's own Arm and
+   * Cancel. Not part of the run fold, so `refold` keeps them.
+   */
+  let simAcks: Ack[] = [];
+  let simDispatches: SimDispatch[] = [];
 
   function restart(next: LiveSessionOptions = {}): void {
     expandChunks = next.expandChunks ?? expandChunks;
@@ -135,6 +145,8 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     signals = [];
     signalsWorkerDropped = 0;
     signalsPanelDropped = 0;
+    simAcks = [];
+    simDispatches = [];
   }
 
   /** Oldest-first eviction of reports, counted — P9 for the Signals tab. */
@@ -169,6 +181,7 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
       runtime,
       registration,
       signals: { reports: signals, droppedBefore: signalsWorkerDropped + signalsPanelDropped },
+      simulator: { acks: simAcks, dispatches: simDispatches },
     };
   }
 
@@ -204,6 +217,8 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     const heldSignals = signals;
     const heldSignalsWorkerDropped = signalsWorkerDropped;
     const heldSignalsPanelDropped = signalsPanelDropped;
+    const heldSimAcks = simAcks;
+    const heldSimDispatches = simDispatches;
     restart(next);
     for (const request of heldRequests) addRequest(request);
     for (const record of heldRecords) builder.addRecord(record);
@@ -218,6 +233,8 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
     signals = heldSignals;
     signalsWorkerDropped = heldSignalsWorkerDropped;
     signalsPanelDropped = heldSignalsPanelDropped;
+    simAcks = heldSimAcks;
+    simDispatches = heldSimDispatches;
     return project(s);
   }
 
@@ -229,8 +246,13 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
         // label survives it — the worker's buffer never held that notice, so a reconnect would
         // otherwise un-explain an empty capture it had just explained.
         const heldBinary = binary;
+        // This panel's own dispatches are not the worker's to restate; a reconnect keeps them.
+        const heldSimDispatches = simDispatches;
         restart();
         binary = heldBinary;
+        simDispatches = heldSimDispatches;
+        // The worker's acks, as of now: the snapshot is the authority, like `signals`.
+        simAcks = [...message.simAcks];
         /*
          * The runtime metadata comes OUT OF THE SNAPSHOT, not out of what this session was
          * holding — unlike the binary label above, which the worker's buffer never held.
@@ -371,6 +393,22 @@ export function createLiveSession(options: LiveSessionOptions = {}): LiveSession
          * The whole visible footprint of this message is the capture status.
          */
         return { ...s, loaded: true };
+      }
+      case 'sim-ack': {
+        // One hook statement about one arm. Bounded like the worker's list.
+        simAcks = [...simAcks, message.ack].slice(-MAX_SIM_ENTRIES);
+        return project(s);
+      }
+      case 'sim-dispatch': {
+        simDispatches = [
+          ...simDispatches,
+          { armId: message.armId, action: message.action, outcome: message.outcome },
+        ].slice(-MAX_SIM_ENTRIES);
+        return project(s);
+      }
+      case 'developer-mode': {
+        // Per origin, merged: the worker tells every panel about every origin's change.
+        return { ...s, developerModes: { ...s.developerModes, [message.origin]: message.enabled } };
       }
       case 'cleared': {
         restart();

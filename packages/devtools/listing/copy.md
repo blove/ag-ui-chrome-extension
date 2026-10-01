@@ -9,7 +9,7 @@ privacy_policy_url: https://github.com/blove/ag-ui-chrome-extension/blob/main/PR
 website: https://threadplane.ai
 support_url: https://github.com/blove/ag-ui-chrome-extension/issues
 permissions:
-  storage: Stores the user's per-origin capture opt-in and panel preferences. Captured events live in chrome.storage.session, which Chrome clears when the browser closes. Nothing is synced and nothing is written to disk unless the user exports a capture themselves.
+  storage: Stores the user's per-origin capture opt-in, the per-origin Developer mode switch (off by default), and panel preferences. Captured events live in chrome.storage.session, which Chrome clears when the browser closes. Nothing is synced and nothing is written to disk unless the user exports a capture themselves.
   scripting: Registers the capture content scripts at runtime on origins the user has explicitly granted, via chrome.scripting.registerContentScripts. This is required precisely because the extension ships with no static remote host permissions - without it, capture could only ever work on localhost.
   optional_host_permissions: Requested one origin at a time, only when the user clicks to enable capture on that page. It is needed to read the server-sent-event response bodies the page is already receiving. No origin is granted at install time.
 ---
@@ -42,6 +42,7 @@ This is a wire-level tool. It attaches to the protocol instead of the framework.
 - **Records and replays** — export a capture as `.agui.jsonl` and reopen it anywhere
 - **Flags** an enabled tab in the toolbar once it speaks AG-UI or LangGraph Platform
 - **Shows** which agent signals each event wrote, for Threadplane apps in development mode
+- **Scripts** the next agent run of a Threadplane development build — an interrupt, a handoff, a malformed event — behind a per-origin Developer mode switch, off by default
 
 ## Privacy, stated as fact
 

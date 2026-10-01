@@ -940,3 +940,68 @@ describe('relay — the signals arm', () => {
     expectSilent();
   });
 });
+
+/**
+ * The run simulator's wiring (`./simulate` holds the behaviour and its own tests). What is held
+ * here is the part only this file decides: who may ask, and where the flag is read.
+ */
+describe('relay — the run simulator wiring', () => {
+  type OnMessage = (message: unknown, sender: { id?: string; tab?: unknown }, respond: (result: unknown) => void) => boolean;
+
+  const COMMAND = {
+    v: 1,
+    armId: 'arm-1',
+    adapter: 'ag-ui',
+    runs: [{ events: [{ type: 'RUN_STARTED', threadId: 't', runId: 'r' }] }],
+  };
+
+  async function wire(flag: unknown): Promise<{ onMessage: OnMessage; heard: unknown[]; keys: unknown[] }> {
+    let onMessage: OnMessage | null = null;
+    const keys: unknown[] = [];
+    const runtime = (globalThis as unknown as { chrome: { runtime: Record<string, unknown> } }).chrome.runtime;
+    runtime['id'] = 'extension-id';
+    runtime['onMessage'] = { addListener: (listener: OnMessage) => (onMessage = listener) };
+    (globalThis as unknown as { chrome: Record<string, unknown> }).chrome['storage'] = {
+      local: {
+        get: async (key: string) => {
+          keys.push(key);
+          return { [key]: flag };
+        },
+      },
+    };
+    const heard: unknown[] = [];
+    window.addEventListener('threadplane:devtools:arm', (event) => heard.push((event as CustomEvent).detail));
+    await loadRelay();
+    if (onMessage === null) throw new Error('the relay registered no runtime listener');
+    return { onMessage, heard, keys };
+  }
+
+  async function ask(onMessage: OnMessage, sender: { id?: string; tab?: unknown }): Promise<{ kept: boolean; result: unknown }> {
+    let respond: (value: unknown) => void = () => undefined;
+    const answer = new Promise<unknown>((resolve) => (respond = resolve));
+    const kept = onMessage({ kind: 'simulate.arm', command: COMMAND }, sender, respond);
+    return { kept, result: kept ? await answer : undefined };
+  }
+
+  it('dispatches for its own worker, reading the flag for this document’s origin', async () => {
+    const { onMessage, heard, keys } = await wire(true);
+    const { kept, result } = await ask(onMessage, { id: 'extension-id' });
+    expect(kept).toBe(true);
+    expect(result).toEqual({ outcome: 'dispatched' });
+    expect(heard[0]).toEqual(COMMAND);
+    expect(keys[0]).toBe(`agui-dt:devmode:${window.location.origin}`);
+  });
+
+  it('answers nothing to a content script or another extension', async () => {
+    const { onMessage, heard } = await wire(true);
+    expect((await ask(onMessage, { id: 'extension-id', tab: { id: 1 } })).kept).toBe(false);
+    expect((await ask(onMessage, { id: 'someone-else' })).kept).toBe(false);
+    expect(heard).toEqual([]);
+  });
+
+  it('dispatches nothing with the flag off', async () => {
+    const { onMessage, heard } = await wire(undefined);
+    expect((await ask(onMessage, { id: 'extension-id' })).result).toEqual({ outcome: 'developer-mode-off' });
+    expect(heard).toEqual([]);
+  });
+});
