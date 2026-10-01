@@ -171,7 +171,10 @@ export function isThreadplaneReport(value: unknown): value is ThreadplaneDevtool
 export function cloneReport(report: ThreadplaneDevtoolsReport): ThreadplaneDevtoolsReport {
   const wrote: string[] = [];
   const source = report.wrote;
-  const length = source.length;
+  // Bounded by the contract, not by what `length` says now: a `Proxy` array can pass the check
+  // with a length of 1 and answer 1e9 here, which would hang the page's own dispatch in this
+  // loop. One past the limit is enough for the caller's re-check to reject the copy.
+  const length = Math.min(source.length, MAX_WROTE + 1);
   for (let index = 0; index < length; index += 1) wrote.push(source[index] as string);
   return {
     v: 1,

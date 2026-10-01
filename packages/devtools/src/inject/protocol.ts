@@ -121,9 +121,23 @@ export type InjectMessage =
    *
    * NO `connId`, and that is the one exemption from the connection rule in this union. The report
    * is about the app's own state, not a stream; matching it to a frame is the panel's inference
-   * (by event name, order and time), never a claim the page makes. It is still posted only in
-   * response to the page's own `threadplane:devtools` dispatch, so the page learns nothing it did
-   * not provoke.
+   * (by event name, order and time), never a claim the page makes. It is posted only in response
+   * to the page's own `threadplane:devtools` dispatch.
+   *
+   * WHAT THE PAGE CAN LEARN (#39), stated exactly. This is posted on the page's own window, so a
+   * page that dispatches a valid report and listens for `message` sees the copy arrive — the
+   * extension is present. That is NOT new: on a granted origin a page learns the same by opening
+   * any `text/event-stream` fetch, whose `conn-open` and `frames` are posted the same way. The
+   * #39 property is about the UNPROMPTED case and is unchanged: nothing is posted at
+   * `document_start`, and a page that never dispatches the event never hears from this arm
+   * (`e2e/quiet-page.spec.ts`). The probe is cheaper than a fetch, not more revealing.
+   *
+   * WHY THE EXEMPTION DOES NOT WEAKEN THE RELAY. The relay's order (source, origin, shape) runs
+   * before this arm is looked at, and the arm is accepted only as a fully valid report. Lacking a
+   * `connId`, it reaches no per-connection state anywhere — not the worker's `seenConns`, closes,
+   * stack detection or record ring — only its own bounded report ring. A page forging this
+   * message directly gains nothing over dispatching the event: both carry only what the validator
+   * admits, and the page can already forge every other arm the same way.
    *
    * `report` is the validated, field-by-field copy (`cloneReport`) — never the page's object.
    */

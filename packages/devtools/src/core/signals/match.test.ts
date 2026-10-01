@@ -23,16 +23,30 @@ function report(
 
 describe('recordEventName', () => {
   it('reads AG-UI from the payload and LangGraph from the SSE event name', () => {
-    expect(recordEventName(agUi(1, 0, 'RUN_STARTED'))).toBe('RUN_STARTED');
-    expect(recordEventName(langGraph(1, 0, 'values'))).toBe('values');
+    expect(recordEventName(agUi(1, 0, 'RUN_STARTED'), 'ag-ui')).toBe('RUN_STARTED');
+    expect(recordEventName(langGraph(1, 0, 'values'), 'langgraph')).toBe('values');
+  });
+
+  it('reads the name the way the report’s adapter does, when a frame carries both', () => {
+    const both: CaptureRecord = {
+      kind: 'event', seq: 1, tMs: 0, connId: 'c1', raw: '', issues: [], event: { type: 'RUN_STARTED' }, sseEvent: 'agui',
+    };
+    expect(recordEventName(both, 'ag-ui')).toBe('RUN_STARTED');
+    expect(recordEventName(both, 'langgraph')).toBe('agui');
+  });
+
+  it('keeps a LangGraph namespace, cut at the hook’s 128 characters', () => {
+    expect(recordEventName(langGraph(1, 0, 'messages|research:t1'), 'langgraph')).toBe('messages|research:t1');
+    const long = `values|${'n'.repeat(200)}`;
+    expect(recordEventName(langGraph(1, 0, long), 'langgraph')).toBe(long.slice(0, 128));
   });
 
   it('has no name for a keepalive or an unparsed AG-UI frame', () => {
     expect(
-      recordEventName({ kind: 'keepalive', seq: 1, tMs: 0, connId: 'c', raw: '', issues: [], comment: '' }),
+      recordEventName({ kind: 'keepalive', seq: 1, tMs: 0, connId: 'c', raw: '', issues: [], comment: '' }, 'ag-ui'),
     ).toBeNull();
     expect(
-      recordEventName({ kind: 'event', seq: 1, tMs: 0, connId: 'c', raw: '', issues: [], event: null }),
+      recordEventName({ kind: 'event', seq: 1, tMs: 0, connId: 'c', raw: '', issues: [], event: null }, 'ag-ui'),
     ).toBeNull();
   });
 });
@@ -88,10 +102,23 @@ describe('matchReport', () => {
     expect(matchReport(reports[1]!, reports, two)).toEqual({ kind: 'time', seq: 2, deltaMs: 1 });
   });
 
-  it('reads a namespaced LangGraph event (`messages|research:…`) as its base name', () => {
-    const lg = [langGraph(1, 5, 'metadata'), langGraph(2, 9, 'messages|research:9f1c')];
-    const reports = [report(1, 'messages', 10, 'g', 'langgraph')];
+  it('matches a namespaced LangGraph event by its full name, as Threadplane reports it', () => {
+    // Threadplane's bridge reports `StreamEvent.type` verbatim: the subgraph's `messages|…` frames
+    // and the parent's `messages` frames are different names, counted apart.
+    const lg = [
+      langGraph(1, 5, 'metadata'),
+      langGraph(2, 9, 'messages|research:t1'),
+      langGraph(3, 12, 'messages'),
+      langGraph(4, 15, 'messages|research:t1'),
+    ];
+    const reports = [
+      report(1, 'messages|research:t1', 10, 'g', 'langgraph'),
+      report(2, 'messages', 13, 'g', 'langgraph'),
+      report(3, 'messages|research:t1', 16, 'g', 'langgraph'),
+    ];
     expect(matchReport(reports[0]!, reports, lg)).toEqual({ kind: 'order', seq: 2 });
+    expect(matchReport(reports[1]!, reports, lg)).toEqual({ kind: 'order', seq: 3 });
+    expect(matchReport(reports[2]!, reports, lg)).toEqual({ kind: 'order', seq: 4 });
   });
 
   it('matches nothing for a pseudo-event, which has no frame on the wire', () => {

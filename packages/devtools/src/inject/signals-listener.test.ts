@@ -1,3 +1,5 @@
+import { runInNewContext } from 'node:vm';
+
 import { describe, expect, it } from 'vitest';
 
 import { THREADPLANE_DEVTOOLS_EVENT, type ThreadplaneDevtoolsReport } from '../core/signals/report';
@@ -155,6 +157,45 @@ describe('installSignalsListener', () => {
     });
     dispatch(hook(shifty));
     expect(posted).toEqual([]);
+  });
+
+  it('cannot be made to loop on a `wrote` whose length grows after the check', () => {
+    // A Proxy array answers `length` 1 to the validator and a billion to the copy. Copying up to
+    // the claimed length would hang the page's own dispatch; the copy stops one past the limit.
+    const { posted, dispatch } = install();
+    let lengthReads = 0;
+    const wrote = new Proxy(['messages'], {
+      get(target, key, receiver): unknown {
+        if (key === 'length') {
+          lengthReads += 1;
+          return lengthReads === 1 ? 1 : 1e9;
+        }
+        return Reflect.get(target, key, receiver) ?? 'messages';
+      },
+    });
+    const started = performance.now();
+    dispatch(hook({ ...REPORT, wrote }));
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(lengthReads).toBeGreaterThan(1);
+    expect(posted).toEqual([]);
+  });
+
+  it('accepts a report whose detail comes from another realm (an iframe’s objects)', () => {
+    // A detail built in another realm has another realm's `Object` and `Array`. The guard must use
+    // realm-independent checks (`Array.isArray`, own keys) rather than `instanceof`, or a
+    // Threadplane agent whose report object came from a frame would be dropped.
+    const { posted, dispatch } = install();
+    const foreign: unknown = runInNewContext(`({
+      v: 1, agent: 'agent-1', adapter: 'ag-ui', seq: 3,
+      eventType: 'TEXT_MESSAGE_CONTENT', wrote: ['messages'], tMs: 812.25,
+    })`);
+    expect(Object.getPrototypeOf(foreign)).not.toBe(Object.prototype);
+    dispatch(hook(foreign));
+    expect(posted).toHaveLength(1);
+    const [message] = posted;
+    // What leaves is this realm's plain data, not the foreign object.
+    expect(message?.kind === 'signals' && Object.getPrototypeOf(message.report)).toBe(Object.prototype);
+    expect(message?.kind === 'signals' && Array.isArray(message.report.wrote) && message.report.wrote instanceof Array).toBe(true);
   });
 
   it('works on a real window: the page’s own listeners still run, and the report is posted', () => {
