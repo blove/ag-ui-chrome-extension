@@ -86,3 +86,46 @@ export function signalBlocks(
   }
   return blocks;
 }
+
+/**
+ * The most characters a column header shows. Every AG-UI event name in common use fits
+ * (`TEXT_MESSAGE_CONTENT` is 20), so the three TEXT_MESSAGE_* columns read as themselves rather
+ * than as three identical truncations; the header is sized for this many in `panel.css`.
+ */
+export const MAX_COLUMN_LABEL = 20;
+
+/**
+ * A column header's text: the event name, or — when it is longer than `MAX_COLUMN_LABEL` — an
+ * abbreviation that keeps what tells neighbouring columns apart. The full name is always in the
+ * header's `title` and accessible name; this is only what is painted.
+ *
+ *  - A LangGraph namespaced name (`messages|research:t1…`) keeps its base and marks the namespace:
+ *    the base is the event, the namespace a long id.
+ *  - Otherwise the first word and the longest tail that fit, joined by `…` at a `_` or `/`
+ *    boundary: `REASONING_MESSAGE_CONTENT` → `REASONING…MESSAGE_CONTENT` would not fit, so
+ *    `REASONING…CONTENT`. The END of a protocol name (`_START`, `_CONTENT`, `_END`) is what
+ *    differs between neighbours; a plain end-truncation is exactly what hides it.
+ */
+export function columnLabel(eventType: string, max: number = MAX_COLUMN_LABEL): string {
+  if (eventType.length <= max) return eventType;
+  const bar = eventType.indexOf('|');
+  if (bar > 0 && bar + 2 <= max) return `${eventType.slice(0, bar)}|…`;
+  const boundaries: number[] = [];
+  for (let index = 0; index < eventType.length; index += 1) {
+    const char = eventType[index];
+    if (char === '_' || char === '/') boundaries.push(index);
+  }
+  const first = boundaries[0];
+  if (first !== undefined) {
+    const head = eventType.slice(0, first);
+    // Boundaries in order, so the first tail that fits is the longest one.
+    for (const boundary of boundaries) {
+      const candidate = `${head}…${eventType.slice(boundary + 1)}`;
+      if (candidate.length <= max) return candidate;
+    }
+    const last = boundaries[boundaries.length - 1] ?? first;
+    const tail = `…${eventType.slice(last + 1)}`;
+    if (tail.length <= max) return tail;
+  }
+  return `${eventType.slice(0, max - 1)}…`;
+}

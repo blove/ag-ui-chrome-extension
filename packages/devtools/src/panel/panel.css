@@ -2419,18 +2419,24 @@ code {
   border-bottom: 1px solid var(--agui-border);
 }
 
-/* The event name reads bottom-to-top, capped and truncated; the full name is in `title`. */
+/*
+ * The event name reads bottom-to-top. Monospace, like the row names, so the header's height is a
+ * known function of its length: `columnLabel` (matrix.ts) paints at most 20 characters — every
+ * common AG-UI name whole, so TEXT_MESSAGE_START/_CONTENT/_END are three different columns — and
+ * the cap below fits exactly that. The ellipsis is only a backstop; the full name is in `title`.
+ */
 .agui-signals__col {
   display: block;
   box-sizing: border-box;
   width: 18px;
-  max-height: 9.5em;
+  max-height: calc(20ch + 8px);
   padding: 4px 0;
   overflow: hidden;
   border: 0;
   background: transparent;
   color: var(--agui-fg-muted);
   font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
   line-height: 18px;
   white-space: nowrap;

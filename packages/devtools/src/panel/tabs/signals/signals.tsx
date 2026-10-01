@@ -18,7 +18,7 @@ import type { PanelState } from '../../model/panel-types';
 import type { PanelStore } from '../../model/store';
 import { selectScope, selectSeq, selectTab } from '../../model/store';
 import { usePanelState } from '../../model/use-panel-state';
-import { MAX_COLUMNS, signalBlocks, type SignalBlock } from './matrix';
+import { columnLabel, MAX_COLUMNS, signalBlocks, type SignalBlock } from './matrix';
 
 /** G7, verbatim. Exported so the tests and the visual gate hold the exact wording. */
 export const SIGNALS_EMPTY_TEXT =
@@ -80,11 +80,13 @@ function Block({
                       data-seq={report.seq}
                       data-selected={selectedKey === key ? 'true' : undefined}
                       title={`${report.eventType} — event ${String(report.seq)}. Find its frame in Timeline.`}
+                      // The painted label may be abbreviated (`columnLabel`); the name is not.
+                      aria-label={report.eventType}
                       onClick={() => {
                         onOpen(report);
                       }}
                     >
-                      {report.eventType}
+                      {columnLabel(report.eventType)}
                     </button>
                   </th>
                 );

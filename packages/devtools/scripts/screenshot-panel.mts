@@ -1745,6 +1745,27 @@ async function checkSignals(browser: Browser, origin: string): Promise<void> {
         );
       }
 
+      // Column headers must tell neighbouring events apart. They used to clip at ~9 characters, so
+      // TEXT_MESSAGE_START, _CONTENT and _END all painted as the same "TEXT_MESSAG…". Every header
+      // here is ≤ 20 characters, so each must paint its whole name, unclipped.
+      const headers = await session.page.$$eval(
+        `.agui-signals__block[data-agent="${SIGNALS_SEED.agUiAgent}"] .agui-signals__col`,
+        (els) =>
+          els.map((el) => ({
+            name: el.getAttribute('aria-label') ?? '',
+            text: (el.textContent ?? '').trim(),
+            clipped: el.scrollHeight > el.clientHeight + 1,
+          })),
+      );
+      const bad = headers.filter((header) => header.text !== header.name || header.clipped);
+      if (bad.length > 0) {
+        fail(`Signals column headers do not paint their full event names: ${JSON.stringify(bad)}`);
+      }
+      const painted = new Set(headers.map((header) => header.text));
+      for (const name of ['TEXT_MESSAGE_START', 'TEXT_MESSAGE_CONTENT']) {
+        if (!painted.has(name)) fail(`no Signals column header reads ${name}; headers: ${JSON.stringify([...painted])}`);
+      }
+
       await session.page.screenshot({ path: join(outDir, 'signals.png'), fullPage: true });
 
       await session.page.click(
@@ -2403,7 +2424,7 @@ async function main(): Promise<void> {
     `  empty: G7's sentence, no fault words — ${outDir}/signals-empty.png`,
   );
   console.log(
-    `  live: two agent blocks, ${String(SIGNALS_SEED.litCells)} lit cells painted, a column click selects ` +
+    `  live: two agent blocks, ${String(SIGNALS_SEED.litCells)} lit cells painted, full unclipped column names, a column click selects ` +
       `Timeline seq ${String(SIGNALS_SEED.expectedRecordSeq)}; a pseudo-event says "no matching frame" — ` +
       `${outDir}/signals.png, ${outDir}/signals-selected.png`,
   );

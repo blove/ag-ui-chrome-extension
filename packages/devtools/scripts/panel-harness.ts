@@ -136,19 +136,24 @@ function seedReport(
   return { v: 1, agent, adapter, seq, eventType, wrote, tMs };
 }
 
+/**
+ * The `wrote` lists are what Threadplane's instrumentation actually reports for these events (its
+ * own tests on cacheplane/threadplane#1203): TEXT_MESSAGE_END writes nothing, so it has no report,
+ * and a LangGraph run settles in two `run:end` steps.
+ */
 const SEED_REPORTS = [
-  seedReport(AG_UI_AGENT, 'ag-ui', 1, 'submit', ['messages', 'status', 'isLoading'], 90),
+  seedReport(AG_UI_AGENT, 'ag-ui', 1, 'submit', ['messages'], 90),
   seedReport(AG_UI_AGENT, 'ag-ui', 2, 'RUN_STARTED', ['status', 'isLoading', 'error', 'interrupt', 'customEvents', 'activities'], 101),
   seedReport(AG_UI_AGENT, 'ag-ui', 3, 'TEXT_MESSAGE_START', ['messages'], 141),
   seedReport(AG_UI_AGENT, 'ag-ui', 4, 'TEXT_MESSAGE_CONTENT', ['messages'], 181),
   seedReport(AG_UI_AGENT, 'ag-ui', 5, 'TEXT_MESSAGE_CONTENT', ['messages'], 221),
   seedReport(AG_UI_AGENT, 'ag-ui', 6, 'TEXT_MESSAGE_CONTENT', ['messages'], 261),
-  seedReport(AG_UI_AGENT, 'ag-ui', 7, 'TEXT_MESSAGE_END', ['messages'], 301),
-  seedReport(AG_UI_AGENT, 'ag-ui', 8, 'STATE_SNAPSHOT', ['state'], 341),
-  seedReport(AG_UI_AGENT, 'ag-ui', 9, 'RUN_FINISHED', ['status', 'isLoading'], 381),
-  seedReport(LANGGRAPH_AGENT, 'langgraph', 1, 'run:start', ['status', 'isThreadLoading'], 50),
-  seedReport(LANGGRAPH_AGENT, 'langgraph', 2, 'values', ['values', 'messages'], 60),
-  seedReport(LANGGRAPH_AGENT, 'langgraph', 3, 'run:end', ['status'], 70),
+  seedReport(AG_UI_AGENT, 'ag-ui', 7, 'STATE_SNAPSHOT', ['state', 'messages'], 341),
+  seedReport(AG_UI_AGENT, 'ag-ui', 8, 'RUN_FINISHED', ['messages', 'status', 'isLoading', 'interruptSession', 'interrupt'], 381),
+  seedReport(LANGGRAPH_AGENT, 'langgraph', 1, 'run:start', ['status', 'error', 'custom', 'toolProgress', 'messages'], 50),
+  seedReport(LANGGRAPH_AGENT, 'langgraph', 2, 'values', ['values', 'messages', 'subagents', 'toolCalls'], 60),
+  seedReport(LANGGRAPH_AGENT, 'langgraph', 3, 'run:end', ['subagents'], 70),
+  seedReport(LANGGRAPH_AGENT, 'langgraph', 4, 'run:end', ['status'], 71),
 ];
 
 /**
