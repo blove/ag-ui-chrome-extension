@@ -62,7 +62,7 @@ export interface InjectHost extends FetchHost {
   addEventListener?: SignalsTarget['addEventListener'];
 }
 
-export const MARKER_VERSION = '0.1.0';
+export const MARKER_VERSION = '0.2.0';
 
 /**
  * Re-state `conn-open` with the first `frames` message of each connection.

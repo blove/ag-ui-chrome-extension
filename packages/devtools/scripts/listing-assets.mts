@@ -18,14 +18,20 @@
  * failure this script exists to prevent, so a refusal exits 1 naming what must exist first. Four
  * good screenshots and a loud list of blockers beats five and a rejected submission.
  *
- * ALL FIVE RENDER TODAY, and a zero exit is now the expected result rather than a milestone. Do
- * not read that as the gates having been satisfied by loosening them: shot 5 was refused because
- * its subject — the per-origin capture grant offer — was unreachable under the `no-devtools` shim
- * and suppressed for an imported source. It is now shot with the `devtools-ungranted` shim and no
- * fixture at all, which is the extension's honest first-run state, and its gate tests that the
- * grant control is on screen and reads as an offer. If this run starts failing again, the refusal
- * text names the subject that went missing; making it pass by weakening the gate is the failure
- * mode this whole file is written against.
+ * ALL FIVE RENDER TODAY, and a zero exit is the expected result. Do not read that as the gates
+ * having been satisfied by loosening them. The 0.2.0 storyboard replaced three of the 0.1 shots —
+ * State and the privacy grant offer made way for LangGraph Platform and the UI inspector, and the
+ * export shot moved onto a LangGraph capture — and the reason the export shot moved is itself a
+ * gate doing its job: once the Threadplane test button shipped (§14.2), an AG-UI-only capture
+ * renders that button disabled with its reason, and the old shot was refused rather than
+ * photographed with a greyed-out control under its caption. If this run starts failing again, the
+ * refusal text names the subject that went missing; making it pass by weakening the gate is the
+ * failure mode this whole file is written against.
+ *
+ * Every shot photographs an IMPORTED capture under the `no-devtools` shim. None needs a
+ * Threadplane development build or its page hook — Signals and Simulate are not in the gallery,
+ * because no released Threadplane yet has the hook they read, and a screenshot of a view that is
+ * empty for every user would argue with its own caption.
  *
  * The two promo tiles below (`TILES`) are NOT gated the same way, and that is deliberate rather
  * than an oversight: a screenshot photographs the built panel, so an entry the product cannot yet
@@ -33,7 +39,7 @@
  * refuses above. A tile is prose over a static mark — the same category of asset as
  * `listing/copy.md`'s store description, which already describes the finished tool rather than
  * today's build. That is why the marquee's copy can still claim the whole product in the same run
- * that refuses shot 5: one is a claim about an image, the other is a claim about the product's
+ * that refuses a shot: one is a claim about an image, the other is a claim about the product's
  * destination. The gap between the tiles' prose and today's build is the same one the design doc
  * already records as a deferred requirement; closing it is a product task, not a bug in this
  * script.
@@ -45,19 +51,19 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Browser, FrameLocator } from 'playwright';
 import { chromium } from 'playwright';
-// The one source of truth for how many redaction groups shot 4 photographs. `redact.ts` is plain
+// The one source of truth for how many redaction groups shot 5 photographs. `redact.ts` is plain
 // TypeScript with a single type-only import, so unlike a Preact component — importing one would
 // drag JSX and the panel's whole module graph into a Node script — it costs nothing to import here,
-// and a sixth group added to §11 makes shot 4's gate expect six without anyone remembering to.
+// and a sixth group added to §11 makes shot 5's gate expect six without anyone remembering to.
 import { ALL_REDACTION_GROUPS } from '../src/core/jsonl/redact';
-import type { Session, ShimKind } from './panel-harness';
+import type { Session } from './panel-harness';
 import { importFixture, openPanel, PANEL_PATH, startServer } from './panel-harness';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = process.env.PANEL_DIST ?? join(packageRoot, 'dist');
 const listingDir = join(packageRoot, 'listing');
 const outDir = process.env.LISTING_OUT ?? join(listingDir, 'out');
-const fixture = join(listingDir, 'fixtures/demo.agui.jsonl');
+const fixturesDir = join(listingDir, 'fixtures');
 
 const SHOT_WIDTH = 1280;
 const SHOT_HEIGHT = 800;
@@ -68,20 +74,11 @@ interface Shot {
   sub: string;
   scheme: 'light' | 'dark';
   /**
-   * The `chrome` surface the panel boots against. Defaults to `no-devtools`, which is what four
-   * of the five shots want: they photograph an imported capture, where the panel's Chrome-facing
-   * state is irrelevant and the least shim is the most honest one.
+   * The capture to import, by file name under `listing/fixtures/` — each one written by
+   * `pnpm listing:fixture` (`scripts/build-demo-fixture.ts`), which documents what every shot
+   * relies on it to carry.
    */
-  shim?: ShimKind;
-  /**
-   * Import `listing/fixtures/demo.agui.jsonl` before driving. Defaults to true.
-   *
-   * Only shot 5 sets it false, and it MUST: `CaptureBanner` returns `null` outright for an
-   * imported source (`capture-status.tsx:54`), so a shot whose subject is the capture banner
-   * cannot also be a shot of a loaded file. A capture already on disk cannot depict the moment
-   * someone opts an origin in.
-   */
-  importsFixture?: boolean;
+  fixture: 'demo.agui.jsonl' | 'demo-langgraph.agui.jsonl' | 'demo-genui.agui.jsonl';
   /** Drive the panel into the state this shot depicts. Throw to fail the run. */
   drive: (panel: FrameLocator) => Promise<void>;
 }
@@ -99,26 +96,15 @@ async function waitForSelectedDetail(panel: FrameLocator): Promise<void> {
   await panel.locator('.agui-detail__title').waitFor({ timeout: 5000 });
 }
 
-/*
- * A whole-tab scan for unbuilt-capability wording used to live here, and it is GONE rather than
- * merely unused. It existed for shot 5 while that shot photographed the Session tab; shot 5 now
- * frames the capture banner over an empty Timeline, and `.agui-session` is not in the image at
- * all. A gate whose subject is off screen is the exact defect this file has already been bitten by
- * twice — shot 4 was once refused by two hardcoded Session rows that said nothing about export —
- * so keeping the scan "just in case" would leave a check that reads as covering this shot while
- * looking at a tab it never opens. `refuseWithoutGrantPrompt` below is shot 5's only gate, and it
- * looks at shot 5's only subject.
- */
-
 /**
  * Refuse the export shot unless the export panel is actually OFFERING an export.
  *
- * Same principle as `refuseWithoutGrantPrompt` below, applied to shot 4's own subject. The panel
+ * Every gate here tests its own shot's subject; this one is shot 5's, the export panel. The panel
  * decides one thing — `exportBlockedReason` (`export/build.ts:183`) — and renders it three ways:
  * `.agui-export__blocked` carries the sentence, the group `<fieldset>` goes `disabled`, and every
  * action button goes `disabled`. All three are checked rather than one, because they are three
  * separate JSX expressions that can drift, and this shot photographs all three at once: a frame
- * full of greyed-out checkboxes under "Record a run. Replay it anywhere." is the self-contradicting
+ * full of greyed-out checkboxes under "Record a run. Replay it" is the self-contradicting
  * asset this script exists to refuse.
  *
  * The download button is matched by the extension in its label, not by position, because
@@ -126,12 +112,16 @@ async function waitForSelectedDetail(panel: FrameLocator): Promise<void> {
  * rename that invalidates the caption too, and a loud failure is the correct response to it — the
  * alternative, `.first()`, would keep passing while the button beneath it said something else.
  *
- * Nothing here scans for the tab's unbuilt-capability wording. Shot 4's frame is scrolled to the
+ * Nothing here scans for the tab's unbuilt-capability wording. Shot 5's frame is scrolled to the
  * export controls (see `drive`), and the rows that confess unbuilt discovery are not in it; gating
  * this shot on them was a gate that never looked at its own subject.
  */
 async function refuseBlockedExport(panel: FrameLocator): Promise<void> {
-  const blocked = panel.locator('.agui-export__blocked');
+  // By test id, not by `.agui-export__blocked`: the Threadplane button's own disabled reason
+  // (`agui-export-threadplane-reason`) wears the same class, and matching the class refused this
+  // shot on every AG-UI-only capture after §14.2 shipped — for a reason that is not the export's.
+  // That reason is checked separately below, as the button this shot's caption names.
+  const blocked = panel.locator('[data-testid="agui-export-blocked"]');
   if ((await blocked.count()) > 0) {
     throw new Error(
       `the export panel is refusing to export: "${(await blocked.innerText()).trim()}" — so this ` +
@@ -150,6 +140,21 @@ async function refuseBlockedExport(panel: FrameLocator): Promise<void> {
     );
   }
 
+  const threadplane = panel.locator('.agui-export__actions button', {
+    hasText: 'Download Threadplane test (.spec.ts)',
+  });
+  if ((await threadplane.count()) !== 1 || (await threadplane.isDisabled())) {
+    const reason = panel.locator('[data-testid="agui-export-threadplane-reason"]');
+    throw new Error(
+      'the export panel offers no enabled `Download Threadplane test (.spec.ts)` button, and the ' +
+        'sub-caption promises one. ' +
+        ((await reason.count()) > 0
+          ? `It says: "${(await reason.innerText()).trim()}" — this shot must import a capture with ` +
+            'a LangGraph Platform connection (`demo-langgraph.agui.jsonl`).'
+          : 'Either the label changed in `export-panel.tsx`, or the button is disabled with no reason shown.'),
+    );
+  }
+
   const groups = panel.locator('.agui-export__group input[type="checkbox"]:enabled');
   const count = await groups.count();
   if (count !== ALL_REDACTION_GROUPS.length) {
@@ -165,62 +170,62 @@ async function refuseBlockedExport(panel: FrameLocator): Promise<void> {
 }
 
 /**
- * The one label that makes shot 5 the shot it claims to be: an OFFER, naming an ORIGIN.
+ * Refuse the LangGraph shot unless the selected frame is shown the way its caption says: named by
+ * its LangGraph SSE event, with the AG-UI events the panel derived from it listed beside it.
  *
- * Anchored at both ends, because a partial match is how this check would go quietly wrong.
- * `capture-status.tsx:165` renders the same `.agui-banner__action` element on both capture-off
- * branches, and both label it `Enable capture for {origin}` — so a control that is present but
- * reads as anything else means the banner took a branch this shot's caption does not describe, and
- * that is a refusal rather than a detail. The origin half is not decoration either: "No network
- * egress. Ever." is a claim about a per-ORIGIN choice, and a button offering to enable capture
- * over nothing in particular would not show it.
+ * `seq` 9 is the run's first message closing — a `messages` frame with an EMPTY chunk that the
+ * panel reads as two AG-UI events, TOOL_CALL_END and TEXT_MESSAGE_END. That is the whole point of
+ * the shot (nothing on the wire says either), so the gate names both, and a re-cut fixture that
+ * moves them fails here rather than photographing a frame that derives nothing.
  */
-const GRANT_OFFER = /^Enable capture for https?:\/\/\S+$/;
+const LANGGRAPH_SEQ = 9;
+const LANGGRAPH_DERIVED = ['TOOL_CALL_END', 'TEXT_MESSAGE_END'];
+
+async function refuseUnderivedFrame(panel: FrameLocator): Promise<void> {
+  const badge = (await panel.locator('.agui-issue-badge__count').textContent())?.trim();
+  if (badge !== '0 issues') {
+    throw new Error(
+      `the issue badge reads ${JSON.stringify(badge)}; the LangGraph demo capture is specified to be ` +
+        'clean, and a red badge would put a finding in a shot about something else. Re-run ' +
+        '`pnpm listing:fixture`.',
+    );
+  }
+  const row = panel.locator(`.agui-event-row[data-seq="${String(LANGGRAPH_SEQ)}"]`);
+  const label = (await row.innerText()).trim();
+  if (!/^\d+\s+messages\b/.test(label)) {
+    throw new Error(
+      `row ${String(LANGGRAPH_SEQ)} reads ${JSON.stringify(label)}; it should be a \`messages\` frame, ` +
+        'named by its LangGraph SSE event as the caption says.',
+    );
+  }
+  const derived = panel.locator('section[aria-label="Derived"] li code');
+  await derived.first().waitFor({ timeout: 5000 });
+  const listed = await derived.allInnerTexts();
+  if (LANGGRAPH_DERIVED.some((type) => !listed.includes(type))) {
+    throw new Error(
+      `the Derived section of seq ${String(LANGGRAPH_SEQ)} lists ${JSON.stringify(listed)}; this shot ` +
+        `exists to show ${LANGGRAPH_DERIVED.join(' and ')} read off a frame that carries neither.`,
+    );
+  }
+}
 
 /**
- * Refuse the privacy shot unless the per-origin capture grant offer is on screen and reads as one.
- *
- * This gate tests shot 5's only subject, and there is deliberately no second gate beside it.
- * "No network egress. Ever." is a claim about a CHOICE the user makes — design §5's prompt,
- * `Enable capture for <origin>` — and a screenshot that does not contain that prompt is arguing
- * the point in prose instead of showing it.
- *
- * `.agui-banner__action` is the grant control itself. `waitFor` rather than a bare `count()`: the
- * origin arrives through an `inspectedWindow.eval` CALLBACK (`app.tsx:35`), so the banner is on
- * its `unsupported` branch — no control at all — for the first frames after the panel mounts. A
- * point sample here would be a race that fails on a slow machine and, worse, could pass on a fast
- * one for the wrong reason.
- *
- * The count is asserted at exactly one so the label read below is unambiguous. Two banners on
- * screen would be a panel state nobody designed, and `innerText` on a multi-match locator throws
- * Playwright's strict-mode error — a message about selectors, in the one script whose whole job is
- * saying precisely why an asset was refused.
+ * Refuse the UI shot unless the inspector found what the caption says it finds: a component type
+ * the app's own advertised catalog lacks, flagged EXACT (against that catalog, not the inferred
+ * basic one), with the node it names badged `unknown type` in the tree.
  */
-async function refuseWithoutGrantPrompt(panel: FrameLocator): Promise<void> {
-  const action = panel.locator('.agui-banner__action');
-  try {
-    await action.first().waitFor({ timeout: 5000 });
-  } catch {
-    // Swallowed on purpose: the count and label below produce the diagnosis, and Playwright's own
-    // `locator.waitFor: Timeout 5000ms` names the selector without naming what it was for.
+async function refuseWithoutCatalogFinding(panel: FrameLocator): Promise<void> {
+  await panel.locator('.agui-ui__surface').first().waitFor({ timeout: 5000 });
+  const finding = panel.locator('.agui-ui__finding[data-code="unknown_component"][data-basis="exact"]');
+  const node = panel.locator('.agui-ui__node[data-state="unknown-type"]');
+  if ((await finding.count()) === 0 || (await node.count()) === 0) {
+    throw new Error(
+      `the UI tab shows ${String(await finding.count())} exact unknown-component finding(s) and ` +
+        `${String(await node.count())} node(s) badged unknown type; this shot needs at least one of ` +
+        'each. `demo-genui.agui.jsonl` renders a DeliveryMap its advertised catalog does not define — ' +
+        're-run `pnpm listing:fixture`, or check the catalog parse in `core/genui/catalog.ts`.',
+    );
   }
-
-  const count = await action.count();
-  const label = count === 1 ? (await action.innerText()).trim() : '';
-  if (count === 1 && GRANT_OFFER.test(label)) return;
-
-  throw new Error(
-    'the per-origin capture grant offer is not on screen, and it is the whole subject of this ' +
-      'shot: privacy here is a choice the user is offered, not a sentence in a caption. Expected ' +
-      'exactly one `.agui-banner__action` reading `Enable capture for <origin>` (design §5, ' +
-      `\`capture-status.tsx:165\`); found ${String(count)}` +
-      (count === 1 ? ` reading ${JSON.stringify(label)}` : '') +
-      '. The banner only offers on its capture-`off` branch, which needs all three of: the ' +
-      '`devtools-ungranted` shim (so `resolveOrigin` names an origin and capture leaves ' +
-      '`unsupported`), a non-localhost origin (`grant.ts` auto-enables the localhost family ' +
-      'straight to `on`), and no imported fixture (`capture-status.tsx:54` returns null for an ' +
-      'imported source). Check which of those moved before changing this gate.',
-  );
 }
 
 const STORYBOARD: Shot[] = [
@@ -229,6 +234,7 @@ const STORYBOARD: Shot[] = [
     headline: 'Every AG-UI event, decoded and in order',
     sub: 'Runs, steps, tool calls and state — grouped, timed, and inspectable.',
     scheme: 'light',
+    fixture: 'demo.agui.jsonl',
     async drive(panel) {
       await panel.locator('.agui-event-row[data-seq="10"]').click();
       await waitForSelectedDetail(panel);
@@ -239,6 +245,7 @@ const STORYBOARD: Shot[] = [
     headline: 'Protocol violations, named and located',
     sub: 'The validator finds what the Network panel cannot even see.',
     scheme: 'light',
+    fixture: 'demo.agui.jsonl',
     async drive(panel) {
       const badge = panel.locator('.agui-issue-badge');
       await badge.waitFor({ timeout: 5000 });
@@ -298,41 +305,60 @@ const STORYBOARD: Shot[] = [
     },
   },
   {
-    file: '3-state.png',
-    headline: 'Watch state rebuild, patch by patch',
-    sub: 'Every RFC 6902 patch, and the object it produced.',
+    file: '3-langgraph.png',
+    headline: 'LangGraph Platform streams, read as AG-UI',
+    /*
+     * Both halves are on screen: the list names every row by its LangGraph SSE event (`metadata`,
+     * `messages`, `updates`, `values`), and the detail pane's Derived section — in the panel's own
+     * words, "derived by the panel, not sent on the wire" — lists the AG-UI events the selected
+     * frame implies. `refuseUnderivedFrame` checks both.
+     */
+    sub: 'Every frame keeps its LangGraph name; the panel lists the AG-UI events each one implies.',
     scheme: 'light',
+    fixture: 'demo-langgraph.agui.jsonl',
     async drive(panel) {
-      await panel.locator('button[role="tab"][id="agui-tab-state"]').click();
-      if ((await panel.locator('.agui-coming').count()) > 0) {
-        throw new Error(
-          'the State tab is still a placeholder. This shot cannot be taken until the tab is ' +
-            'built — see the design, decision L1: submit when the product is whole.',
-        );
-      }
-      /*
-       * A bare `count()` is a point sample, and "zero placeholders" is not the same claim as "the
-       * tab rendered". `App` renders only the active tab (`app.tsx:186-214`), synchronously, so
-       * today the count above is decisive — but a State tab that loads its patch view lazily would
-       * report zero placeholders while still mounting, and this shot would photograph the gap.
-       * Waiting for the built root turns the absence of a placeholder into the presence of a tab.
-       */
-      await panel.locator('.agui-state').waitFor({ timeout: 5000 });
+      await panel.locator(`.agui-event-row[data-seq="${String(LANGGRAPH_SEQ)}"]`).click();
+      await waitForSelectedDetail(panel);
+      await refuseUnderivedFrame(panel);
+      // The Derived section sits under the payload, below the fold of a 604px card. Scroll the
+      // detail pane's own scroller to it — `block: 'end'`, so the payload's tail stays above it
+      // and the frame reads as one record rather than a list floating free of its source.
+      await panel.locator('section[aria-label="Derived"]').evaluate((section) => {
+        section.scrollIntoView({ block: 'end' });
+      });
     },
   },
   {
-    file: '4-replay.png',
-    headline: 'Record a run. Replay it anywhere.',
+    file: '4-ui.png',
+    headline: 'Generative UI, component by component',
     /*
-     * The sub describes the redaction choice rather than repeating "reopen it on any machine",
-     * because the frame is scrolled to the redaction controls and a caption should name what is
-     * under it — the headline already carries the round trip. Every word of it is checked against
-     * the build: the download button is literally "Download capture (.agui.jsonl)"; the five
-     * groups are `ALL_REDACTION_GROUPS`, each its own checkbox; and "unless you say so" is the
-     * fieldset's own legend, backed by `groups` starting empty in `export-panel.tsx:59`.
+     * "A2UI surfaces" is the surface chip on screen; "the app's catalog" is the finding text
+     * (`DeliveryMap is not in the app's catalog`), EXACT because the capture's request advertised
+     * the catalog. Nothing here needs Threadplane's render report: the tab says on screen that an
+     * imported capture's node states come from the wire checks.
      */
-    sub: 'Export it as .agui.jsonl — whole for yourself, or redacted group by group for a bug report.',
+    sub: "A2UI surfaces as component trees, with the types the app's catalog lacks flagged.",
     scheme: 'light',
+    fixture: 'demo-genui.agui.jsonl',
+    async drive(panel) {
+      await panel.locator('button[role="tab"][id="agui-tab-ui"]').click();
+      await refuseWithoutCatalogFinding(panel);
+    },
+  },
+  {
+    file: '5-export.png',
+    headline: 'Record a run. Replay it — or ship it as a test.',
+    /*
+     * Every clause is a control in frame: "redacted group by group" is the five checkboxes
+     * (`ALL_REDACTION_GROUPS`); `.agui.jsonl` is the download button's own label; and "a
+     * ready-to-run Threadplane test" is `Download Threadplane test (.spec.ts)`, enabled because
+     * this capture has a LangGraph connection. "Ready-to-run" is held to account outside this
+     * script: `pnpm verify:threadplane` generates this very capture's spec, plain and redacted,
+     * and runs it inside a Threadplane checkout.
+     */
+    sub: 'Export .agui.jsonl, redacted group by group — or a LangGraph run as a ready-to-run Threadplane test.',
+    scheme: 'light',
+    fixture: 'demo-langgraph.agui.jsonl',
     async drive(panel) {
       await panel.locator('button[role="tab"][id="agui-tab-session"]').click();
       await panel.locator('.agui-export').waitFor({ timeout: 5000 });
@@ -357,7 +383,7 @@ const STORYBOARD: Shot[] = [
        * root leaves the section's own label one pixel above the fold.
        *
        * This is also what makes the shot REPRODUCIBLE, which it was not before. `describeSource`
-       * (`session.tsx:29`) renders `demo.agui.jsonl (imported 11:36:29 AM)` — a wall clock read at
+       * (`session.tsx:29`) renders `demo-langgraph.agui.jsonl (imported 11:36:29 AM)` — a wall clock read at
        * import time, so this PNG's bytes changed on every run and every regeneration arrived in
        * review as a diff nobody could account for. That row is in the Source grid, which is now
        * scrolled off the top of the card. Nothing left in frame reads a clock: the summary line is
@@ -367,57 +393,6 @@ const STORYBOARD: Shot[] = [
       await panel.locator('.agui-session__heading', { hasText: 'Export' }).evaluate((heading) => {
         heading.scrollIntoView({ block: 'start' });
       });
-    },
-  },
-  {
-    file: '5-privacy.png',
-    headline: 'No network egress. Ever.',
-    /*
-     * The sub names what the frame actually foregrounds — the offer — rather than restating the
-     * headline's absolutes. "Per-origin opt-in, offered up front" is the button in the image and
-     * `grant.ts`'s decision D3. It stops deliberately short of "capture is off until you grant":
-     * that is FALSE for the localhost family, which the manifest registers statically, and a
-     * caption is not the place to carry an exception.
-     *
-     * The second half replaces "Nothing is uploaded, synced, or persisted to disk", which was
-     * written when this shot was going to photograph the Session tab. In THIS frame the toolbar is
-     * on screen with an `Export (unredacted)` button in it, and a flat "nothing is persisted to
-     * disk" over a visible export control is a caption arguing with the pixels beneath it — the
-     * one failure this whole script exists to refuse. `copy.md` is careful about exactly this and
-     * says "Nothing on disk *by default*"; rather than compress that qualifier into a sub, the
-     * clauses here are copy.md's own list under this same headline, each asserted by
-     * `pnpm verify:build` against the built manifest: no static `host_permissions`, and no fetch
-     * or telemetry anywhere in the panel or the service worker.
-     */
-    sub: 'Per-origin opt-in, offered up front. No remote host permissions, no fetch, no telemetry.',
-    scheme: 'dark',
-    /*
-     * The two settings that make this shot possible, and neither is a convenience.
-     *
-     * `devtools-ungranted` is the minimum `chrome` surface that lets the panel NAME the inspected
-     * origin; without it `resolveOrigin` returns early (`app.tsx:34`), capture stays `unsupported`,
-     * and the banner renders the "only runs inside the DevTools panel" branch, which offers no
-     * control at all. Importing nothing is the other half: `CaptureBanner` returns null for an
-     * imported source, so this is the one storyboard entry that cannot load the demo fixture.
-     *
-     * What is left is the extension's honest first-run state — an empty panel offering to enable
-     * capture on a site — and the empty timeline is the SUBJECT here, not a shortcoming. The tool
-     * ships inert and asks before it does anything; a frame full of somebody's captured prompts
-     * under "No network egress. Ever." would be arguing the opposite.
-     *
-     * It is also what makes this shot byte-reproducible. Nothing in frame reads a clock: the
-     * origin is a constant in the shim, and `describeSource`'s `(imported 11:36:29 AM)` — the wall
-     * clock that made shot 4 differ on every run — belongs to the Session tab, which is not opened
-     * here and would in any case have no import to describe.
-     */
-    shim: 'devtools-ungranted',
-    importsFixture: false,
-    async drive(panel) {
-      // No tab switch: the banner is shell chrome (`app.tsx:225`), rendered above the tab panel on
-      // whichever tab is active, and Timeline's empty state is the rest of the story this frame
-      // tells. Opening Session instead would push the offer up against a status table that says
-      // nothing about consent.
-      await refuseWithoutGrantPrompt(panel);
     },
   },
 ];
@@ -541,9 +516,6 @@ async function shoot(browser: Browser, origin: string, shot: Shot): Promise<void
     viewport: { width: SHOT_WIDTH, height: SHOT_HEIGHT },
     deviceScaleFactor: 2,
     url: `${origin}/listing/frames/screenshot.html`,
-    // `addInitScript` applies to every frame in the context, which is what makes the iframed panel
-    // boot under this shim rather than the outer document's.
-    shim: shot.shim,
   });
   try {
     const { page } = session;
@@ -558,7 +530,7 @@ async function shoot(browser: Browser, origin: string, shot: Shot): Promise<void
 
     const panel = page.frameLocator('iframe.frame__panel');
     await panel.locator('.agui-app, .agui-drop').first().waitFor({ timeout: 10_000 });
-    if (shot.importsFixture !== false) await importFixture(panel, fixture);
+    await importFixture(panel, join(fixturesDir, shot.fixture));
     await shot.drive(panel);
 
     await capture(browser, session, {
@@ -607,9 +579,12 @@ async function main(): Promise<void> {
     console.error(`FAIL: ${join(distDir, PANEL_PATH)} does not exist. Run \`pnpm build\` first.`);
     process.exit(1);
   }
-  if (!existsSync(fixture)) {
-    console.error(`FAIL: ${fixture} does not exist. Run \`pnpm listing:fixture\` first.`);
-    process.exit(1);
+  for (const shot of STORYBOARD) {
+    const path = join(fixturesDir, shot.fixture);
+    if (!existsSync(path)) {
+      console.error(`FAIL: ${path} does not exist. Run \`pnpm listing:fixture\` first.`);
+      process.exit(1);
+    }
   }
 
   mkdirSync(outDir, { recursive: true });

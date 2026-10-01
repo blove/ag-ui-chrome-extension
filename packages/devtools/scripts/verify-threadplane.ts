@@ -109,6 +109,12 @@ function captures(): Capture[] {
     { name: 'lg-join', jsonl: joinCapture },
     { name: 'lg-resume', jsonl: resume },
     { name: 'lg-tool-calls', jsonl: toolCalls },
+    // The capture the store's export screenshot photographs with its Threadplane button enabled:
+    // the caption says the test is ready to run, so the spec it generates is held to that here.
+    {
+      name: 'listing-demo-langgraph',
+      jsonl: readFileSync(new URL('../listing/fixtures/demo-langgraph.agui.jsonl', import.meta.url), 'utf8'),
+    },
   ];
 }
 

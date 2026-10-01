@@ -216,6 +216,23 @@ the gates being relaxed; both of shot 5's failure paths (the shim reverted, and 
 that auto-enables straight to `on`) were re-verified to refuse and delete. Shot 2 is deliberately
 *not* filtered to the flagged row: "located" is a claim a one-row list cannot make.
 
+**The 0.2.0 storyboard (2026-10-01).** Shots 1 and 2 are unchanged. Shot 3 (State) and shot 5
+(the privacy grant offer) were retired to make room for what 0.2.0 added, and shot 4 moved:
+
+| # | Caption | Capture | What is on screen |
+|---|---|---|---|
+| 3 | LangGraph Platform streams, read as AG-UI | `demo-langgraph` | Rows named by LangGraph SSE event; an empty `messages` chunk selected, its Derived section listing TOOL_CALL_END and TEXT_MESSAGE_END |
+| 4 | Generative UI, component by component | `demo-genui` | The UI tab: an A2UI surface as a component tree, a `DeliveryMap` badged unknown type, EXACT findings against the advertised catalog |
+| 5 | Record a run. Replay it — or ship it as a test. | `demo-langgraph` | The export panel with the five groups, the `.agui.jsonl` download and an enabled Threadplane test button |
+
+Shot 4 had to move, and a gate is why: once §14.2 shipped, an AG-UI-only capture renders the
+Threadplane button disabled with its reason in an element that shares `.agui-export__blocked`, so
+the old shot was refused. The gate now reads the export's own blocked sentence by test id and
+separately requires the Threadplane button enabled — which only a LangGraph capture can satisfy.
+`pnpm verify:threadplane` runs the spec that capture generates inside a Threadplane checkout, so
+the caption's "ready-to-run" is tested, not asserted. Signals and Simulate are not in the gallery:
+both read a Threadplane dev hook no released Threadplane carries yet (0.3.0).
+
 Promo tiles carry the mark, the name, and the summary line: 440×280 small tile, and a 1400×560
 marquee that is only used if the store features the item but costs nothing to emit alongside.
 

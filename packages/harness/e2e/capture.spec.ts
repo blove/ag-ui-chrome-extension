@@ -146,7 +146,7 @@ test('the MAIN-world content script reaches the harness page', async () => {
     () =>
       (window as unknown as { __AGUI_DEVTOOLS__?: Record<string, unknown> }).__AGUI_DEVTOOLS__,
   );
-  expect(marker).toEqual({ version: '0.1.0', protocol: 1, source: 'agui-dt' });
+  expect(marker).toEqual({ version: '0.2.0', protocol: 1, source: 'agui-dt' });
 });
 
 test('the real HttpAgent runs the happy scenario and the page renders it', () => {

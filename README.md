@@ -141,9 +141,10 @@ Copy lives in `packages/devtools/listing/copy.md`; the generated upload set land
 unreachable, rather than quietly shipping a short gallery, and a refused shot deletes its own stale
 PNG so the directory can never claim a delivery the run denied. **All five shots render today**, so
 the command exits 0 — which is the gallery having caught up with the product, not the gates being
-relaxed. The last one to land was the privacy shot: its subject is the per-origin capture grant
-offer, and what it needed turned out to be an *un*granted origin and no imported capture, so the
-frame is the extension's honest first-run state. See
+relaxed. The 0.2.0 gallery is Timeline, a protocol violation, a LangGraph Platform capture with its
+derived AG-UI events, the UI inspector, and the export panel offering a Threadplane test; each shot
+imports one of three captures `pnpm listing:fixture` writes (`demo`, `demo-langgraph`,
+`demo-genui`), and none needs a Threadplane development build. See
 [the listing design](docs/superpowers/specs/2026-08-15-chrome-web-store-listing-design.md).
 
 ### Tests
@@ -176,6 +177,8 @@ structurally cannot see:
 - the manifest privacy invariants above;
 - `panel.html` and `devtools.html` reached `dist/`;
 - no `*.map` files ship;
+- the version is the same everywhere it is stated — the built manifest, both `package.json`s, and
+  the page marker's `MARKER_VERSION`;
 - `public/icons/*.png` are fresh against `listing/icon.svg` — checked by comparing a committed
   SHA-256 of the source SVG, not by re-rendering, so this needs no browser and is identical on
   every platform.

@@ -1,7 +1,7 @@
 {
   "name": "ag-ui-harness",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Private test harness: serves AG-UI fixtures over real SSE and drives the capture layer",
   "license": "MIT",
