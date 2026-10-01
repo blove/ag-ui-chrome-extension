@@ -5,6 +5,7 @@ import { LOAD_REPORT_GRACE_MS } from './use-live-capture';
 import type { AguiEvent, CaptureRecord } from '../../core/model/types';
 import type { PanelCommand, RequestLine, SwMessage } from '../../sw/protocol';
 import { createPanelStore } from '../model/store';
+import type { PanelState } from '../model/panel-types';
 
 /* ------------------------------------------------------------------ fakes */
 
@@ -920,5 +921,188 @@ describe('panel live wiring — a granted origin with nothing registered for it'
     expect(
       await screen.findByText(/Invalid value for parameter matches/),
     ).toBeTruthy();
+  });
+});
+
+/**
+ * EVERY ARM OF `SwMessage`, PUSHED LIVE, REACHES `PanelState` — through the real port, the real
+ * `asSwMessage` and the real fold.
+ *
+ * `live-session.test.ts` drives `session.apply` directly, so it cannot see a kind that the port
+ * drops before the fold is ever asked. That is how `info` went missing: the fold handled it, the
+ * worker sent it, and `asSwMessage` discarded it in between, so a live panel only learned the agent
+ * list from the next snapshot — a reconnect — rather than when the page fetched it.
+ *
+ * Typed as a `Record` over the kind union, so a kind added to `SwMessage` without a case here is
+ * a typecheck failure rather than an untested arm.
+ */
+describe('panel live wiring — every worker message kind reaches panel state', () => {
+  const RUNTIME = {
+    version: '1.52.1-next.1',
+    mode: 'multi-route' as const,
+    agents: [{ id: 'a2ui_chat', name: 'a2ui_chat', description: '' }],
+  };
+
+  const SNAPSHOT: SwMessage = {
+    kind: 'snapshot',
+    records: [RUN_STARTED],
+    requests: [REQUEST],
+    closed: [],
+    droppedBefore: 0,
+    loaded: false,
+    info: null,
+    signals: { reports: [], droppedBefore: 0 },
+    registration: null,
+  };
+
+  interface Case {
+    /** Sent first, so the arm under test has something to act on. */
+    before?: SwMessage;
+    message: SwMessage;
+    reached: (state: PanelState) => void;
+  }
+
+  const CASES: Record<SwMessage['kind'], Case> = {
+    snapshot: {
+      message: SNAPSHOT,
+      reached: (s) => {
+        expect(s.records.map((record) => record.seq)).toEqual([0]);
+      },
+    },
+    append: {
+      before: SNAPSHOT,
+      message: {
+        kind: 'append',
+        records: [TEXT_START],
+        signals: {
+          reports: [
+            { v: 1, agent: 'a1', adapter: 'ag-ui', seq: 1, eventType: 'X', wrote: ['status'], tMs: 1 },
+          ],
+          droppedBefore: 0,
+        },
+      },
+      reached: (s) => {
+        expect(s.records.map((record) => record.seq)).toEqual([0, 1]);
+        expect(s.signals.reports).toHaveLength(1);
+      },
+    },
+    request: {
+      message: { kind: 'request', request: REQUEST },
+      reached: (s) => {
+        expect(s.requests).toEqual([REQUEST]);
+      },
+    },
+    closed: {
+      before: SNAPSHOT,
+      message: { kind: 'closed', connId: 'c1', tMs: 40 },
+      // A close is the sole trigger for run-end rules: an unterminated run is reported on it.
+      reached: (s) => {
+        expect(s.runs[0]?.outcome).not.toBe('running');
+      },
+    },
+    binary: {
+      message: { kind: 'binary', connId: 'c1', tMs: 5, contentType: 'application/x-proto', bytes: 9 },
+      reached: (s) => {
+        expect(s.binaryTransport?.bytes).toBe(9);
+      },
+    },
+    info: {
+      message: { kind: 'info', connId: 'c0', tMs: 1, url: 'http://localhost:5173/api/copilotkit/info', info: RUNTIME },
+      reached: (s) => {
+        expect(s.runtime).toEqual(RUNTIME);
+      },
+    },
+    'capture-loaded': {
+      message: { kind: 'capture-loaded' },
+      reached: (s) => {
+        expect(s.loaded).toBe(true);
+      },
+    },
+    registration: {
+      message: { kind: 'registration', registration: { matches: ['http://localhost/*'], error: null } },
+      reached: (s) => {
+        expect(s.registration).toEqual({ matches: ['http://localhost/*'], error: null });
+      },
+    },
+    cleared: {
+      before: SNAPSHOT,
+      message: { kind: 'cleared' },
+      reached: (s) => {
+        expect(s.records).toEqual([]);
+        expect(s.requests).toEqual([]);
+      },
+    },
+  };
+
+  it.each(Object.entries(CASES))('folds a live %s message', async (_kind, { before, message, reached }) => {
+    stubOrigin('http://localhost:5173');
+    const { port } = stubPort();
+    const store = createPanelStore();
+    render(<App store={store} />);
+    await waitFor(() => {
+      expect(port.posted).toHaveLength(1);
+    });
+
+    if (before !== undefined) {
+      act(() => {
+        port.emit(before);
+      });
+      await waitFor(() => {
+        expect(store.get().records).toHaveLength(1);
+      });
+    }
+
+    act(() => {
+      port.emit(message);
+    });
+    await waitFor(() => {
+      reached(store.get());
+    });
+  });
+
+  /*
+   * Spec §13 done-when #2, live: the page fetches `/info` while the panel is already open. The
+   * Session tab has to say so then, not after the next reconnect replays a snapshot.
+   */
+  it('updates the Session tab Runtime and Agents rows on a live info push, without a reconnect', async () => {
+    stubOrigin('http://localhost:5173');
+    const { port, names } = stubPort();
+    const store = createPanelStore();
+    render(<App store={store} />);
+    await waitFor(() => {
+      expect(port.posted).toHaveLength(1);
+    });
+    act(() => {
+      port.emit(SNAPSHOT);
+    });
+
+    const sessionTab = await screen.findByRole('tab', { name: 'Session' });
+    act(() => {
+      sessionTab.click();
+    });
+    const valueOf = (label: string): string =>
+      screen.getByText(label).nextElementSibling?.textContent ?? '';
+    await waitFor(() => {
+      expect(valueOf('Runtime')).toMatch(/no \/info response seen/);
+    });
+
+    act(() => {
+      port.emit({
+        kind: 'info',
+        connId: 'c0',
+        tMs: 1,
+        url: 'http://localhost:5173/api/copilotkit/info',
+        info: RUNTIME,
+      });
+    });
+
+    await waitFor(() => {
+      expect(store.get().runtime).toEqual(RUNTIME);
+      expect(valueOf('Runtime')).toBe('version 1.52.1-next.1 — multi-route mode');
+    });
+    expect(document.querySelector('[data-agent-id="a2ui_chat"]')).toBeTruthy();
+    // The same port the whole way: nothing reconnected to get here.
+    expect(names).toEqual(['agui-devtools-panel']);
+    expect(port.posted.filter((command) => command.kind === 'subscribe')).toHaveLength(1);
   });
 });

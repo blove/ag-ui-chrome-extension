@@ -28,12 +28,14 @@ import type { ThreadplaneDevtoolsReport } from '@devtools/core/signals/report';
 import type { CaptureRecord, Issue, Run } from '@devtools/core/model/types';
 import { createRunBuilder } from '@devtools/core/normalizer/run-builder';
 import { createLiveSession } from '@devtools/panel/capture/live-session';
-import { initialPanelState } from '@devtools/panel/model/panel-types';
-import type {
-  ClosedConn,
-  RegistrationState,
-  RequestLine,
-  SignalReports,
+import { initialPanelState, type PanelState } from '@devtools/panel/model/panel-types';
+import {
+  asSwMessage,
+  PANEL_PORT_NAME,
+  type ClosedConn,
+  type RegistrationState,
+  type RequestLine,
+  type SignalReports,
 } from '@devtools/sw/protocol';
 
 export type { ClosedConn, RegistrationState, RequestLine, SignalReports };
@@ -413,25 +415,35 @@ interface ActionReader {
   };
 }
 
-export async function readBadge(ctx: BrowserContext, page: Page): Promise<BadgeReading> {
+/** The `chrome.tabs` id of `page`'s tab, found as described above. */
+export async function tabIdOf(ctx: BrowserContext, page: Page): Promise<number> {
   await page.bringToFront();
   const cdp = await ctx.newCDPSession(page);
   const { windowId } = (await cdp.send('Browser.getWindowForTarget')) as { windowId: number };
   await cdp.detach();
   const sw = await serviceWorker(ctx);
-  return sw.evaluate(async (windowId: number): Promise<BadgeReading> => {
+  return sw.evaluate(async (windowId: number): Promise<number> => {
     const chrome = (globalThis as unknown as { chrome: ActionReader }).chrome;
     const active = await chrome.tabs.query({ active: true, windowId });
     const tabId = active[0]?.id;
     if (active.length !== 1 || tabId === undefined) {
       throw new Error(`expected one active tab in window ${String(windowId)}, found ${String(active.length)}`);
     }
+    return tabId;
+  }, windowId);
+}
+
+export async function readBadge(ctx: BrowserContext, page: Page): Promise<BadgeReading> {
+  const tabId = await tabIdOf(ctx, page);
+  const sw = await serviceWorker(ctx);
+  return sw.evaluate(async (tabId: number): Promise<BadgeReading> => {
+    const chrome = (globalThis as unknown as { chrome: ActionReader }).chrome;
     const [text, title] = await Promise.all([
       chrome.action.getBadgeText({ tabId }),
       chrome.action.getTitle({ tabId }),
     ]);
     return { text, title };
-  }, windowId);
+  }, tabId);
 }
 
 /**
@@ -461,4 +473,88 @@ export async function readSettledBadge(
     latest = next;
   }
   return latest;
+}
+
+interface PortOpener {
+  runtime: {
+    connect(info: { name: string }): {
+      onMessage: { addListener(listener: (message: unknown) => void): void };
+      postMessage(message: unknown): void;
+    };
+  };
+}
+
+/**
+ * A real panel port to the worker, opened from an extension page and subscribed to `tabId`.
+ *
+ * The DevTools panel itself is unreachable from Playwright (H4/H5), but its PORT is not: it is a
+ * plain `chrome.runtime.connect` with the panel's port name, which any page of this extension can
+ * open. So this is the worker's real broadcast path — the one a panel that is open WHILE the page
+ * runs is fed by — rather than `snapshotFor`, which only describes a panel that arrives late.
+ *
+ * Opened from `devtools.html` because it is the smallest page the build ships. Its own script
+ * calls `chrome.devtools.panels.create`, which does not exist outside DevTools and throws; that
+ * is irrelevant here, since nothing on the page is used but `chrome.runtime`.
+ */
+export interface PanelPortTap {
+  /** Every message the worker has posted to this port, raw and in order. */
+  received(): Promise<unknown[]>;
+  /** Resolve once the worker has posted a message of `kind`. */
+  waitForKind(kind: string, timeoutMs?: number): Promise<void>;
+  close(): Promise<void>;
+}
+
+export async function openPanelPort(
+  ctx: BrowserContext,
+  extensionId: string,
+  tabId: number,
+): Promise<PanelPortTap> {
+  const page = await ctx.newPage();
+  await page.goto(`chrome-extension://${extensionId}/src/panel/devtools.html`);
+  await page.evaluate(
+    ({ name, tabId }: { name: string; tabId: number }): void => {
+      const w = window as unknown as { __received: unknown[] };
+      w.__received = [];
+      const chrome = (globalThis as unknown as { chrome: PortOpener }).chrome;
+      const port = chrome.runtime.connect({ name });
+      port.onMessage.addListener((message: unknown) => {
+        w.__received.push(message);
+      });
+      port.postMessage({ kind: 'subscribe', tabId });
+    },
+    { name: PANEL_PORT_NAME, tabId },
+  );
+  const tap: PanelPortTap = {
+    received: () => page.evaluate(() => (window as unknown as { __received: unknown[] }).__received),
+    waitForKind: async (kind, timeoutMs = 15_000) => {
+      await page.waitForFunction(
+        (kind: string) =>
+          (window as unknown as { __received: { kind?: unknown }[] }).__received.some(
+            (message) => message.kind === kind,
+          ),
+        kind,
+        { timeout: timeoutMs },
+      );
+    },
+    close: () => page.close(),
+  };
+  // Nothing is replayed to a port until it has subscribed, so the snapshot is the proof it has.
+  await tap.waitForKind('snapshot');
+  return tap;
+}
+
+/**
+ * What a panel that was OPEN while the messages arrived holds: each raw port message narrowed by
+ * the panel's own `asSwMessage` — the filter `connectToServiceWorker` applies — and folded by its
+ * own `createLiveSession`, in arrival order. A kind the port filter drops never reaches the fold
+ * here, exactly as it would not in the shipped panel.
+ */
+export function foldAsLivePanel(received: readonly unknown[]): PanelState {
+  const session = createLiveSession();
+  let state = initialPanelState();
+  for (const raw of received) {
+    const message = asSwMessage(raw);
+    if (message !== null) state = session.apply(state, message);
+  }
+  return state;
 }
