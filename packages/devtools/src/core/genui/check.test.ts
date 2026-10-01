@@ -91,6 +91,29 @@ describe('inspectGenui over the golden fixtures', () => {
   });
 });
 
+describe('inspectGenui with a registry per surface (the UI tab, from render reports)', () => {
+  it('checks only the surfaces a registry is given for against it, exactly', () => {
+    const capture = loadFixture('genui-threadplane-agui.agui.jsonl');
+    const result = inspectGenui(capture, {
+      registryFor: (surface) =>
+        surface.id === 'spec:root' && surface.runId === 'r-tp2' ? ['dashboard_grid', 'container', 'stat_card'] : undefined,
+    });
+    const cockpit = result.surfaces.find((surface) => surface.runId === 'r-tp2');
+    const first = result.surfaces.find((surface) => surface.id === 'spec:root' && surface.runId === 'r-tp1');
+    expect(result.catalogs.get(cockpit?.key ?? '')).toMatchObject({ basis: 'exact', source: 'registry' });
+    expect(
+      result.findings
+        .filter((finding) => finding.surfaceKey === cockpit?.key && finding.code === 'unknown_component')
+        .map((finding) => `${finding.basis} ${finding.componentId ?? ''}`),
+    ).toEqual(['exact trend_chart', 'exact airline_chart', 'exact table_section']);
+    // The other json-render surface has no registry: no catalog, so no catalog findings.
+    expect(result.catalogs.get(first?.key ?? '')).toBeUndefined();
+    // A2UI surfaces with none fall back to the inferred basic catalog as before.
+    const live = result.surfaces.find((surface) => surface.id === 'live');
+    expect(result.catalogs.get(live?.key ?? '')?.basis).toBe('inferred');
+  });
+});
+
 describe('checkSurface', () => {
   const component = (id: string, type: string, children: string[] = [], props: Record<string, unknown> = {}): GenuiComponent => ({
     id,

@@ -20,6 +20,7 @@ import { Runs } from './tabs/runs/runs';
 import { State } from './tabs/state/state';
 import { Session } from './tabs/session/session';
 import { Signals } from './tabs/signals/signals';
+import { Ui } from './tabs/ui/ui';
 import { DeveloperModeBanner } from './simulate/developer-mode';
 import { Simulate } from './simulate/simulate';
 import { isWebOrigin } from '../core/simulate/developer-mode';
@@ -220,6 +221,9 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
       break;
     case 'messages':
       body = <Messages store={store} />;
+      break;
+    case 'ui':
+      body = <Ui store={store} />;
       break;
     case 'signals':
       body = <Signals store={store} />;

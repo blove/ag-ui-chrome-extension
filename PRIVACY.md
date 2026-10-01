@@ -20,7 +20,9 @@ streams: prompts, completions, tool calls, tool results, and agent state.
 
 On such a page, if it is a Threadplane app running in development mode, the extension also hears
 the app's own devtools reports: the **names** of the agent signals each event wrote and when —
-never the values written — shown in the Signals tab and never exported.
+never the values written — shown in the Signals tab and never exported. Its render report, likewise,
+carries only **names and states** — which component names the app has registered and whether each
+generative-UI element rendered — never a prop value; it is shown in the UI tab and never exported.
 
 That data is shown to you, in your own DevTools panel, on your own machine. The toolbar icon's badge
 and tooltip show only a summary of it — which protocol a tab spoke, how many connections, and the

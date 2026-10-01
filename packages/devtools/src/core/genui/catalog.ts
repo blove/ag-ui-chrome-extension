@@ -160,20 +160,27 @@ export interface CatalogContext {
    * report), when there is one: an exact catalog for that app's surfaces.
    */
   readonly registry?: readonly string[];
+  /**
+   * The registry one surface's renderer reported, when the reports are per surface (the UI tab
+   * reads the latest render report whose `surface` is this surface's id). Wins over `registry`.
+   */
+  readonly registryFor?: (surface: GenuiSurface) => readonly string[] | undefined;
 }
 
 /**
  * The catalog `surface` is checked against, or `undefined` when nothing on the wire says which
  * catalog it renders with.
  *
- * - A Threadplane surface with a reported registry: that registry (exact, names only).
+ * - A Threadplane surface with a reported registry (`registryFor`, else `registry`): that registry
+ *   (exact, names only).
  * - A CopilotKit surface whose run's request carried the schema context entry: that (exact).
  * - An A2UI v0.9 surface naming no catalog or a basic one: the basic catalog (inferred). A surface
  *   naming some other catalog is rendered with one we cannot see, so it gets none.
  * - json-render, A2UI v0.8, and a lifecycle-only placeholder: none.
  */
 export function catalogForSurface(surface: GenuiSurface, context: CatalogContext): GenuiCatalog | undefined {
-  if (surface.framework === 'threadplane' && context.registry !== undefined) return registryCatalog(context.registry);
+  const registry = surface.framework === 'threadplane' ? (context.registryFor?.(surface) ?? context.registry) : undefined;
+  if (registry !== undefined) return registryCatalog(registry);
   if (surface.format !== 'a2ui') return undefined;
   if (surface.framework === 'copilotkit' && surface.runId !== undefined) {
     const run = context.runs.find((candidate) => candidate.runId === surface.runId);

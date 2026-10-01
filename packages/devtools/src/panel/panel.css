@@ -2489,6 +2489,296 @@ code {
   white-space: nowrap;
 }
 
+/*
+ * UI (§14.5, U6): generative-UI surfaces by run, each a component tree with a state badge per node,
+ * beside the selected component's details. Every colour is a token. The badge colours are claims
+ * about rendering: an unknown type (nothing renders) borrows the error severity, a fallback the
+ * warning severity; "not rendered" is muted and dashed — it is usually a consequence, not a cause.
+ */
+.agui-ui {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 34%);
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  padding: 8px 12px 16px;
+  box-sizing: border-box;
+  color: var(--agui-fg);
+}
+
+.agui-ui:has(> .agui-ui__empty) {
+  display: block;
+}
+
+@media (max-width: 720px) {
+  .agui-ui {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.agui-ui__main {
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.agui-ui__empty,
+.agui-ui__lede,
+.agui-ui__note,
+.agui-ui__hint {
+  max-width: 78ch;
+  margin: 0 0 6px;
+  color: var(--agui-fg-muted);
+}
+
+.agui-ui__empty {
+  padding: 4px 4px 0;
+}
+
+.agui-ui__run {
+  margin: 0 0 16px;
+}
+
+.agui-ui__run-heading {
+  margin: 8px 0 6px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--agui-border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agui-ui__surface {
+  margin: 0 0 10px;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  background: var(--agui-surface);
+}
+
+.agui-ui__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agui-ui__surface-id,
+.agui-ui__id,
+.agui-ui__type,
+.agui-ui__catalog-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.agui-ui__surface-id {
+  word-break: break-all;
+}
+
+.agui-ui__chip {
+  padding: 0 6px;
+  border: 1px solid var(--agui-border);
+  border-radius: 8px;
+  color: var(--agui-fg-muted);
+  font-weight: 400;
+}
+
+.agui-ui__status[data-status='failed'],
+.agui-ui__status[data-status='retrying'] {
+  border-color: var(--agui-severity-warning);
+  color: var(--agui-severity-warning);
+}
+
+.agui-ui__meta,
+.agui-ui__states {
+  margin: 0 0 4px;
+  color: var(--agui-fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.agui-ui__states[data-source='app'] {
+  color: var(--agui-fg);
+}
+
+.agui-ui__basis {
+  padding: 0 5px;
+  border: 1px solid currentcolor;
+  border-radius: 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.agui-ui__basis[data-basis='exact'] {
+  color: var(--agui-accent);
+}
+
+.agui-ui__basis[data-basis='inferred'],
+.agui-ui__basis[data-basis='none'] {
+  color: var(--agui-fg-muted);
+}
+
+.agui-ui__subheading {
+  margin: 8px 0 2px;
+  color: var(--agui-fg-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.agui-ui__tree {
+  margin: 0;
+  padding: 0 0 0 14px;
+  list-style: none;
+  border-left: 1px solid var(--agui-border);
+}
+
+.agui-ui__tree--root,
+.agui-ui__tree--unreachable {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.agui-ui__node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 20px;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--agui-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agui-ui__node:hover {
+  background: var(--agui-row-hover);
+}
+
+.agui-ui__node:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: -2px;
+}
+
+.agui-ui__node[aria-pressed='true'] {
+  background: var(--agui-row-selected);
+}
+
+.agui-ui__node--absent {
+  cursor: default;
+  color: var(--agui-fg-muted);
+}
+
+.agui-ui__type,
+.agui-ui__absent,
+.agui-ui__repeat {
+  color: var(--agui-fg-muted);
+}
+
+.agui-ui__badge {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--agui-border);
+  border-radius: 8px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--agui-fg-muted);
+}
+
+.agui-ui__heading .agui-ui__badge {
+  margin-left: 0;
+}
+
+.agui-ui__badge[data-state='rendered'] {
+  border-color: var(--agui-bar-tool);
+  color: var(--agui-bar-tool);
+}
+
+.agui-ui__badge[data-state='fallback'] {
+  border-color: var(--agui-severity-warning);
+  background: var(--agui-severity-warning-bg);
+  color: var(--agui-severity-warning);
+}
+
+.agui-ui__badge[data-state='unknown-type'] {
+  border-color: var(--agui-severity-error);
+  background: var(--agui-severity-error-bg);
+  color: var(--agui-severity-error);
+}
+
+.agui-ui__badge[data-state='not-rendered'] {
+  border-style: dashed;
+}
+
+.agui-ui__findings {
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agui-ui__finding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  border-top: 1px solid var(--agui-border);
+}
+
+.agui-ui__code {
+  font-weight: 600;
+}
+
+.agui-ui__finding[data-code='unknown_component'] .agui-ui__code,
+.agui-ui__finding[data-code='unresolved_child'] .agui-ui__code,
+.agui-ui__finding[data-code='no_root'] .agui-ui__code {
+  color: var(--agui-severity-error);
+}
+
+.agui-ui__message {
+  flex: 1 1 24ch;
+  color: var(--agui-fg);
+}
+
+.agui-ui__link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--agui-accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.agui-ui__link:focus-visible {
+  outline: 2px solid var(--agui-accent);
+  outline-offset: 1px;
+}
+
+.agui-ui__details {
+  min-width: 0;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--agui-border);
+  border-radius: 4px;
+  background: var(--agui-surface);
+  align-self: start;
+  max-height: 100%;
+  box-sizing: border-box;
+}
+
+.agui-ui__frame {
+  margin: 2px 0 4px;
+}
+
+.agui-ui__props {
+  overflow-x: auto;
+}
+
 /* Run simulator (§14.4): Developer mode's switch and the banner shown while it is on. */
 .agui-devmode {
   padding: 6px 0;

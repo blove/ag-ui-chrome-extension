@@ -49,6 +49,7 @@ import {
   PANEL_PATH,
   SIGNALS_INSPECTED_ORIGIN,
   SIGNALS_SEED,
+  GENUI_RENDER_REPORT,
   startServer,
 } from './panel-harness';
 
@@ -1806,6 +1807,214 @@ async function checkSignals(browser: Browser, origin: string): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Phase 2f′ — UI (§14.5, U6)                                                   */
+/* -------------------------------------------------------------------------- */
+
+/** U6's empty state, verbatim (`UI_EMPTY_TEXT`). */
+const UI_EMPTY =
+  'No generative UI in this capture yet — the UI view lists A2UI and json-render surfaces from Threadplane and from CopilotKit’s A2UI middleware as they arrive.';
+
+async function openUi(page: Page): Promise<void> {
+  await page.click('button[role="tab"][id="agui-tab-ui"]');
+  await page.waitForSelector('.agui-ui');
+}
+
+interface UiBadge {
+  id: string;
+  state: string;
+  label: string;
+  from: string;
+  color: string;
+}
+
+/** Every node of one surface (first occurrence per id), with its painted badge. */
+function uiBadges(page: Page, surface: string, run: string): Promise<UiBadge[]> {
+  return page.$$eval(`.agui-ui__surface[data-surface="${surface}"][data-run="${run}"] .agui-ui__node[data-state]`, (els) => {
+    const seen = new Set<string>();
+    const out: { id: string; state: string; label: string; from: string; color: string }[] = [];
+    for (const el of els) {
+      const id = el.getAttribute('data-component') ?? '';
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const badge = el.querySelector('.agui-ui__badge');
+      out.push({
+        id,
+        state: el.getAttribute('data-state') ?? '',
+        label: (badge?.textContent ?? '').trim(),
+        from: el.getAttribute('data-from') ?? '',
+        color: badge === null ? '' : getComputedStyle(badge).color,
+      });
+    }
+    return out;
+  });
+}
+
+function uiFindings(page: Page, surface: string, run: string): Promise<string[]> {
+  return page.$$eval(`.agui-ui__surface[data-surface="${surface}"][data-run="${run}"] .agui-ui__finding`, (els) =>
+    els.map((el) => {
+      const message = el.querySelector('.agui-ui__message')?.textContent ?? '';
+      return `${el.getAttribute('data-code') ?? ''} ${el.getAttribute('data-basis') ?? ''} ${message}`;
+    }),
+  );
+}
+
+function stateMap(badges: UiBadge[]): Record<string, string> {
+  return Object.fromEntries(badges.map((badge) => [badge.id, badge.label]));
+}
+
+/**
+ * The UI tab: empty, then both golden fixtures imported through the real file input (node states
+ * from the wire checks), then the Threadplane one LIVE with a render report for its cockpit
+ * surface (`devtools-live-genui`) — where the node states must switch to the hook's and the
+ * checks must become exact against the reported registry.
+ */
+async function checkUi(browser: Browser, origin: string): Promise<void> {
+  /* --- empty: U6's sentence, no fault words -------------------------------- */
+  {
+    const session = await openPanel(browser, origin, { scheme: 'light' });
+    try {
+      await openUi(session.page);
+      const text = ((await session.page.textContent('.agui-ui')) ?? '').replace(/\s+/g, ' ').trim();
+      if (!text.includes(UI_EMPTY)) fail(`the empty UI tab does not say U6's sentence. It says: ${text}`);
+      const fault = FAULT_WORDS.exec(text);
+      if (fault !== null) fail(`the empty UI tab words an ordinary absence as a fault: ${JSON.stringify(fault[0])}`);
+      await session.page.screenshot({ path: join(outDir, 'ui-empty.png'), fullPage: true });
+    } finally {
+      await session.close();
+    }
+  }
+
+  /* --- CopilotKit: exact catalog, unknown type, its subtree, findings ------ */
+  {
+    const session = await openPanel(browser, origin, { scheme: 'light' });
+    try {
+      const page = session.page;
+      await importFixture(page, join(fixtureDir, 'genui-copilotkit.agui.jsonl'));
+      await openUi(page);
+      const runs = await page.$$eval('.agui-ui__run', (els) => els.map((el) => el.getAttribute('data-run') ?? ''));
+      if (runs.join(',') !== 'r-v10,r-v02') fail(`UI grouped CopilotKit surfaces under runs ${JSON.stringify(runs)}`);
+      const surfaces = await page.$$eval('.agui-ui__surface', (els) => els.map((el) => el.getAttribute('data-surface') ?? ''));
+      const expectedSurfaces = ['hotels', 'notice', 'a2ui-surface-outer1', 'test-surface', 'login-form', 'card-1'];
+      if (surfaces.join(',') !== expectedSurfaces.join(',')) fail(`UI drew CopilotKit surfaces ${JSON.stringify(surfaces)}`);
+      const hotels = stateMap(await uiBadges(page, 'hotels', 'r-v10'));
+      const expectedHotels = {
+        root: 'rendered', title: 'rendered', list: 'rendered', card: 'rendered', badge: 'unknown type', badgeText: 'not rendered',
+      };
+      if (JSON.stringify(hotels) !== JSON.stringify(expectedHotels)) fail(`UI badged hotels ${JSON.stringify(hotels)}`);
+      const basis = await page.textContent('.agui-ui__surface[data-surface="hotels"] .agui-ui__meta .agui-ui__basis');
+      if (basis?.trim() !== 'exact') fail(`hotels' catalog basis reads ${JSON.stringify(basis)}, not exact`);
+      const findings = await uiFindings(page, 'hotels', 'r-v10');
+      const codes = findings.map((finding) => finding.split(' ').slice(0, 2).join(' '));
+      if (codes.join(',') !== 'unknown_component exact,missing_required_prop exact,orphaned_subtree exact') {
+        fail(`UI listed hotels' findings as ${JSON.stringify(findings)}`);
+      }
+      // A finding's colour must differ from a rendered badge's: the unknown type is the story here.
+      const painted = await uiBadges(page, 'hotels', 'r-v10');
+      const unknownColor = painted.find((badge) => badge.id === 'badge')?.color;
+      const renderedColor = painted.find((badge) => badge.id === 'root')?.color;
+      if (unknownColor === undefined || unknownColor === renderedColor) {
+        fail(`the unknown-type badge paints like a rendered one (${String(unknownColor)} vs ${String(renderedColor)})`);
+      }
+
+      await page.click('.agui-ui__surface[data-surface="hotels"] .agui-ui__node[data-component="card"]');
+      const details = ((await page.textContent('.agui-ui__details')) ?? '').replace(/\s+/g, ' ');
+      if (!details.includes('HotelCard') || !details.includes('Show frame 5 in Timeline')) {
+        fail(`selecting hotels/card showed ${JSON.stringify(details.slice(0, 200))}`);
+      }
+      await page.screenshot({ path: join(outDir, 'ui-copilotkit.png'), fullPage: true });
+      await page.click('.agui-ui__details .agui-ui__frame');
+      await page.waitForSelector('.agui-event-row[aria-selected="true"]', { timeout: 5000 });
+      const selected = await seqsOf(page, '.agui-event-row[aria-selected="true"]');
+      if (selected.join(',') !== '5') fail(`the UI tab's source-frame link selected Timeline row(s) ${JSON.stringify(selected)}, not 5`);
+      if (session.errors.length > 0) fail(`the panel logged errors on the UI tab: ${session.errors.join(' | ')}`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /* --- Threadplane, imported: states from the checks ------------------------- */
+  let importedCockpit: Record<string, string> = {};
+  {
+    const session = await openPanel(browser, origin, { scheme: 'light' });
+    try {
+      const page = session.page;
+      await importFixture(page, join(fixtureDir, 'genui-threadplane-agui.agui.jsonl'));
+      await openUi(page);
+      const badges = await uiBadges(page, 'spec:root', 'r-tp2');
+      importedCockpit = stateMap(badges);
+      if (badges.length !== 10 || badges.some((badge) => badge.label !== 'rendered' || badge.from !== 'checks')) {
+        fail(`imported, the cockpit surface should be 10 nodes inferred rendered; it is ${JSON.stringify(badges)}`);
+      }
+      const note = await page.textContent('.agui-ui__surface[data-surface="spec:root"][data-run="r-tp2"] .agui-ui__states');
+      if (note?.trim() !== 'Node states inferred from the wire checks.') fail(`imported cockpit states note: ${JSON.stringify(note)}`);
+      const runFindings = await page.$$eval('.agui-ui__run[data-run="r-tp1"] > .agui-ui__findings .agui-ui__finding', (els) =>
+        els.map((el) => el.getAttribute('data-code') ?? ''),
+      );
+      if (runFindings.join(',') !== 'unparsed_envelope,unterminated_envelope,truncated_payload,partial_args_invalid') {
+        fail(`r-tp1's extraction findings read ${JSON.stringify(runFindings)}`);
+      }
+      const sText = await uiFindings(page, 's-text', 'r-tp1');
+      if (!sText.some((finding) => finding.startsWith('catalog_mismatch inferred'))) {
+        fail(`s-text should carry an inferred catalog_mismatch; it has ${JSON.stringify(sText)}`);
+      }
+      await page.screenshot({ path: join(outDir, 'ui-threadplane.png'), fullPage: true });
+    } finally {
+      await session.close();
+    }
+  }
+
+  /* --- Threadplane, live with a render report: states from the hook ---------- */
+  for (const scheme of ['light', 'dark'] as const) {
+    const session = await openPanel(browser, origin, { scheme, shim: 'devtools-live-genui' });
+    try {
+      const page = session.page;
+      await page.waitForSelector('.agui-event-row', { timeout: 5000 });
+      await openUi(page);
+      await page.waitForSelector('.agui-ui__surface[data-surface="spec:root"][data-run="r-tp2"]', { timeout: 5000 });
+      const badges = await uiBadges(page, 'spec:root', 'r-tp2');
+      const live = stateMap(badges);
+      const expected: Record<string, string> = {
+        root: 'rendered',
+        stats_row: 'rendered',
+        on_time_card: 'rendered',
+        flights_card: 'rendered',
+        delay_card: 'fallback',
+        load_card: 'rendered',
+        charts_row: 'rendered',
+        trend_chart: 'unknown type',
+        airline_chart: 'unknown type',
+        table_section: 'not rendered',
+      };
+      if (JSON.stringify(live) !== JSON.stringify(expected)) {
+        fail(`with the render report, the cockpit nodes read ${JSON.stringify(live)}; expected ${JSON.stringify(expected)}`);
+      }
+      if (badges.some((badge) => badge.from !== 'app')) fail(`some cockpit nodes did not take the hook's state: ${JSON.stringify(badges)}`);
+      if (JSON.stringify(live) === JSON.stringify(importedCockpit)) fail('the render report changed no node state');
+      const note = await page.textContent('.agui-ui__surface[data-surface="spec:root"][data-run="r-tp2"] .agui-ui__states');
+      if (note?.trim() !== `Node states reported by the app (render report ${String(GENUI_RENDER_REPORT.seq)}).`) {
+        fail(`live cockpit states note: ${JSON.stringify(note)}`);
+      }
+      const findings = await uiFindings(page, 'spec:root', 'r-tp2');
+      const unknown = findings.filter((finding) => finding.startsWith('unknown_component exact'));
+      if (unknown.length !== 2 || !unknown[0]?.includes('line_chart') || !unknown[1]?.includes('bar_chart')) {
+        fail(`with the reported registry, the cockpit's exact unknown types read ${JSON.stringify(findings)}`);
+      }
+      // The earlier run's surface of the same id keeps the checks' states.
+      const earlier = await page.textContent('.agui-ui__surface[data-surface="spec:root"][data-run="r-tp1"] .agui-ui__states');
+      if (earlier?.trim() !== 'Node states inferred from the wire checks.') fail(`r-tp1's spec:root took the report: ${JSON.stringify(earlier)}`);
+
+      await page.click('.agui-ui__surface[data-surface="spec:root"][data-run="r-tp2"] .agui-ui__node[data-component="trend_chart"]');
+      await page.waitForSelector('.agui-ui__details[data-component="trend_chart"]');
+      await page.locator('.agui-ui__surface[data-surface="spec:root"][data-run="r-tp2"]').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(outDir, `ui-threadplane-reported-${scheme}.png`), fullPage: true });
+      if (session.errors.length > 0) fail(`the panel logged errors on the live UI tab: ${session.errors.join(' | ')}`);
+    } finally {
+      await session.close();
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Phase 2g — Simulate (§14.4, design R6, R7, R9)                              */
 /* -------------------------------------------------------------------------- */
 
@@ -2398,6 +2607,7 @@ async function main(): Promise<void> {
     if (failures.length === 0) await checkRuns(browser, server.origin);
     if (failures.length === 0) await checkLangGraph(browser, server.origin);
     if (failures.length === 0) await checkSignals(browser, server.origin);
+    if (failures.length === 0) await checkUi(browser, server.origin);
     if (failures.length === 0) await checkSimulate(browser, server.origin);
     if (failures.length === 0) await checkExport(browser, server.origin);
   } finally {
@@ -2506,6 +2716,14 @@ async function main(): Promise<void> {
     `  live: two agent blocks, ${String(SIGNALS_SEED.litCells)} lit cells painted, full unclipped column names, a column click selects ` +
       `Timeline seq ${String(SIGNALS_SEED.expectedRecordSeq)}; a pseudo-event says "no matching frame" — ` +
       `${outDir}/signals.png, ${outDir}/signals-selected.png`,
+  );
+  console.log('UI (§14.5, U6):');
+  console.log(`  empty: U6's sentence, no fault words — ${outDir}/ui-empty.png`);
+  console.log(`  CopilotKit: 6 surfaces in 2 runs, exact catalog, unknown type + subtree, frame link — ${outDir}/ui-copilotkit.png`);
+  console.log(`  Threadplane imported: states from the checks — ${outDir}/ui-threadplane.png`);
+  console.log(
+    `  Threadplane live + render report: states from the hook, exact unknown types — ` +
+      `${outDir}/ui-threadplane-reported-light.png, ${outDir}/ui-threadplane-reported-dark.png`,
   );
   console.log('Simulate (§14.4, R6, R7, R9):');
   console.log(`  off: Arm disabled — "${DEVMODE_OFF_REASON}", no banner, LangGraph inferred — ${outDir}/simulate-off.png`);

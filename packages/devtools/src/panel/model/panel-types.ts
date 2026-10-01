@@ -66,7 +66,7 @@ export interface BinaryTransport {
   bytes: number;
 }
 
-export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'signals' | 'simulate' | 'session';
+export type TabId = 'timeline' | 'runs' | 'state' | 'messages' | 'ui' | 'signals' | 'simulate' | 'session';
 
 /** `null` means "all runs". */
 export type RunScope = string | null;

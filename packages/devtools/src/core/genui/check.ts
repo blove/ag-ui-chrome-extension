@@ -144,7 +144,7 @@ export interface GenuiInspection {
 /** Extract every surface from a capture and check each against its catalog. */
 export function inspectGenui(
   capture: GenuiCapture,
-  options: Pick<CatalogContext, 'registry'> = {},
+  options: Pick<CatalogContext, 'registry' | 'registryFor'> = {},
 ): GenuiInspection {
   const { surfaces, findings } = extractSurfaces(capture);
   const context: CatalogContext = { runs: capture.runs, requests: capture.requests, ...options };
