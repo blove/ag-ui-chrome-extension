@@ -14,12 +14,16 @@ the wire: every event in order, grouped into runs, with the protocol violations 
 
 Capture works end to end: `src/inject/` patches `fetch`, `XMLHttpRequest`, and `EventSource` in the
 page's own world, tees the SSE bodies, and relays them across the world boundary to a service-worker
-ring buffer that the panel reads live. All six panel tabs are real — **Timeline**, **Runs**,
-**State**, **Messages**, **Signals**, **Session** — with protocol issues annotated inline and a
+ring buffer that the panel reads live. All seven panel tabs are real — **Timeline**, **Runs**,
+**State**, **Messages**, **Signals**, **Simulate**, **Session** — with protocol issues annotated inline and a
 toolbar issue count that doubles as a filter. **Signals** shows, for a Threadplane app running in
 development mode, which of its agent's signals each event wrote — names and timing reported by the
 app's own dev-only hook (cacheplane/threadplane#1203, in review), never values; a column click finds
-the event's wire frame in Timeline. Captures export and re-import as `.agui.jsonl`, redacted or not.
+the event's wire frame in Timeline. **Simulate** scripts the next agent run of a Threadplane
+development build — an interrupt for approval, a subagent handoff, a malformed event, or a captured
+run replayed — so approval UI can be exercised with no model call; the app's own code paths run it.
+It needs Developer mode, a per-origin switch that is off by default, and the app-side hook
+(cacheplane/threadplane#1204, in review, stacked on #1203); it reaches the top frame only. Captures export and re-import as `.agui.jsonl`, redacted or not.
 A LangGraph Platform capture also exports as a ready-to-run Threadplane test — Export →
 **Download Threadplane test (.spec.ts)** replays it through `@threadplane/langgraph`'s
 `MockAgentTransport` and passes as generated; edit an assertion and it becomes a regression test.
@@ -34,7 +38,7 @@ origins you enabled) only; other SSE traffic leaves it dark.
 Underneath, `core/` is Chrome-free and runs under Node: the generated event table and shape
 checking, the incremental SSE frame parser, connection detection, chunk expansion, the run model,
 the validator rules, run metrics, the RFC 6902 JSON Patch state timeline, and the `.agui.jsonl`
-codec with redaction. 2,016 tests, plus a Playwright harness that drives the extension in a real
+codec with redaction. 2,637 tests, plus a Playwright harness that drives the extension in a real
 browser against real sockets.
 
 What is not done: the Chrome Web Store submission itself. The listing pipeline is built and all five
