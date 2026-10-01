@@ -55,6 +55,12 @@ export type WireFrame =
  * here is downstream of a `fetch`, an `XMLHttpRequest` or an `EventSource` the page itself
  * opened, so the extension says nothing the page did not already provoke.
  *
+ * THE RUN SIMULATOR (§14.4) HAS NO ARM HERE, in either direction, and that is deliberate. An arm
+ * command reaching the MAIN world would have to travel by `window.postMessage`, which any page
+ * script can forge and every page `message` listener can read; the MAIN world could authenticate
+ * none of it. The ISOLATED-world relay dispatches the `threadplane:devtools:arm` event on `window`
+ * itself and hears the hook's acks there too — see `relay/simulate.ts`.
+ *
  * The transport patches are typed on this union directly. They used to be typed on a
  * `ConnectionMessage = Exclude<InjectMessage, { kind: 'capture-installed' }>` so a transport
  * could not structurally claim the hooks were installed; with that arm gone the exclusion said

@@ -46,6 +46,11 @@ const SW_MESSAGE_KINDS: ReadonlySet<SwMessage['kind']> = new Set([
   // registered at all — the panel would then fall back to its "reload the page" advice for a
   // failure a reload cannot touch, which is the exact defect this arm was added for.
   'registration',
+  // The run simulator (§14.4). Leaving any of these out would drop the hook's acks, the answer to
+  // the user's own Arm, or the Developer-mode state the switch shows — each silently.
+  'sim-ack',
+  'sim-dispatch',
+  'developer-mode',
   'cleared',
 ] satisfies SwMessage['kind'][]);
 

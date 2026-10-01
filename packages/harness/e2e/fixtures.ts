@@ -25,6 +25,7 @@ import { chromium, type BrowserContext, type Page, type Worker } from '@playwrig
 
 import type { RuntimeInfo } from '@devtools/core/detect/info';
 import type { ThreadplaneDevtoolsReport } from '@devtools/core/signals/report';
+import type { Ack } from '@devtools/core/simulate/commands';
 import type { CaptureRecord, Issue, Run } from '@devtools/core/model/types';
 import { createRunBuilder } from '@devtools/core/normalizer/run-builder';
 import { createLiveSession } from '@devtools/panel/capture/live-session';
@@ -34,9 +35,10 @@ import type {
   RegistrationState,
   RequestLine,
   SignalReports,
+  SimDispatch,
 } from '@devtools/sw/protocol';
 
-export type { ClosedConn, RegistrationState, RequestLine, SignalReports };
+export type { Ack, ClosedConn, RegistrationState, RequestLine, SignalReports, SimDispatch };
 
 export interface CaptureSnapshot {
   records: CaptureRecord[];
@@ -88,6 +90,11 @@ export interface CaptureSnapshot {
    * `snapshotFor`-backed accessors.
    */
   signals: SignalReports;
+  /**
+   * The run-simulator acknowledgements the worker holds (§14.4, R4) — the same list a panel's
+   * `snapshot` carries, read through the hook's `snapshotFor`-backed accessor.
+   */
+  simAcks: Ack[];
 }
 
 /** The shape `src/sw/index.ts` attaches to the SW global, unconditionally. */
@@ -103,6 +110,11 @@ interface TestHook {
   reconcileRegistrations(): Promise<void>;
   signals(): ThreadplaneDevtoolsReport[];
   signalsDropped(): number;
+  simAcks(): Ack[];
+  arm(tabId: number, command: unknown): Promise<SimDispatch | null>;
+  disarm(tabId: number, armId: unknown): Promise<SimDispatch | null>;
+  setDeveloperMode(origin: string, enabled: boolean): Promise<boolean>;
+  developerMode(origin: string): Promise<boolean>;
   clear(): void;
 }
 
@@ -212,6 +224,7 @@ export async function readCapture(ctx: BrowserContext): Promise<CaptureSnapshot>
       info: hook.info(),
       registration: hook.registration(),
       signals: { reports: hook.signals(), droppedBefore: hook.signalsDropped() },
+      simAcks: hook.simAcks(),
     };
   });
 }
@@ -373,6 +386,8 @@ export function foldAsLatePanel(capture: CaptureSnapshot): LatePanelFold {
     registration: capture.registration,
     // Not read by the runs or the issues either; stated for the same reason as `registration`.
     signals: capture.signals,
+    // Likewise not read by the runs or the issues; stated so the message is `snapshotFor`'s shape.
+    simAcks: capture.simAcks,
   });
   return { runs: state.runs, issues: state.issues, runtime: state.runtime };
 }
@@ -414,25 +429,65 @@ interface ActionReader {
 }
 
 export async function readBadge(ctx: BrowserContext, page: Page): Promise<BadgeReading> {
+  const tabId = await tabIdOf(ctx, page);
+  const sw = await serviceWorker(ctx);
+  return sw.evaluate(async (tabId: number): Promise<BadgeReading> => {
+    const chrome = (globalThis as unknown as { chrome: ActionReader }).chrome;
+    const [text, title] = await Promise.all([
+      chrome.action.getBadgeText({ tabId }),
+      chrome.action.getTitle({ tabId }),
+    ]);
+    return { text, title };
+  }, tabId);
+}
+
+/**
+ * The Chrome tab id of `page` — see `readBadge` for why it is found as the active tab of the
+ * page's window rather than by URL.
+ */
+export async function tabIdOf(ctx: BrowserContext, page: Page): Promise<number> {
   await page.bringToFront();
   const cdp = await ctx.newCDPSession(page);
   const { windowId } = (await cdp.send('Browser.getWindowForTarget')) as { windowId: number };
   await cdp.detach();
   const sw = await serviceWorker(ctx);
-  return sw.evaluate(async (windowId: number): Promise<BadgeReading> => {
+  return sw.evaluate(async (windowId: number): Promise<number> => {
     const chrome = (globalThis as unknown as { chrome: ActionReader }).chrome;
     const active = await chrome.tabs.query({ active: true, windowId });
     const tabId = active[0]?.id;
     if (active.length !== 1 || tabId === undefined) {
       throw new Error(`expected one active tab in window ${String(windowId)}, found ${String(active.length)}`);
     }
-    const [text, title] = await Promise.all([
-      chrome.action.getBadgeText({ tabId }),
-      chrome.action.getTitle({ tabId }),
-    ]);
-    return { text, title };
+    return tabId;
   }, windowId);
 }
+
+/**
+ * The run simulator's panel commands, through the worker hook — the harness's Arm button and
+ * Developer-mode switch, calling the same functions the panel's commands call (H4/H5). Each body
+ * is evaluated IN the worker, so it names the hook itself rather than through a helper here.
+ */
+export const simulator = {
+  async setDeveloperMode(ctx: BrowserContext, origin: string, enabled: boolean): Promise<boolean> {
+    const sw = await serviceWorker(ctx);
+    return sw.evaluate(
+      ({ origin, enabled }) => (globalThis as { __AGUI_DT_TEST__?: TestHook }).__AGUI_DT_TEST__!.setDeveloperMode(origin, enabled),
+      { origin, enabled },
+    );
+  },
+  async arm(ctx: BrowserContext, tabId: number, command: unknown): Promise<SimDispatch | null> {
+    const sw = await serviceWorker(ctx);
+    return sw.evaluate(({ tabId, command }) => (globalThis as { __AGUI_DT_TEST__?: TestHook }).__AGUI_DT_TEST__!.arm(tabId, command), { tabId, command });
+  },
+  async disarm(ctx: BrowserContext, tabId: number, armId: string): Promise<SimDispatch | null> {
+    const sw = await serviceWorker(ctx);
+    return sw.evaluate(({ tabId, armId }) => (globalThis as { __AGUI_DT_TEST__?: TestHook }).__AGUI_DT_TEST__!.disarm(tabId, armId), { tabId, armId });
+  },
+  async acks(ctx: BrowserContext): Promise<Ack[]> {
+    const sw = await serviceWorker(ctx);
+    return sw.evaluate(() => (globalThis as { __AGUI_DT_TEST__?: TestHook }).__AGUI_DT_TEST__!.simAcks());
+  },
+};
 
 /**
  * `readBadge`, once the worker has stopped changing it.

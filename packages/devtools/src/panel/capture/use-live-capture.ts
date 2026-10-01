@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { PanelStore } from '../model/store';
 import { captureOn, setLoaded, setRecording as setRecordingAction } from '../model/store';
 import { usePanelState } from '../model/use-panel-state';
+import type { ArmCommand } from '../../core/simulate/commands';
 import { createSignalCoalescer } from './coalesce';
 import { createLiveSession, type LiveSession } from './live-session';
 import { connectToServiceWorker, type PanelPort } from './port';
@@ -64,6 +65,16 @@ export interface LiveCapture {
    * panel cannot cause an origin the user never granted to be registered.
    */
   reRegister: () => void;
+  /**
+   * Turn Developer mode (§14.4, R6) on or off for the inspected origin. The worker refuses ON for
+   * an origin capture is not enabled for, and answers with what is stored either way — the switch
+   * shows that answer, never its own guess. A no-op until capture is on.
+   */
+  setDeveloperMode: (enabled: boolean) => void;
+  /** Script the inspected tab's next agent run(s). Answered with a `sim-dispatch`. */
+  arm: (command: ArmCommand) => void;
+  /** Withdraw an unconsumed arm. Answered with a `sim-dispatch`. */
+  disarm: (armId: string) => void;
   status: EnableStatus;
   /**
    * True while capture cannot work until the inspected page is reloaded.
@@ -168,6 +179,9 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
       },
     });
     portRef.current = port;
+    // Developer mode is per origin and lives in the worker's storage; ask, so the switch and the
+    // banner say what is actually stored rather than defaulting to a guess.
+    port?.send({ kind: 'developer-mode.get', origin: captureOnFor });
     // The worker's default is to buffer; only a paused panel has to say otherwise, and it has
     // to say so again on every fresh connection because the worker does not remember.
     if (!store.get().recording) port?.send({ kind: 'set-recording', recording: false });
@@ -270,6 +284,22 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
     portRef.current?.send({ kind: 'reconcile-registrations' });
   }, []);
 
+  const setDeveloperMode = useCallback(
+    (enabled: boolean) => {
+      if (captureOnFor === null) return;
+      portRef.current?.send({ kind: 'developer-mode.set', origin: captureOnFor, enabled });
+    },
+    [captureOnFor],
+  );
+
+  const arm = useCallback((command: ArmCommand) => {
+    portRef.current?.send({ kind: 'simulate.arm', command });
+  }, []);
+
+  const disarm = useCallback((armId: string) => {
+    portRef.current?.send({ kind: 'simulate.disarm', armId });
+  }, []);
+
   /*
    * The reload is needed either because the grant has not taken effect yet, or because the page
    * reported no capture layer. `executeScript` into the open document is deliberately NOT offered
@@ -300,6 +330,9 @@ export function useLiveCapture(store: PanelStore): LiveCapture {
     clearBuffer,
     reloadInspectedPage,
     reRegister,
+    setDeveloperMode,
+    arm,
+    disarm,
     status,
     awaitingReload,
   };

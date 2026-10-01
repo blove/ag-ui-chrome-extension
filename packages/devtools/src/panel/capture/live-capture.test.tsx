@@ -153,6 +153,9 @@ const TEXT_CONTENT = eventRecord(2, {
 
 /* ------------------------------------------------------------------ tests */
 
+/** What a panel sends on connecting: `subscribe`, then `developer-mode.get` for its origin. */
+const CONNECT_COMMANDS = 2;
+
 describe('panel live wiring', () => {
   it('auto-enables a localhost origin and subscribes with the inspected tab id', async () => {
     stubOrigin('http://localhost:5173');
@@ -165,6 +168,9 @@ describe('panel live wiring', () => {
       expect(names).toEqual(['agui-devtools-panel']);
     });
     expect(port.posted[0]).toEqual({ kind: 'subscribe', tabId: 1 });
+    // Then the one question the panel asks on every connect: is Developer mode on here (§14.4)?
+    expect(port.posted[1]).toEqual({ kind: 'developer-mode.get', origin: 'http://localhost:5173' });
+    expect(port.posted).toHaveLength(CONNECT_COMMANDS);
     expect(store.get().capture).toEqual({ kind: 'on', origin: 'http://localhost:5173' });
     // Not "Capture is on" yet: the origin is auto-enabled (D3), which says capture is AVAILABLE
     // here and nothing about whether the open document has our content scripts in it. The panel
@@ -191,7 +197,7 @@ describe('panel live wiring', () => {
 
     render(<App store={store} />);
     await waitFor(() => {
-      expect(port.posted).toHaveLength(1);
+      expect(port.posted).toHaveLength(CONNECT_COMMANDS);
     });
 
     act(() => {
@@ -205,6 +211,7 @@ describe('panel live wiring', () => {
         info: null,
         signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
+        simAcks: [],
       });
     });
 
@@ -225,7 +232,7 @@ describe('panel live wiring', () => {
 
     render(<App store={store} />);
     await waitFor(() => {
-      expect(port.posted).toHaveLength(1);
+      expect(port.posted).toHaveLength(CONNECT_COMMANDS);
     });
     act(() => {
       port.emit({
@@ -238,6 +245,7 @@ describe('panel live wiring', () => {
         info: null,
         signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
+        simAcks: [],
       });
     });
 
@@ -276,7 +284,7 @@ describe('panel live wiring', () => {
 
     render(<App store={store} />);
     await waitFor(() => {
-      expect(port.posted).toHaveLength(1);
+      expect(port.posted).toHaveLength(CONNECT_COMMANDS);
     });
 
     act(() => {
@@ -290,6 +298,7 @@ describe('panel live wiring', () => {
         info: null,
         signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
+        simAcks: [],
       });
     });
 
@@ -304,7 +313,7 @@ describe('panel live wiring', () => {
 
     render(<App store={store} />);
     await waitFor(() => {
-      expect(port.posted).toHaveLength(1);
+      expect(port.posted).toHaveLength(CONNECT_COMMANDS);
     });
 
     act(() => {
@@ -318,6 +327,7 @@ describe('panel live wiring', () => {
         info: null,
         signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
+        simAcks: [],
       });
     });
     expect(screen.queryByText(/dropped/)).toBeNull();
@@ -337,7 +347,7 @@ describe('panel live wiring', () => {
 
     render(<App store={store} />);
     await waitFor(() => {
-      expect(port.posted).toHaveLength(1);
+      expect(port.posted).toHaveLength(CONNECT_COMMANDS);
     });
 
     act(() => {
@@ -381,7 +391,7 @@ describe('panel live wiring', () => {
 
     render(<App store={store} />);
     await waitFor(() => {
-      expect(port.posted).toHaveLength(1);
+      expect(port.posted).toHaveLength(CONNECT_COMMANDS);
     });
 
     act(() => {
@@ -502,7 +512,7 @@ describe('panel live wiring', () => {
 
       render(<App store={store} />);
       await waitFor(() => {
-        expect(port.posted).toHaveLength(1);
+        expect(port.posted).toHaveLength(CONNECT_COMMANDS);
       });
 
       // The worker answers immediately, and on a page that is still loading its answer is
@@ -519,6 +529,7 @@ describe('panel live wiring', () => {
           info: null,
           signals: { reports: [], droppedBefore: 0 },
           registration: { matches: [], error: null },
+          simAcks: [],
         });
       });
 
@@ -534,7 +545,7 @@ describe('panel live wiring', () => {
 
       render(<App store={store} />);
       await waitFor(() => {
-        expect(port.posted).toHaveLength(1);
+        expect(port.posted).toHaveLength(CONNECT_COMMANDS);
       });
       act(() => {
         port.emit({
@@ -547,6 +558,7 @@ describe('panel live wiring', () => {
           info: null,
           signals: { reports: [], droppedBefore: 0 },
           registration: { matches: [], error: null },
+          simAcks: [],
         });
       });
 
@@ -568,7 +580,7 @@ describe('panel live wiring', () => {
 
       render(<App store={store} />);
       await waitFor(() => {
-        expect(port.posted).toHaveLength(1);
+        expect(port.posted).toHaveLength(CONNECT_COMMANDS);
       });
 
       act(() => {
@@ -592,7 +604,7 @@ describe('panel live wiring', () => {
 
       render(<App store={store} />);
       await waitFor(() => {
-        expect(port.posted).toHaveLength(1);
+        expect(port.posted).toHaveLength(CONNECT_COMMANDS);
       });
       await elapseGrace();
       expect(await screen.findByText(/capture layer is not loaded/i)).toBeTruthy();
@@ -624,7 +636,7 @@ describe('panel live wiring', () => {
 
       render(<App store={store} />);
       await waitFor(() => {
-        expect(port.posted).toHaveLength(1);
+        expect(port.posted).toHaveLength(CONNECT_COMMANDS);
       });
       act(() => {
         port.emit({ kind: 'capture-loaded' });
@@ -651,7 +663,7 @@ describe('panel live wiring', () => {
 
     render(<App store={store} />);
     await waitFor(() => {
-      expect(port.posted).toHaveLength(1);
+      expect(port.posted).toHaveLength(CONNECT_COMMANDS);
     });
 
     act(() => {
@@ -706,7 +718,7 @@ describe('panel live wiring', () => {
 
     render(<App store={store} />);
     await waitFor(() => {
-      expect(port.posted).toHaveLength(1);
+      expect(port.posted).toHaveLength(CONNECT_COMMANDS);
     });
 
     act(() => {
@@ -729,6 +741,7 @@ describe('panel live wiring', () => {
         info: null,
         signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
+        simAcks: [],
       });
       port.emit({ kind: 'closed', connId: 'c1', tMs: 40 });
     });
@@ -755,7 +768,7 @@ describe('panel live wiring', () => {
 
     render(<App store={store} />);
     await waitFor(() => {
-      expect(port.posted).toHaveLength(1);
+      expect(port.posted).toHaveLength(CONNECT_COMMANDS);
     });
 
     const records = Array.from({ length: 400 }, (_, i) =>
@@ -772,6 +785,7 @@ describe('panel live wiring', () => {
         info: null,
         signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
+        simAcks: [],
       });
     });
 
@@ -808,7 +822,7 @@ describe('panel live wiring — a granted origin with nothing registered for it'
     stubPermissions({ contains: async () => true });
     render(<App store={createPanelStore()} />);
     await waitFor(() => {
-      expect(port.posted).toHaveLength(1);
+      expect(port.posted).toHaveLength(CONNECT_COMMANDS);
     });
     return { port };
   }
@@ -836,6 +850,7 @@ describe('panel live wiring — a granted origin with nothing registered for it'
         // Granted, and nothing registered. The state an extension update leaves behind.
         signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
+        simAcks: [],
       });
     });
     await elapseGrace();
@@ -868,6 +883,7 @@ describe('panel live wiring — a granted origin with nothing registered for it'
         info: null,
         signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
+        simAcks: [],
       });
     });
     await elapseGrace();
@@ -903,6 +919,7 @@ describe('panel live wiring — a granted origin with nothing registered for it'
         info: null,
         signals: { reports: [], droppedBefore: 0 },
         registration: { matches: [], error: null },
+        simAcks: [],
       });
     });
     await elapseGrace();
@@ -920,5 +937,49 @@ describe('panel live wiring — a granted origin with nothing registered for it'
     expect(
       await screen.findByText(/Invalid value for parameter matches/),
     ).toBeTruthy();
+  });
+});
+
+describe('panel live wiring — Developer mode (§14.4, R6)', () => {
+  async function openSession(): Promise<{ port: FakePort; store: ReturnType<typeof createPanelStore> }> {
+    stubOrigin('http://localhost:5173');
+    const { port } = stubPort();
+    const store = createPanelStore();
+    render(<App store={store} />);
+    await waitFor(() => {
+      expect(port.posted).toHaveLength(CONNECT_COMMANDS);
+    });
+    act(() => {
+      store.update((s) => ({ ...s, tab: 'session' }));
+    });
+    return { port, store };
+  }
+
+  it('asks the worker to store the switch, and moves only on the worker’s answer', async () => {
+    const { port } = await openSession();
+    const toggle = await screen.findByRole('switch', { name: /Developer mode for http:\/\/localhost:5173/ });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    expect((toggle as HTMLInputElement).disabled).toBe(false);
+    expect(screen.queryByText(/this page’s next agent run can be scripted/)).toBeNull();
+
+    act(() => {
+      (toggle as HTMLInputElement).click();
+    });
+    expect(port.posted.at(-1)).toEqual({ kind: 'developer-mode.set', origin: 'http://localhost:5173', enabled: true });
+
+    act(() => {
+      port.emit({ kind: 'developer-mode', origin: 'http://localhost:5173', enabled: true });
+    });
+    expect(((await screen.findByRole('switch')) as HTMLInputElement).checked).toBe(true);
+    expect(await screen.findByText('Developer mode: this page’s next agent run can be scripted from the panel.')).toBeTruthy();
+  });
+
+  it('ignores another origin’s Developer mode', async () => {
+    const { port } = await openSession();
+    act(() => {
+      port.emit({ kind: 'developer-mode', origin: 'https://other.test', enabled: true });
+    });
+    expect(((await screen.findByRole('switch')) as HTMLInputElement).checked).toBe(false);
+    expect(screen.queryByText(/this page’s next agent run can be scripted/)).toBeNull();
   });
 });

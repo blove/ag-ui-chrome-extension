@@ -102,6 +102,12 @@ interface ChromeStub {
   grantedOrigins: string[];
   /** Resolve reads held back by `deferScriptRead`. */
   releaseScriptRead(): void;
+  /** `chrome.storage.local` — where Developer mode lives (§14.4, R6). */
+  local: Map<string, unknown>;
+  /** Every `chrome.tabs.sendMessage`, in order. */
+  tabMessages: Array<{ tabId: number; message: unknown; options: unknown }>;
+  /** What the tab's relay answers; rejects (no receiving end) by default. */
+  tabAnswer: (tabId: number, message: unknown) => Promise<unknown>;
 }
 
 interface StubOptions {
@@ -138,6 +144,22 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
       actions.push({ method, details: { ...details } });
       return Promise.resolve();
     };
+
+  const local = new Map<string, unknown>();
+  const storageLocal = {
+    get(key: string): Promise<Record<string, unknown>> {
+      return Promise.resolve(local.has(key) ? { [key]: local.get(key) } : {});
+    },
+    set(items: Record<string, unknown>): Promise<void> {
+      for (const [key, value] of Object.entries(items)) local.set(key, value);
+      return Promise.resolve();
+    },
+    remove(key: string): Promise<void> {
+      local.delete(key);
+      return Promise.resolve();
+    },
+  };
+  const tabMessages: ChromeStub['tabMessages'] = [];
 
   const storageSession = {
     get(keys: string | string[] | null): Promise<Record<string, unknown>> {
@@ -213,8 +235,14 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
       onConnect,
       getManifest: () => ({ content_scripts: MANIFEST_CONTENT_SCRIPTS }),
     },
-    storage: { session: storageSession },
-    tabs: { onRemoved },
+    storage: { session: storageSession, local: storageLocal },
+    tabs: {
+      onRemoved,
+      sendMessage: (tabId: number, message: unknown, options: unknown): Promise<unknown> => {
+        tabMessages.push({ tabId, message, options });
+        return stub.tabAnswer(tabId, message);
+      },
+    },
     permissions: {
       onAdded,
       onRemoved: onPermissionsRemoved,
@@ -230,6 +258,8 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
        * among `getAll().origins`. A reconciliation that did not exclude them would register a
        * second, dynamic copy of both scripts for the localhost family.
        */
+      contains: (query: { origins?: string[] }): Promise<boolean> =>
+        Promise.resolve((query.origins ?? []).every((origin) => grantedOrigins.includes(origin))),
       getAll: (): Promise<{ origins: string[] }> =>
         Promise.resolve({
           origins: [
@@ -246,7 +276,10 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
     },
   } as unknown as typeof chrome;
 
-  return {
+  const stub: ChromeStub = {
+    local,
+    tabMessages,
+    tabAnswer: () => Promise.reject(new Error('Could not establish connection. Receiving end does not exist.')),
     session,
     actions,
     registered,
@@ -284,6 +317,7 @@ function installChrome(session: Map<string, unknown> = new Map(), options: StubO
       onPermissionsRemoved.emit({ origins });
     },
   };
+  return stub;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2529,5 +2563,207 @@ describe('service worker — Threadplane signal reports', () => {
     restarted.connect(panel);
     send(panel, { kind: 'subscribe', tabId: 7 });
     expect(snapshotOf(panel).signals).toEqual({ reports: [], droppedBefore: 0 });
+  });
+});
+
+describe('service worker — the run simulator (§14.4)', () => {
+  let stub: ChromeStub;
+
+  const COMMAND = {
+    v: 1 as const,
+    armId: 'arm-1',
+    adapter: 'ag-ui' as const,
+    runs: [{ events: [{ type: 'RUN_STARTED', threadId: 't', runId: 'r' }] }],
+  };
+
+  beforeEach(async () => {
+    stub = installChrome();
+    await loadWorker();
+    await settle();
+  });
+
+  function subscribed(tabId = 7): FakePort {
+    const panel = panelPort();
+    stub.connect(panel);
+    send(panel, { kind: 'subscribe', tabId });
+    return panel;
+  }
+
+  describe('arming', () => {
+    it('sends a validated copy to the tab’s top frame only, and answers the asking panel', async () => {
+      stub.tabAnswer = () => Promise.resolve({ outcome: 'dispatched' });
+      const panel = subscribed();
+      const other = subscribed();
+      send(panel, { kind: 'simulate.arm', command: COMMAND });
+      await settle(5);
+      expect(stub.tabMessages).toEqual([{ tabId: 7, message: { kind: 'simulate.arm', command: COMMAND }, options: { frameId: 0 } }]);
+      expect(messagesOfKind(panel, 'sim-dispatch')).toEqual([
+        { kind: 'sim-dispatch', armId: 'arm-1', action: 'arm', outcome: 'dispatched' },
+      ]);
+      expect(messagesOfKind(other, 'sim-dispatch')).toEqual([]);
+    });
+
+    it('sends nothing for a command that does not validate', async () => {
+      const panel = subscribed();
+      send(panel, { kind: 'simulate.arm', command: { ...COMMAND, runs: [] } } as unknown as PanelCommand);
+      send(panel, { kind: 'simulate.arm', command: { ...COMMAND, adapter: 'crewai' } } as unknown as PanelCommand);
+      await settle(5);
+      expect(stub.tabMessages).toEqual([]);
+      expect(messagesOfKind(panel, 'sim-dispatch')).toEqual([]);
+    });
+
+    it('sends nothing for a panel that has not subscribed to a tab', async () => {
+      const panel = panelPort();
+      stub.connect(panel);
+      send(panel, { kind: 'simulate.arm', command: COMMAND });
+      await settle(5);
+      expect(stub.tabMessages).toEqual([]);
+    });
+
+    it('reports not-delivered when no relay answers, and reads only a known outcome', async () => {
+      const panel = subscribed();
+      send(panel, { kind: 'simulate.arm', command: COMMAND });
+      await settle(5);
+      stub.tabAnswer = () => Promise.resolve({ outcome: 'pwned' });
+      send(panel, { kind: 'simulate.arm', command: { ...COMMAND, armId: 'arm-2' } });
+      await settle(5);
+      stub.tabAnswer = () => Promise.resolve({ outcome: 'developer-mode-off' });
+      send(panel, { kind: 'simulate.arm', command: { ...COMMAND, armId: 'arm-3' } });
+      await settle(5);
+      expect(messagesOfKind(panel, 'sim-dispatch').map((message) => message.outcome)).toEqual([
+        'not-delivered',
+        'not-delivered',
+        'developer-mode-off',
+      ]);
+    });
+
+    it('sends a disarm the same way', async () => {
+      stub.tabAnswer = () => Promise.resolve({ outcome: 'dispatched' });
+      const panel = subscribed();
+      send(panel, { kind: 'simulate.disarm', armId: 'arm-1' });
+      send(panel, { kind: 'simulate.disarm', armId: 'bad id' } as PanelCommand);
+      await settle(5);
+      expect(stub.tabMessages).toEqual([{ tabId: 7, message: { kind: 'simulate.disarm', armId: 'arm-1' }, options: { frameId: 0 } }]);
+      expect(messagesOfKind(panel, 'sim-dispatch')).toEqual([
+        { kind: 'sim-dispatch', armId: 'arm-1', action: 'disarm', outcome: 'dispatched' },
+      ]);
+    });
+  });
+
+  describe('acks', () => {
+    const ACK = { v: 1 as const, armId: 'arm-1', state: 'consumed' as const, run: 0 };
+
+    it('keeps them per tab, pushes each, puts them on a late snapshot, and clears them with the buffer', async () => {
+      const panel = subscribed();
+      const relay = relayPort(7);
+      stub.connect(relay);
+      send(relay, { v: 1, kind: 'sim-ack', ack: ACK });
+      await settle();
+      expect(messagesOfKind(panel, 'sim-ack')).toEqual([{ kind: 'sim-ack', ack: ACK }]);
+      expect(testHook().simAcks()).toEqual([ACK]);
+      expect(snapshotOf(subscribed()).simAcks).toEqual([ACK]);
+
+      send(panel, { kind: 'clear' });
+      await settle();
+      expect(testHook().simAcks()).toEqual([]);
+    });
+
+    it('keeps them while recording is paused — an ack answers the user’s own Arm', async () => {
+      const panel = subscribed();
+      send(panel, { kind: 'set-recording', recording: false });
+      const relay = relayPort(7);
+      stub.connect(relay);
+      send(relay, { v: 1, kind: 'sim-ack', ack: ACK });
+      await settle();
+      expect(testHook().simAcks()).toEqual([ACK]);
+    });
+
+    it('drops an ack of the wrong shape, and strips nothing into one that is right', async () => {
+      const relay = relayPort(7);
+      stub.connect(relay);
+      for (const ack of [{ ...ACK, state: 'pwned' }, { ...ACK, extra: 1 }, null]) {
+        send(relay, { v: 1, kind: 'sim-ack', ack } as unknown as RelayMessage);
+      }
+      await settle();
+      expect(testHook().simAcks()).toEqual([]);
+    });
+
+    it('survives a worker restart through the mirror, re-validated', async () => {
+      const relay = relayPort(7);
+      stub.connect(relay);
+      send(relay, { v: 1, kind: 'sim-ack', ack: ACK });
+      await settle(300);
+      const session = new Map(stub.session);
+      const mirrored = session.get('agui-dt:tab:7') as Record<string, unknown>;
+      session.set('agui-dt:tab:7', { ...mirrored, simAcks: [ACK, { ...ACK, state: 'pwned' }] });
+      installChrome(session);
+      await loadWorker();
+      await settle();
+      expect(testHook().simAcks()).toEqual([ACK]);
+    });
+  });
+
+  describe('Developer mode', () => {
+    it('stores ON for an auto-enabled or granted origin and tells every panel', async () => {
+      const panel = subscribed();
+      const other = panelPort();
+      stub.connect(other);
+      send(panel, { kind: 'developer-mode.set', origin: 'http://localhost:5173', enabled: true });
+      await settle(5);
+      expect(stub.local.get('agui-dt:devmode:http://localhost:5173')).toBe(true);
+      for (const port of [panel, other]) {
+        expect(messagesOfKind(port, 'developer-mode')).toEqual([
+          { kind: 'developer-mode', origin: 'http://localhost:5173', enabled: true },
+        ]);
+      }
+      stub.grantedOrigins.push('https://app.test/*');
+      await expect(testHook().setDeveloperMode('https://app.test', true)).resolves.toBe(true);
+      expect(stub.local.get('agui-dt:devmode:https://app.test')).toBe(true);
+    });
+
+    it('refuses ON for an origin that is not granted, and answers with what is stored', async () => {
+      const panel = subscribed();
+      send(panel, { kind: 'developer-mode.set', origin: 'https://app.test', enabled: true });
+      await settle(5);
+      expect(stub.local.size).toBe(0);
+      expect(messagesOfKind(panel, 'developer-mode')).toEqual([
+        { kind: 'developer-mode', origin: 'https://app.test', enabled: false },
+      ]);
+    });
+
+    it('stores OFF as the key’s absence', async () => {
+      stub.local.set('agui-dt:devmode:http://localhost:5173', true);
+      await expect(testHook().setDeveloperMode('http://localhost:5173', false)).resolves.toBe(false);
+      expect(stub.local.size).toBe(0);
+    });
+
+    it('answers a get with what is stored, strictly', async () => {
+      const panel = subscribed();
+      stub.local.set('agui-dt:devmode:http://localhost:5173', 'true');
+      send(panel, { kind: 'developer-mode.get', origin: 'http://localhost:5173' });
+      await settle(5);
+      expect(messagesOfKind(panel, 'developer-mode')).toEqual([
+        { kind: 'developer-mode', origin: 'http://localhost:5173', enabled: false },
+      ]);
+    });
+
+    it('ignores an origin that is not a canonical web origin', async () => {
+      const panel = subscribed();
+      for (const origin of ['https://app.test/', 'null', 'chrome://settings', 'HTTPS://APP.TEST']) {
+        send(panel, { kind: 'developer-mode.set', origin, enabled: true });
+        send(panel, { kind: 'developer-mode.get', origin });
+      }
+      await settle(5);
+      expect(messagesOfKind(panel, 'developer-mode')).toEqual([]);
+      expect(stub.local.size).toBe(0);
+    });
+
+    it('clears a revoked origin’s flag, so a later re-grant starts off', async () => {
+      stub.grantedOrigins.push('https://app.test/*');
+      await testHook().setDeveloperMode('https://app.test', true);
+      stub.removeOrigins(['https://app.test/*']);
+      await settle(5);
+      expect(stub.local.has('agui-dt:devmode:https://app.test')).toBe(false);
+    });
   });
 });

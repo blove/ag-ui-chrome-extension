@@ -2488,3 +2488,23 @@ code {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* Run simulator (§14.4): Developer mode's switch and the banner shown while it is on. */
+.agui-devmode {
+  padding: 6px 0;
+  border-top: 1px solid var(--agui-border);
+}
+
+.agui-devmode__switch {
+  font-weight: 600;
+}
+
+.agui-devmode__help {
+  margin: 4px 0 0;
+  color: var(--agui-fg-muted);
+}
+
+.agui-app > .agui-devmode__banner {
+  color: var(--agui-fg);
+  font-weight: 600;
+}

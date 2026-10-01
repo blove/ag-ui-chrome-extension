@@ -20,6 +20,7 @@ import { Runs } from './tabs/runs/runs';
 import { State } from './tabs/state/state';
 import { Session } from './tabs/session/session';
 import { Signals } from './tabs/signals/signals';
+import { DeveloperModeBanner } from './simulate/developer-mode';
 
 /**
  * Resolve the inspected page's origin, so the capture banner can name it.
@@ -179,7 +180,7 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
         );
       break;
     case 'session':
-      body = <Session store={store} onLoaded={commit} />;
+      body = <Session store={store} onLoaded={commit} onSetDeveloperMode={live.setDeveloperMode} />;
       break;
     case 'runs':
       body = <Runs store={store} />;
@@ -227,6 +228,9 @@ export function App({ store }: { store: PanelStore }): JSX.Element {
       )}
 
       <CaptureBanner store={store} onEnable={live.enable} onReRegister={live.reRegister} />
+
+      {/* R6: while Developer mode is on, every tab says so. */}
+      <DeveloperModeBanner store={store} />
 
       {/*
        * What Enable did, and what to do next.

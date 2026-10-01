@@ -9,6 +9,7 @@
  */
 import type { RuntimeInfo } from '../core/detect/info';
 import type { ThreadplaneDevtoolsReport } from '../core/signals/report';
+import type { Ack, ArmCommand } from '../core/simulate/commands';
 import type { CaptureRecord } from '../core/model/types';
 import type { InjectMessage } from '../inject/protocol';
 
@@ -48,7 +49,67 @@ export type RelayMessage =
    * Carries no frame identity of its own: the worker reads `port.sender`, so which document this
    * is comes from Chrome rather than from the payload.
    */
-  | { v: 1; kind: 'capture-loaded' };
+  | { v: 1; kind: 'capture-loaded' }
+  /**
+   * A run-simulator acknowledgement the page's hook dispatched (design R4), for an arm THIS relay
+   * dispatched in this document.
+   *
+   * The relay's own arm, like `capture-loaded`, and not an `InjectMessage`: the relay hears
+   * `threadplane:devtools:ack` on `window` itself — a DOM event reaches listeners in every world,
+   * and Chrome hands the ISOLATED world a structured clone of the page's `detail` — so no MAIN-world
+   * code and no `postMessage` is involved. `ack` is `parseAck`'s copy.
+   */
+  | { v: 1; kind: 'sim-ack'; ack: Ack };
+
+/* -------------------------------------------------------------------------- */
+/* The worker → relay leg (run simulator, design R7)                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What the worker sends a tab's TOP-FRAME relay with `chrome.tabs.sendMessage(tabId, …,
+ * { frameId: 0 })` — the only direction in which the extension ever initiates anything in a page,
+ * and only for a panel's explicit Arm or Cancel.
+ *
+ * `chrome.tabs.sendMessage` rather than the relay's port: the port exists only while the relay has
+ * something to say, and MV3 terminates an idle worker (§15), after which the worker holds no port
+ * to the tab at all. `tabs.sendMessage` reaches the frame's content script whatever the port's
+ * state, and it carries `frameId`, so the top frame is chosen by Chrome rather than by anything
+ * the page can influence.
+ */
+export type RelayCommand =
+  | { kind: 'simulate.arm'; command: ArmCommand }
+  | { kind: 'simulate.disarm'; armId: string };
+
+/**
+ * What became of a `RelayCommand` — the relay's answer, or the worker's when the relay could not
+ * be reached. Not an ack: an ack is the HOOK's statement (R4); this says only whether the
+ * extension put the event on the page.
+ *
+ *  - `dispatched` — the event was dispatched on the top frame's `window`.
+ *  - `developer-mode-off` — the relay read Developer mode off for its origin and dispatched nothing.
+ *  - `not-top-frame` — the receiving relay is not in a top-level document (R7); nothing dispatched.
+ *  - `unknown-arm` — a disarm for an arm this document never received; nothing dispatched.
+ *  - `invalid` — the command did not validate at the relay; nothing dispatched.
+ *  - `not-delivered` — no relay answered: the tab has no capture layer, or it is navigating.
+ */
+export type SimDispatchOutcome =
+  | 'dispatched'
+  | 'developer-mode-off'
+  | 'not-top-frame'
+  | 'unknown-arm'
+  | 'invalid'
+  | 'not-delivered';
+
+export interface RelayCommandResult {
+  outcome: SimDispatchOutcome;
+}
+
+/** One arm or disarm the panel asked for, and what became of it. */
+export interface SimDispatch {
+  armId: string;
+  action: 'arm' | 'disarm';
+  outcome: SimDispatchOutcome;
+}
 
 /**
  * One captured connection's request line: what was asked for, and the `RunAgentInput` that went
@@ -228,6 +289,12 @@ export type SwMessage =
        * Threadplane apps in development — and is not an error state.
        */
       signals: SignalReports;
+      /**
+       * The run-simulator acknowledgements this tab's hook has dispatched (design R4), oldest
+       * first — kept per tab and cleared with the buffer, like `signals`. NOT OPTIONAL, for the
+       * reason `signals` is not: a panel opened after an arm still has to show what became of it.
+       */
+      simAcks: Ack[];
     }
   | {
       kind: 'append';
@@ -289,6 +356,19 @@ export type SwMessage =
    * told.
    */
   | { kind: 'registration'; registration: RegistrationState | null }
+  /** One run-simulator acknowledgement, as it arrives (design R4). Also retained on `snapshot`. */
+  | { kind: 'sim-ack'; ack: Ack }
+  /**
+   * What became of an arm or disarm THIS panel asked for — sent to the asking port only. The hook's
+   * own account of the arm arrives as `sim-ack`; this is the extension's.
+   */
+  | ({ kind: 'sim-dispatch' } & SimDispatch)
+  /**
+   * Whether Developer mode is on for `origin` (design R6) — the answer to `developer-mode.get` and
+   * `developer-mode.set`, and pushed to every panel when the flag changes (including when a
+   * revoked origin's flag is cleared). A panel shows it only when `origin` is its own.
+   */
+  | { kind: 'developer-mode'; origin: string; enabled: boolean }
   | { kind: 'cleared' };
 
 /** Panel → worker. */
@@ -306,4 +386,20 @@ export type PanelCommand =
    * user has actually granted — so this command cannot be used to register an origin the user
    * never opted in to, whatever reaches this port.
    */
-  | { kind: 'reconcile-registrations' };
+  | { kind: 'reconcile-registrations' }
+  /**
+   * Run simulator (design R7): script the inspected tab's next agent run(s). The worker validates
+   * the command and sends it to the tab's TOP-FRAME relay, which dispatches it only if Developer
+   * mode is on for its own origin. Answered with `sim-dispatch`.
+   */
+  | { kind: 'simulate.arm'; command: ArmCommand }
+  /** Withdraw an unconsumed arm this tab's top-frame relay dispatched. Answered with `sim-dispatch`. */
+  | { kind: 'simulate.disarm'; armId: string }
+  /** Ask whether Developer mode is on for `origin`. Answered with `developer-mode`. */
+  | { kind: 'developer-mode.get'; origin: string }
+  /**
+   * Turn Developer mode on or off for `origin`. Refused — answered with the unchanged state — unless
+   * the origin is one capture is enabled for (the localhost family, or a granted origin): the
+   * worker asks `chrome.permissions`, not the panel.
+   */
+  | { kind: 'developer-mode.set'; origin: string; enabled: boolean };

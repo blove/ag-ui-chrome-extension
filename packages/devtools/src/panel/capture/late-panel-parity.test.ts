@@ -78,6 +78,7 @@ function afterLateOpen(stream: CapturedStream): PanelState {
     info: null,
     signals: { reports: [], droppedBefore: 0 },
     registration: { matches: [], error: null },
+    simAcks: [],
   });
 }
 
@@ -186,6 +187,7 @@ describe('a run that finished before the panel opened', () => {
       info: null,
       signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
+      simAcks: [],
     });
     const twice = session.apply(once, { kind: 'closed', connId: CONN_ID, tMs: 999 });
 
@@ -212,6 +214,7 @@ describe('a run that finished before the panel opened', () => {
       info: null,
       signals: { reports: [], droppedBefore: 0 },
       registration: { matches: [], error: null },
+      simAcks: [],
     });
 
     const refolded = session.refold(state, { expandChunks: false });

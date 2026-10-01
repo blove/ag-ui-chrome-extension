@@ -15,7 +15,9 @@
  * content into a log the user reads. Silence is the feature.
  *
  * Nothing is ever posted back to the page, no property is added to any global, and no DOM node
- * is created, so a page cannot detect the relay by feature-probing.
+ * is created, so a page cannot detect the relay by feature-probing. The one thing this file ever
+ * puts on the page is the run simulator's arm/disarm `CustomEvent` (`./simulate`), and only when
+ * the user pressed Arm in the panel with Developer mode on for this origin.
  *
  * It has one thing of its own to say, at the bottom of this file: that the capture layer is
  * loaded in this document. That report goes up the `chrome.runtime` port and never near the page.
@@ -29,7 +31,9 @@ import {
   type InjectMessage,
   type WireFrame,
 } from '../inject/protocol';
-import { RELAY_PORT_NAME, type RelayMessage } from '../sw/protocol';
+import { developerModeKey } from '../core/simulate/developer-mode';
+import { RELAY_PORT_NAME, type RelayCommandResult, type RelayMessage } from '../sw/protocol';
+import { installSimulateRelay } from './simulate';
 
 let port: chrome.runtime.Port | null = null;
 
@@ -233,5 +237,42 @@ window.addEventListener('message', (event: MessageEvent): void => {
  * than the simplicity.
  */
 send({ v: PROTOCOL_VERSION, kind: 'capture-loaded' });
+
+/**
+ * The run simulator's page end (design R6/R7) — see `./simulate` for the channel and its trust
+ * argument. Wired here so it shares this document's port.
+ *
+ * `chrome.runtime.onMessage` in a content script hears only `chrome.tabs.sendMessage`, which only
+ * this extension's own pages and worker can call for its content scripts; the `sender.id` check
+ * is the belt to that, and a sender with a `tab` would be a content script, which never sends
+ * these. Wrapped whole: a context that is already gone, or a host without `chrome.storage`, leaves
+ * capture working and the simulator absent.
+ */
+try {
+  const simulate = installSimulateRelay({
+    target: window,
+    makeEvent: (type, detail) => new CustomEvent(type, { detail }),
+    origin: window.location.origin,
+    isTopFrame: () => window.top === window,
+    readDeveloperMode: async (origin) => {
+      const key = developerModeKey(origin);
+      const stored: Record<string, unknown> = await chrome.storage.local.get(key);
+      return stored[key] === true;
+    },
+    send,
+  });
+  chrome.runtime.onMessage.addListener(
+    (message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (result: RelayCommandResult) => void): boolean => {
+      if (sender.id !== chrome.runtime.id || sender.tab !== undefined) return false;
+      const pending = simulate.handle(message);
+      if (pending === null) return false;
+      void pending.then(sendResponse);
+      // Keep the channel open for the asynchronous answer.
+      return true;
+    },
+  );
+} catch {
+  // Deliberately silent, like every other failure in this file.
+}
 
 export {};
