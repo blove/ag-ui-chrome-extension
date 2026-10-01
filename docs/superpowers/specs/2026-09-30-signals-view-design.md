@@ -1,0 +1,28 @@
+# Signals view (§14.3) — design
+
+**Date:** 2026-09-30
+**Requirements:** [`docs/spec/ag-ui-devtools-v0.1.md`](../../spec/ag-ui-devtools-v0.1.md) §14.3, open question 3.
+**Decided with the user:** the hook lives inside existing Threadplane libraries (no new package); it reports names and timing only.
+
+## 1. What can be observed
+
+Threadplane's agent signals are not externally introspectable, so §14.3 needs a page-side hook. In Threadplane 0.2.0 each adapter has one per-event choke point — LangGraph's `processEvent` (`libs/langgraph/src/lib/internals/stream-manager.bridge.ts`) and AG-UI's `onEvent` around `reduceEvent` (`libs/ag-ui/src/lib/to-agent.ts`) — and every state write goes through an observable place: LangGraph's `subjects` bag of BehaviorSubjects (`agent.fn.ts`), AG-UI's `ReducerStore` of `WritableSignal`s. The neutral signals are lazy `computed()`s that recompute when read, so what the hook attributes is **"which signals this event wrote"**, not "which recomputed" — the honest observable.
+
+## 2. Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| **G1** | **The hook is a dev-only emitter in `@threadplane/chat`** (shared peer of both adapters), called from the two choke points. Gated `(typeof ngDevMode === 'undefined' \|\| ngDevMode) && isDevMode()` so production builds strip it, plus a `window.__THREADPLANE_DEVTOOLS_DISABLED__ === true` opt-out. | User decision. No new package or release-pipeline change; the gate is Threadplane's existing pattern (telemetry, chat debug). |
+| **G2** | **Names and timing only.** One report per event: `{ v: 1, agent, adapter, seq, eventType, wrote, tMs }` — `agent` a per-instance random id, `adapter` `'langgraph' \| 'ag-ui'`, `seq` per agent, `eventType` the protocol event name (LangGraph `StreamEvent.type`, AG-UI `event.type`) or a pseudo-event label for writes outside an event (`run:start`, `run:end`, `history`, `reset`, `submit`, `queue`, `branch`), `wrote` the distinct signal names written in order, `tMs` `performance.now()`. **Signal values are never read.** | User decision; matches Threadplane's telemetry precedent (no conversation content). The extension's own capture already holds the content. |
+| **G3** | **Delivery:** `window.dispatchEvent(new CustomEvent('threadplane:devtools', { detail }))`, fire-and-forget, only when a report has at least one name. | The app cannot tell whether anything listens, so the extension's presence is not revealed (#39's property). |
+| **G4** | **Signal names are a closed vocabulary** per adapter — LangGraph: the subject names without `$` (`status`, `values`, `messages`, `error`, `interrupt`, `interrupts`, `branch`, `history`, `isThreadLoading`, `toolProgress`, `toolCalls`, `messageMetadata`, `subagents`, `queue`, `custom`), AG-UI: the store fields (`messages`, `status`, `isLoading`, `error`, `toolCalls`, `state`, `interrupt`, `customEvents`, `activities`, `interruptSession`). | The extension validates against the vocabulary; nothing free-form crosses into the panel except `eventType`, which is length-limited and shown as text. |
+| **G5** | **Extension capture:** the MAIN-world script listens for `threadplane:devtools` (granted origins only, where it already runs), validates strictly (own-property, types, vocabulary, `eventType` ≤ 128 chars, `wrote` ≤ 32 entries) and posts a new `InjectMessage` arm `signals`; the relay rebuilds it field by field; the service worker keeps a bounded per-tab ring of them (cleared with the tab's buffer) and sends them to the panel in snapshot/append. | Same pipeline and trust model as frames. Posting happens only in response to hook events (page activity), not at document start — not #39's presence leak. |
+| **G6** | **Panel: a Signals tab** — a matrix, signals as rows (the vocabulary names seen, in a fixed order), hook events as columns in `seq` order, grouped per agent instance; a lit cell = that event wrote that signal; column header = `eventType`. Clicking a column selects the matching wire frame in Timeline when one can be matched: by event type and order within the capture's connections for that time window, falling back to the nearest frame by `tMs` (the inject's `now()` and the hook's `performance.now()` share a clock — verify). | A matrix is honest: the computed dependency graph is not observable from names. |
+| **G7** | **Empty state:** "No Threadplane devtools events on this page — the Signals view needs a Threadplane app in development mode, version 0.3.0 or later." (no fault words). | Most pages are not Threadplane apps. |
+| **G8** | **Live only in v1** — hook events are not written to `.agui.jsonl`. | A new line kind makes older builds report an intact file as damaged (the reason PR 1 used keys). Export can come later behind a header key. |
+
+## 3. Order and testing
+
+- **Extension PR first**, fully testable here: the harness page dispatches synthetic `threadplane:devtools` events (valid and hostile); unit tests for validation, relay, worker, panel matrix and frame matching; e2e that a hook event on a granted page reaches the worker; visual gate draws the Signals tab with a fixture of hook events (fed through the store, since export is out of scope).
+- **Threadplane PR second** (its repo, user-reviewed, not auto-merged): emitter + instrumentation + tests that the right names are reported for representative events in both adapters, that production gating strips it (extend `libs/telemetry/scripts/verify-development-bundle.mjs`'s approach or an equivalent esbuild define check), and that no value is ever read (a test using signals whose getters throw).
+- **Acceptance:** a real Threadplane dev app with the built extension shows a populated Signals tab — run manually and recorded in the extension's spec.
