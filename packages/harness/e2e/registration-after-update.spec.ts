@@ -221,7 +221,7 @@ test('the worker’s boot path registers it again, unprompted', () => {
 
 test('a page loaded in that second session is instrumented', () => {
   // Pre-fix this was `undefined`, measured in a real browser: no content scripts, so no marker.
-  expect(marker).toEqual({ version: '0.1.0', protocol: 1, source: 'agui-dt' });
+  expect(marker).toEqual({ version: '0.2.0', protocol: 1, source: 'agui-dt' });
 });
 
 test('and capture delivers the whole run', () => {

@@ -32,7 +32,7 @@ const LOCALHOST_MATCHES = [
 export default defineManifest({
   manifest_version: 3,
   name: 'AG-UI DevTools',
-  version: '0.1.0',
+  version: '0.2.0',
   // Required by the Chrome Web Store, and the line Chrome shows on chrome://extensions. Kept
   // under 132 characters because the store reuses it where its own summary field is absent, and
   // that field's limit is 132 — `listing/copy.md`'s `summary` is the same sentence for the same

@@ -164,7 +164,7 @@ test('the page under test is genuinely not localhost', () => {
 
 test('the MAIN-world content script installs on a granted non-localhost origin', () => {
   // Pre-fix this was `undefined`: the loader's dynamic import of its chunk was denied.
-  expect(marker).toEqual({ version: '0.1.0', protocol: 1, source: 'agui-dt' });
+  expect(marker).toEqual({ version: '0.2.0', protocol: 1, source: 'agui-dt' });
 });
 
 test('no resource load is denied to the page', () => {

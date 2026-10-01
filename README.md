@@ -176,6 +176,8 @@ structurally cannot see:
 - the manifest privacy invariants above;
 - `panel.html` and `devtools.html` reached `dist/`;
 - no `*.map` files ship;
+- the version is the same everywhere it is stated — the built manifest, both `package.json`s, and
+  the page marker's `MARKER_VERSION`;
 - `public/icons/*.png` are fresh against `listing/icon.svg` — checked by comparing a committed
   SHA-256 of the source SVG, not by re-rendering, so this needs no browser and is identical on
   every platform.

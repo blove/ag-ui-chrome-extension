@@ -36,6 +36,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import manifestConfig from '../manifest.config';
+import { MARKER_VERSION } from '../src/inject/install';
 
 const packageRoot: string = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const distDir: string = join(packageRoot, 'dist');
@@ -443,6 +444,10 @@ function checkIconsAreFresh(): void {
   }
 }
 
+function readPackageVersion(path: string): string | undefined {
+  return asString(asRecord(JSON.parse(readFileSync(path, 'utf8')) as unknown)?.version);
+}
+
 /* -------------------------------------------------------------------------- */
 
 function main(): void {
@@ -701,6 +706,29 @@ function main(): void {
       `${maps.join(', ')} — build in production mode (vite.config.ts only emits sourcemaps ` +
         'when mode !== "production") so nothing ships the sources.',
     );
+  }
+
+  /* --- 5. One version, everywhere it is stated ----------------------------- */
+  // A release states its version in four places, and they drift independently: the manifest
+  // (what Chrome and the store read), package.json (what `pnpm package` names the zip from),
+  // the page marker `window.__AGUI_DEVTOOLS__.version` (`MARKER_VERSION`, what the e2e asserts
+  // on a live page), and the workspace root. A bump that misses one ships a zip whose name, or a
+  // marker whose value, disagrees with the version the store shows — so they are checked here,
+  // against the built manifest, rather than remembered.
+  const shipped = asString(distManifest.version);
+  const stated: [string, string | undefined][] = [
+    ['packages/devtools/package.json', readPackageVersion(join(packageRoot, 'package.json'))],
+    ['package.json (workspace root)', readPackageVersion(join(packageRoot, '../../package.json'))],
+    ['MARKER_VERSION (src/inject/install.ts)', MARKER_VERSION],
+  ];
+  for (const [where, version] of stated) {
+    if (version !== shipped) {
+      fail(
+        'version drift',
+        `dist/manifest.json is version ${JSON.stringify(shipped)}, but ${where} says ` +
+          `${JSON.stringify(version)}. Bump every one of them together.`,
+      );
+    }
   }
 
   /* --- Report -------------------------------------------------------------- */
